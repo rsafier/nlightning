@@ -62,8 +62,8 @@ outputs are. Making `enforce_balance` work with sub-satoshi values would need an
 upstream VLS core change and is not planned.
 Pre-offer, incoming-add and fee-update checks refuse
 trimmed HTLCs before applying updates without weakening VLS balance enforcement.
-Named-account/watch-only imports, wallet spends other than `withdraw` (PSBT and
-fee-input signing) and single-SHA256 `signmessage` are unsupported. Private-key
+Named-account/watch-only imports, PSBT wallet signing and single-SHA256
+`signmessage` are unsupported. Private-key
 export and arbitrary node-message signing throw; financial accounting period signatures have no generic signing escape
 hatch. Ordinary accounting event hash chains remain supported.
 
@@ -105,10 +105,12 @@ back to a local key.
   channel; the adapter verifies both returned signatures. `channel_update` and
   `node_announcement` were already typed VLS operations. Gossip v2 (taproot)
   stays off.
-- **Withdrawals.** `withdraw` signs through the existing `wallet_sign` (VLS
-  `check_onchain_tx` + `unchecked_sign_onchain_tx`) with every input a P2WPKH
-  wallet output held by the withdrawal's fee-input reservation; non-wallet inputs
-  are refused. VLS accepts only outputs to its wallet (the change, by wallet path)
+- **Withdrawals.** VLS has no withdrawal-specific API beyond its on-chain check:
+  vlsd's `SignWithdrawal` is a PSBT wrapper over the same `check_onchain_tx` +
+  `unchecked_sign_onchain_tx`. `withdraw` is therefore signed by the reserved-input
+  wallet signing of the anchors lane (`VlsLightningSigner.Anchors.cs`,
+  `wallet_sign_fee_inputs`, NL-1325), which passes the destination as a non-wallet
+  output path. VLS accepts only outputs to its wallet (the change, by wallet path)
   or to an allowlisted destination, so the operator first allowlists the address
   on the approval socket (`approve.py allowlist --address ...`,
   `VlsWalletApprovalClient`); the node credential cannot. VLS keeps the allowlist
@@ -204,8 +206,10 @@ listener's `O_NONBLOCK`, which dropped requests still in flight.
   and output channels and the actual forwarded amounts. Together with local
   proofs, 17 actual C# VLS cases pass. Force-close output sweeps remain unproved.
 
-- NL-1335 (2026-10-08, `wip/vls-public`): `VlsPublicSigningTests` 3/3 against the
-  pinned gateway (message signature recovered to the node key, single hash refused;
+- NL-1335 (2026-10-08, `wip/vls-public`; the withdrawal results below were taken
+  with this lane's own `wallet_sign`-based signer, since replaced by the anchors
+  lane's identical VLS path, so re-run both proofs after merging NL-1325):
+  `VlsPublicSigningTests` 3/3 against the pinned gateway (message signature recovered to the node key, single hash refused;
   withdrawal refused for an unknown destination, another reservation, a non-wallet
   input and a node-credential allowlist, then signed for the allowlisted address,
   accepted by NBitcoin's script interpreter and again after a gateway restart; a

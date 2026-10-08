@@ -1,24 +1,20 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
-using NBitcoin;
-using NLightning.Domain.Bitcoin.Enums;
-using NLightning.Domain.Bitcoin.ValueObjects;
-using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Exceptions;
 using NLightning.Infrastructure.Bitcoin.Gossip;
 using NLightning.Infrastructure.Bitcoin.Signers;
-using TxId = NLightning.Domain.Bitcoin.ValueObjects.TxId;
 
 namespace NLightning.Infrastructure.VlsSigning;
 
 /// <summary>
 /// Public channels, wallet withdrawals and LND-style message signing through VLS's purpose-specific APIs (NL-1335):
-/// the channel announcement goes to VLS's funding-key and node-key gossip signers bound to the channel, a withdrawal to
-/// <c>check_onchain_tx</c> (its destination must be on VLS's allowlist, which only the approval credential extends),
-/// and a message to VLS's <c>sign_message</c>. No generic digest or key signing.
+/// the channel announcement goes to VLS's funding-key and node-key gossip signers bound to the channel and a message to
+/// VLS's <c>sign_message</c>. Withdrawals are signed by the reserved-input wallet signing of
+/// <c>VlsLightningSigner.Anchors.cs</c> (VLS <c>check_onchain_tx</c>); their destination must be on VLS's allowlist,
+/// which only the approval credential extends (<see cref="VlsWalletApprovalClient"/>). No generic digest or key signing.
 /// </summary>
 public sealed partial class VlsLightningSigner
 {
@@ -104,69 +100,6 @@ public sealed partial class VlsLightningSigner
         if (LightningMessageSignature.Recover(message, signature) != GetNodePublicKey())
             throw new SignerException("VLS message signature does not recover the node key.");
         return signature;
-    }
-
-    /// <summary>
-    /// Signs a withdrawal whose inputs are all P2WPKH wallet outputs of <paramref name="reservationId"/>. VLS's
-    /// on-chain policy accepts only outputs to its wallet (change) or to an allowlisted destination, so the operator
-    /// allowlists the destination first through the approval socket.
-    /// </summary>
-    public bool SignWalletTransaction(SignedTransaction unsignedTransaction, Guid reservationId,
-                                      IReadOnlyList<SpentOutput> otherSpentOutputs)
-    {
-        ArgumentNullException.ThrowIfNull(unsignedTransaction);
-        ArgumentNullException.ThrowIfNull(otherSpentOutputs);
-        if (otherSpentOutputs.Count > 0)
-            throw new NotSupportedException("VLS signs wallet-only transactions; non-wallet inputs are refused.");
-        if (wallet is null)
-            throw new SignerException("VLS wallet context unavailable.");
-
-        var tx = Transaction.Load(unsignedTransaction.RawTxBytes, Network.RegTest);
-        var keys = new VlsSecureKeyManager(connection);
-        var inputs = new JsonArray();
-        var prev = new JsonArray();
-        var outputs = new JsonArray();
-        foreach (var input in tx.Inputs)
-        {
-            var txId = new TxId(input.PrevOut.Hash.ToBytes());
-            if (!wallet.TryGetUtxo(txId, input.PrevOut.N, out var utxo))
-                throw new SignerException($"Input {input.PrevOut} is not a VLS wallet output.");
-            if (utxo.LockedToChannelId is not null || !wallet.TryGetFeeReservation(txId, input.PrevOut.N, out var held)
-             || held != reservationId)
-                throw new SignerException($"Wallet input {input.PrevOut} is not held by reservation {reservationId}.");
-            if (utxo.AddressType != AddressType.P2Wpkh || utxo.WalletAddress is not { AccountIndex: 0 } address)
-                throw new SignerException($"Wallet input {input.PrevOut} is not a VLS P2WPKH wallet output.");
-
-            var index = address.DerivationIndex ?? utxo.AddressIndex;
-            var script = new PubKey(keys.GetWalletPublicKey(index, utxo.IsAddressChange, AddressType.P2Wpkh))
-                        .WitHash.ScriptPubKey;
-            if (BitcoinAddress.Create(address.Address, Network.RegTest).ScriptPubKey != script)
-                throw new SignerException("Wallet address does not match VLS derivation.");
-            inputs.Add("m/" + VlsSecureKeyManager.WalletIndex(index, utxo.IsAddressChange));
-            prev.Add(new JsonObject { ["value"] = utxo.Amount.Satoshi, ["script_pubkey"] = script.ToHex() });
-        }
-
-        // Change goes back to a VLS wallet path; any other output must be on VLS's allowlist
-        foreach (var output in tx.Outputs)
-            outputs.Add(FindWalletPath(output.ScriptPubKey) ?? "m");
-        var command = new JsonObject
-        {
-            ["op"] = "wallet_sign",
-            ["transaction"] = tx.ToHex(),
-            ["input_paths"] = inputs,
-            ["prev_outputs"] = prev,
-            ["output_paths"] = outputs
-        };
-        var witnesses = connection.Invoke(VlsOperations.WalletSign, command).GetProperty("witnesses")
-                                  .EnumerateArray().ToArray();
-        if (witnesses.Length != tx.Inputs.Count)
-            throw new SignerException("VLS wallet witness count mismatch.");
-        for (var i = 0; i < witnesses.Length; i++)
-            tx.Inputs[i].WitScript = new WitScript(witnesses[i].EnumerateArray()
-                                                               .Select(w => Convert.FromHexString(w.GetString()!))
-                                                               .ToArray());
-        unsignedTransaction.RawTxBytes = tx.ToBytes();
-        return true;
     }
 
     private static (ShortChannelId ShortChannelId, CompactPubKey NodeId1, CompactPubKey NodeId2,

@@ -50,6 +50,8 @@ public sealed class VlsPublicSigningTests
         Assert.Throws<NotSupportedException>(() => signer.SignLightningMessage(message, singleHash: true));
     }
 
+    /// <remarks>The wallet signing is the anchors lane's (<c>VlsLightningSigner.Anchors.cs</c>, NL-1325); this proves
+    /// the allowlist that withdrawals add to it once both lanes are merged.</remarks>
     [Fact(Explicit = true)]
     public async Task Given_ReservedVlsWalletInputs_When_TheOperatorAllowlistsTheDestination_Then_VlsSignsAScriptValidWithdrawal()
     {
@@ -78,10 +80,8 @@ public sealed class VlsPublicSigningTests
 
         // Act and assert: an unknown destination is refused by VLS's on-chain policy
         Assert.ThrowsAny<Exception>(() => signer.SignWalletTransaction(Unsigned(tx), reservation, []));
-        // ... another reservation's spend and a non-wallet input are refused before VLS
+        // ... another reservation's spend is refused before VLS
         Assert.Throws<SignerException>(() => signer.SignWalletTransaction(Unsigned(tx), Guid.NewGuid(), []));
-        Assert.Throws<NotSupportedException>(() => signer.SignWalletTransaction(
-            Unsigned(tx), reservation, [new SpentOutput(funding, 9, LightningMoney.Satoshis(1), new BitcoinScript([0x51]))]));
         // ... the node credential cannot allowlist
         var byNode = await gateway.ExchangeAsync(new { op = "allowlist_address", address = destination.ToString() },
                                                  ct: ct);

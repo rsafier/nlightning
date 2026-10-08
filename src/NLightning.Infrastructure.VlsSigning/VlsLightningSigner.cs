@@ -154,6 +154,7 @@ public sealed partial class VlsLightningSigner(VlsSignerConnection connection, V
     public CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context) => throw Unsupported();
     public bool SignWalletTransaction(SignedTransaction unsignedTransaction) => throw new NotSupportedException("VLS prototype only permits policy-checked channel funding transactions.");
     public bool SignWalletTransaction(SignedTransaction unsignedTransaction, IReadOnlyList<SpentOutput> otherSpentOutputs) => throw Unsupported();
+    public bool SignWalletTransaction(SignedTransaction unsignedTransaction, Guid reservationId, IReadOnlyList<SpentOutput> otherSpentOutputs) => throw Unsupported();
     public bool SignFundingTransaction(ChannelId channelId, SignedTransaction unsignedTransaction)
     {
         if (wallet is null) throw new SignerException("VLS wallet context unavailable.");

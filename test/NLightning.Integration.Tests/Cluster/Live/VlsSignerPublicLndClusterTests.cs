@@ -24,6 +24,7 @@ using ClusterPoll = Testing.Cluster.Poll;
 /// Live proof of the public-channel, withdrawal and signmessage paths of the VLS signer (NL-1335) against LND: LND
 /// learns our public channel and node by gossip (so it verified our VLS-signed announcements), verifies a message we
 /// signed through VLS, and Bitcoin Core accepts and confirms a withdrawal VLS signed to an operator-allowlisted address.
+/// The withdrawal's wallet signing is the anchors lane's (<c>VlsLightningSigner.Anchors.cs</c>, NL-1325).
 /// </summary>
 [Trait("Category", "Cluster")]
 public class VlsSignerPublicLndClusterTests
