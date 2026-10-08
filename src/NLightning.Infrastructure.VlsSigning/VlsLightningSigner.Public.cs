@@ -18,8 +18,8 @@ namespace NLightning.Infrastructure.VlsSigning;
 /// </summary>
 public sealed partial class VlsLightningSigner
 {
-    private const uint SignChannelAnnouncementOperation = 2100;
-    private const uint SignMessageOperation = 2101;
+    private const uint SignChannelAnnouncementOperation = 2200;
+    private const uint SignMessageOperation = 2201;
 
     /// <inheritdoc />
     public ChannelAnnouncementSignatures SignChannelAnnouncement(ChannelId channelId,
