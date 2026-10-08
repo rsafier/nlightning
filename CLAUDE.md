@@ -4,7 +4,7 @@
 
 Current delivery goal: [native signer coverage, independent authorization and fenced recovery, explicit contexts, and two isolated hosted nodes](docs/agents/NATIVE_SIGNER_HOSTED_NODES_GOAL.md). Public documentation and PR descriptions/comments for this work must stay within that goal's four milestones.
 
-FAFO compatibility policy (owner decision, 2026-10-07): the owner is currently the only user; backward compatibility with prior versions is not required. Breaking changes and fresh backend identities/wallets/channels are acceptable. Do not plan legacy key/channel/state migration unless explicitly requested. Recovery and safety for active channels remain requirements.
+FAFO compatibility policy (owner decisions 2026-10-07 and 2026-10-08): the no-backward-compatibility rule applies to the remote signer backends only (VLS and the native remote signer, whose key structures differ): they start with fresh identities, wallets and channels, and legacy key/channel/state migration into them is not planned. Standard mode (`Signing:Mode=Local`, the local key file) stays backward compatible: existing nodes upgrade in place with their keys, channels and history (an existing local database is adopted by the signing enrollment when its channels match the key file, NL-1340). Recovery and safety for active channels remain requirements.
 
 NLightning works as a fully functioning, spec-compliant BOLT Lightning node: interoperates with LND/CLN/Eclair/LDK, and can open, operate, route through and close channels safely with real funds. The BOLT specs are authoritative; every protocol piece is validated with official test vectors.
 

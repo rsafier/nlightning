@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Node;
 
+using Domain.Channels.ValueObjects;
 using Domain.Protocol.ValueObjects;
 using Domain.Signing;
 using Persistence.Contexts;
@@ -11,7 +12,17 @@ using Persistence.Entities.Node;
 /// <summary>Immutable database enrollment is checked before runtime services can create key-bearing state.</summary>
 public sealed class NodeSigningEnrollmentStore(NLightningDbContext database)
 {
-    public async Task ValidateAsync(NodeSigningContext context, CancellationToken cancellationToken = default)
+    public Task ValidateAsync(NodeSigningContext context, CancellationToken cancellationToken = default)
+        => ValidateAsync(context, null, cancellationToken);
+
+    /// <summary>
+    /// <paramref name="localKeyBasepoints"/> is the local key file's channel derivation, given only in local signing mode:
+    /// a database from before signing enrollment is then adopted in place (standard nodes upgrade with their keys,
+    /// channels and history), but only when every local channel's stored basepoints are the ones this key file derives
+    /// at the channel's key index. Remote signing modes never adopt existing state.
+    /// </summary>
+    public async Task ValidateAsync(NodeSigningContext context, Func<uint, ChannelBasepoints>? localKeyBasepoints,
+                                    CancellationToken cancellationToken = default)
     {
         context.Validate();
         await using var transaction = await database.Database.BeginTransactionAsync(IsolationLevel.Serializable,
@@ -32,7 +43,11 @@ public sealed class NodeSigningEnrollmentStore(NLightningDbContext database)
         else
         {
             if (await HasAuthorityStateAsync(database, cancellationToken))
-                throw new InvalidOperationException("An existing node database without signing enrollment cannot be adopted by a new context.");
+            {
+                if (localKeyBasepoints is null)
+                    throw new InvalidOperationException("An existing node database without signing enrollment cannot be adopted by a new context.");
+                await EnsureLocalKeyOwnsChannelsAsync(database, localKeyBasepoints, cancellationToken);
+            }
             database.Set<NodeSigningEnrollmentEntity>().Add(new NodeSigningEnrollmentEntity
             {
                 Id = 1,
@@ -47,6 +62,24 @@ public sealed class NodeSigningEnrollmentStore(NLightningDbContext database)
             await database.SaveChangesAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task EnsureLocalKeyOwnsChannelsAsync(NLightningDbContext database,
+                                                              Func<uint, ChannelBasepoints> localKeyBasepoints,
+                                                              CancellationToken cancellationToken)
+    {
+        // Funding keys rotate with splices; the other basepoints are fixed by the channel's key index
+        var keySets = await database.ChannelKeySets.AsNoTracking().Where(k => k.IsLocal).ToListAsync(cancellationToken);
+        foreach (var keySet in keySets)
+        {
+            var derived = localKeyBasepoints(keySet.KeyIndex);
+            if (!keySet.RevocationBasepoint.AsSpan().SequenceEqual((byte[])derived.RevocationBasepoint)
+             || !keySet.PaymentBasepoint.AsSpan().SequenceEqual((byte[])derived.PaymentBasepoint)
+             || !keySet.DelayedPaymentBasepoint.AsSpan().SequenceEqual((byte[])derived.DelayedPaymentBasepoint)
+             || !keySet.HtlcBasepoint.AsSpan().SequenceEqual((byte[])derived.HtlcBasepoint))
+                throw new InvalidOperationException(
+                    "The node database's channels were not created by this key file; it cannot be adopted.");
+        }
     }
 
     private static async Task<bool> HasAuthorityStateAsync(NLightningDbContext database, CancellationToken cancellationToken)

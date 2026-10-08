@@ -202,10 +202,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 95 | 97 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 73 | 264 | 535 | 887 |
+| fixed | 15 | 74 | 264 | 535 | 888 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **74** | **283** | **652** | **1024** |
+| **Total** | **15** | **75** | **283** | **652** | **1025** |
 
 ### Epics
 
@@ -10850,6 +10850,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** a VLS withdrawal's `wallet_sign` gets a gateway receipt, but the node does not persist its request ID and command before dispatch (`WalletSpendService` only captures workflows for the native signer). A crash between the signature and the `WalletSend` row leaves the reservation to the orphan sweep and a signed transaction the node cannot reconcile; funding and close have the same gap (NL-1307).
 - **Fix sketch:** capture the withdrawal's VLS request in the workflow coordinator before dispatch and reconcile its receipt at startup, as the native withdrawal recovery does.
 - **Blocks/Blocked-by:** NL-1307, NL-1335
+
+### NL-1340 Signing enrollment refused to start existing standard (local key) nodes
+- **Status:** fixed (see commit)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Node/NodeSigningEnrollmentStore.cs`, `src/NLightning.Daemon/Extensions/NodeSigningEnrollmentExtensions.cs`
+- **Evidence:** `NodeSigningEnrollmentStore.ValidateAsync` refused any database without an enrollment row that held channels, wallet, invoices, payments or accounting ("An existing node database without signing enrollment cannot be adopted by a new context"), in every signing mode. Every existing standard node (FAFO1-3, the signet node) would have stopped at startup after upgrading to this branch. Owner clarification (2026-10-08): the no-compatibility policy is for the VLS/native remote signer key structures only; local-key nodes must upgrade in place.
+- **Fix:** in local signing mode the daemon passes the local signer's channel derivation; a pre-enrollment database is adopted (enrolled once to the configured context and the key file's node key) only when every local `ChannelKeySets` row's revocation, payment, delayed-payment and HTLC basepoints are the ones the key file derives at that row's key index (funding keys rotate with splices and are not compared). A database whose channels came from another key file is refused without enrollment. A local database with no channels is adopted (its wallet can only be the key file's own). RemoteNative and VLS modes never adopt existing state. Tests: `Daemon.Tests/Configuration/NodeSigningEnrollmentTests` (adoption, foreign key file refused, wallet-only adoption, existing refusals unchanged), 14/14.
 
 ### NL-1320 VLS node could not resolve any output on chain after a force close
 - **Status:** fixed (branch `wip/vls-onchain`)

@@ -1,6 +1,8 @@
+using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using NBitcoin;
 using NLightning.Daemon.Extensions;
+using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Signing;
 using NLightning.Infrastructure.Persistence.Contexts;
@@ -8,6 +10,7 @@ using NLightning.Infrastructure.Persistence.Entities.Bitcoin;
 using NLightning.Infrastructure.Persistence.Entities.Node;
 using NLightning.Infrastructure.Persistence.Enums;
 using NLightning.Infrastructure.Persistence.Providers;
+using NLightning.Infrastructure.Repositories.Database.Node;
 
 namespace NLightning.Daemon.Tests.Configuration;
 
@@ -132,6 +135,82 @@ public sealed class NodeSigningEnrollmentTests
             entry => entry.State is EntityState.Added or EntityState.Modified);
     }
 
+    [Fact]
+    public async Task Given_ALocalNodeDatabaseFromBeforeEnrollment_When_ItsKeyFileDerivesItsChannels_Then_ItIsAdoptedInPlace()
+    {
+        // Arrange: a standard (local key file) node upgraded in place, with a channel created by that key file
+        await using var fixture = await DatabaseFixture.CreateAsync();
+        await using var database = fixture.Open();
+        var owned = Basepoints();
+        await AddLocalKeySetAsync(database, 7, owned);
+
+        // Act
+        await database.GetEnrollmentStore().ValidateAsync(Context(), index => index == 7 ? owned : Basepoints(),
+            TestContext.Current.CancellationToken);
+
+        // Assert: enrolled once to this identity; a restart validates against it, a remote mode keeps refusing others
+        var enrolled = await database.NodeSigningEnrollments.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal((byte[])s_identity, enrolled.NodePublicKey);
+        await NodeSigningEnrollmentExtensions.ValidateNodeSigningEnrollmentAsync(database, Context(),
+            TestContext.Current.CancellationToken);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => NodeSigningEnrollmentExtensions
+            .ValidateNodeSigningEnrollmentAsync(database, Context() with { OwnerId = "owner-b" },
+                TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_ALocalNodeDatabaseFromAnotherKeyFile_When_Adopted_Then_ItIsRefusedWithoutEnrollment()
+    {
+        // Arrange
+        await using var fixture = await DatabaseFixture.CreateAsync();
+        await using var database = fixture.Open();
+        await AddLocalKeySetAsync(database, 7, Basepoints());
+        var other = Basepoints();
+
+        // Act
+        await Assert.ThrowsAsync<InvalidOperationException>(() => database.GetEnrollmentStore()
+            .ValidateAsync(Context(), _ => other, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Empty(await database.NodeSigningEnrollments.ToListAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(1, await database.ChannelKeySets.CountAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_ALocalWalletOnlyDatabaseFromBeforeEnrollment_When_Validated_Then_ItIsAdopted()
+    {
+        // Arrange: no channels to prove the key with; a local node's wallet can only be its own key file's
+        await using var fixture = await DatabaseFixture.CreateAsync();
+        await using var database = fixture.Open();
+        database.WalletAccounts.Add(new WalletAccountEntity { Name = "default-wallet" });
+        await database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        await database.GetEnrollmentStore().ValidateAsync(Context(), _ => Basepoints(),
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Single(await database.NodeSigningEnrollments.ToListAsync(TestContext.Current.CancellationToken));
+    }
+
+    private static ChannelBasepoints Basepoints() => new(Point(), Point(), Point(), Point(), Point());
+    private static CompactPubKey Point() => new(new Key().PubKey.ToBytes());
+
+    private static async Task AddLocalKeySetAsync(NLightningDbContext database, uint keyIndex, ChannelBasepoints basepoints)
+    {
+        // Written as an old database file holds it (the channel row is not needed for the enrollment check)
+        await database.Database.OpenConnectionAsync(TestContext.Current.CancellationToken);
+        await database.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;", TestContext.Current.CancellationToken);
+        await database.Database.ExecuteSqlRawAsync(
+            "INSERT INTO ChannelKeySets (ChannelId, IsLocal, FundingPubKey, RevocationBasepoint, PaymentBasepoint, "
+          + "DelayedPaymentBasepoint, HtlcBasepoint, CurrentPerCommitmentIndex, CurrentPerCommitmentPoint, KeyIndex) "
+          + "VALUES ({0}, 1, {1}, {2}, {3}, {4}, {5}, 0, {6}, {7})",
+            [RandomNumberGenerator.GetBytes(32), (byte[])basepoints.FundingPubKey, (byte[])basepoints.RevocationBasepoint,
+             (byte[])basepoints.PaymentBasepoint, (byte[])basepoints.DelayedPaymentBasepoint,
+             (byte[])basepoints.HtlcBasepoint, (byte[])Point(), (long)keyIndex], TestContext.Current.CancellationToken);
+        await database.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;", TestContext.Current.CancellationToken);
+    }
+
     private sealed class DatabaseFixture(string path) : IAsyncDisposable
     {
         private string PathName => path;
@@ -158,4 +237,9 @@ public sealed class NodeSigningEnrollmentTests
             return ValueTask.CompletedTask;
         }
     }
+}
+
+internal static class EnrollmentStoreTestExtensions
+{
+    public static NodeSigningEnrollmentStore GetEnrollmentStore(this NLightningDbContext database) => new(database);
 }
