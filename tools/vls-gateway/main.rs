@@ -223,10 +223,6 @@ enum Command {
         output_paths: Vec<String>,
     },
     // --- end of the on-chain resolution commands ---
-    Reconcile {
-        id: String,
-        command: Box<Command>,
-    },
     // Anchors lane: see the anchors block at the end of this file
     SignHolderAnchor {
         channel: String,
@@ -238,6 +234,10 @@ enum Command {
         input_paths: Vec<String>,
         prev_outputs: Vec<TxOut>,
         output_paths: Vec<String>,
+    },
+    Reconcile {
+        id: String,
+        command: Box<Command>,
     },
 }
 #[derive(Deserialize)]
