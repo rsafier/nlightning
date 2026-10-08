@@ -85,14 +85,15 @@ public sealed class VlsChannelMappingRegistry(VlsSignerConnection connection, IS
 
     internal static void ValidateChannelProfile(ChannelModel channel)
     {
-        if (channel.Version != ChannelVersion.V1 || channel.ChannelParams.OptionAnchorOutputs
+        // Zero-fee-HTLC anchors (VLS AnchorsZeroFeeHtlc) and static-remotekey are both in the profile
+        if (channel.Version != ChannelVersion.V1
          || channel.ChannelParams.OptionSimpleTaproot || channel.ChannelParams.HasInferredParams
          || channel.ChannelParams.AnnounceChannel || channel.ChannelParams.MinimumDepth == 0
          || channel.LocalFundingKeyIndex != 0 || channel.FundingKeysUnknown)
-            throw new InvalidOperationException("Persisted channel is outside the VLS single-funded static-remotekey prototype.");
+            throw new InvalidOperationException("Persisted channel is outside the VLS single-funded ECDSA prototype.");
         if (channel.ChannelParams.Local.HtlcMinimumAmount < LightningMoney.Satoshis(1_000)
          || channel.Commitments is { } commitments
-         && (commitments.Params.MaxDustHtlcExposureMsat != 0 || commitments.Params.OptionAnchors
+         && (commitments.Params.MaxDustHtlcExposureMsat != 0 || commitments.Params.OptionAnchors != channel.ChannelParams.OptionAnchorOutputs
           || commitments.Params.OptionSimpleTaproot || commitments.PendingFundings.Count != 0))
             throw new InvalidOperationException("Persisted VLS channel requires zero dust exposure and a minimum HTLC of 1,000 satoshis.");
         if (channel.Commitments is null && channel.State is ChannelState.Open or ChannelState.ShuttingDown)
