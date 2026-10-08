@@ -212,6 +212,18 @@ enum Command {
         id: String,
         command: Box<Command>,
     },
+    // Anchors lane: see the anchors block at the end of this file
+    SignHolderAnchor {
+        channel: String,
+        transaction: String,
+        input: usize,
+    },
+    WalletSignFeeInputs {
+        transaction: String,
+        input_paths: Vec<String>,
+        prev_outputs: Vec<TxOut>,
+        output_paths: Vec<String>,
+    },
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -666,6 +678,8 @@ impl Gateway {
             | Command::SignCounterpartyHtlcSweep { .. }
             | Command::SignJusticeSweep { .. }
             | Command::SignToRemoteSweep { .. }) => self.dispatch_onchain(command),
+            Command::SignHolderAnchor { channel: ch, transaction, input } => self.sign_holder_anchor(&ch, &transaction, input),
+            Command::WalletSignFeeInputs { transaction, input_paths, prev_outputs, output_paths } => self.wallet_sign_fee_inputs(&transaction, input_paths, prev_outputs, output_paths),
             Command::Reconcile {..} => unreachable!()
         }
     }
@@ -931,6 +945,98 @@ impl Gateway {
     }
 }
 // --- end of BOLT 5 on-chain resolution ---
+// ---- Anchors lane (zero-fee-HTLC anchors channels): CPFP of our commitment through our anchor ----
+// `sign_holder_anchor` signs the input spending our keyed anchor (VLS Channel::sign_holder_anchor_input: the funding key
+// over <funding_pubkey> OP_CHECKSIG OP_IFDUP OP_NOTIF OP_16 OP_CSV OP_ENDIF and 330 sat, SIGHASH_ALL), so the signature
+// can only ever spend an anchor keyed to this channel's funding key. `wallet_sign_fee_inputs` signs the P2WPKH wallet
+// inputs of a transaction that also spends foreign inputs (an anchor, an HTLC output): the foreign inputs carry the
+// master path "m" and are left unsigned, every output must be ours (VLS onchain policy: no unknown destinations) and
+// the fee goes through VLS's fee range and fee velocity checks.
+impl Gateway {
+    fn sign_holder_anchor(
+        &self,
+        ch: &str,
+        transaction: &str,
+        input: usize,
+    ) -> Result<Value, String> {
+        let tx: Transaction =
+            deserialize(&hex::decode(transaction).map_err(|_| "invalid transaction hex")?)
+                .map_err(|_| "invalid transaction")?;
+        if input >= tx.input.len() {
+            return Err("anchor input index out of range".into());
+        }
+        let sig = self
+            .node
+            .with_channel(&channel(ch)?, |c| c.sign_holder_anchor_input(&tx, input))
+            .map_err(|e| e.to_string())?;
+        Ok(json!({"signature": hex::encode(sig.serialize_compact())}))
+    }
+    fn wallet_sign_fee_inputs(
+        &self,
+        transaction: &str,
+        input_paths: Vec<String>,
+        prev_outputs: Vec<TxOut>,
+        output_paths: Vec<String>,
+    ) -> Result<Value, String> {
+        let tx: Transaction =
+            deserialize(&hex::decode(transaction).map_err(|_| "invalid transaction hex")?)
+                .map_err(|_| "invalid transaction")?;
+        if tx.input.len() != input_paths.len()
+            || tx.input.len() != prev_outputs.len()
+            || tx.output.len() != output_paths.len()
+        {
+            return Err("wallet context length mismatch".into());
+        }
+        let parse = |p: String| DerivationPath::from_str(&p).map_err(|_| "invalid wallet path");
+        let ip = input_paths
+            .into_iter()
+            .map(parse)
+            .collect::<Result<Vec<_>, _>>()?;
+        let op = output_paths
+            .into_iter()
+            .map(parse)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut wallet_inputs = 0;
+        for (path, prev) in ip.iter().zip(&prev_outputs) {
+            if path.is_empty() {
+                continue;
+            }
+            if path.len() != 1 || !prev.script_pubkey.is_p2wpkh() {
+                return Err("only native P2WPKH wallet inputs supported".into());
+            }
+            let pubkey = self
+                .node
+                .get_account_extended_pubkey()
+                .derive_pub(&Secp256k1::verification_only(), path)
+                .map_err(|_| "invalid wallet derivation")?
+                .public_key;
+            let compressed = lightning_signer::bitcoin::CompressedPublicKey(pubkey);
+            let expected =
+                lightning_signer::bitcoin::Address::p2wpkh(&compressed, Network::Regtest)
+                    .script_pubkey();
+            if prev.script_pubkey != expected {
+                return Err("wallet input script mismatch".into());
+            }
+            wallet_inputs += 1;
+        }
+        if wallet_inputs == 0 {
+            return Err("no wallet input to sign".into());
+        }
+        let uc = vec![None; tx.input.len()];
+        self.node
+            .check_onchain_tx(&tx, &vec![true; tx.input.len()], &prev_outputs, &uc, &op)
+            .map_err(|e| e.to_string())?;
+        let witnesses = self
+            .node
+            .unchecked_sign_onchain_tx(&tx, &ip, &prev_outputs, uc)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({"witnesses": witnesses
+            .into_iter()
+            .map(|w| w.into_iter().map(hex::encode).collect::<Vec<_>>())
+            .collect::<Vec<_>>()}))
+    }
+}
+// ---- end of the anchors lane block ----
 fn handle(stream: UnixStream, gateway: &Gateway, admin: bool) -> std::io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;

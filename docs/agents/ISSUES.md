@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 91 | 93 |
+| open | 0 | 0 | 2 | 93 | 95 |
 | in-progress | 0 | 0 | 7 | 0 | 7 |
-| fixed | 15 | 72 | 260 | 535 | 882 |
+| fixed | 15 | 72 | 261 | 535 | 883 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **72** | **278** | **648** | **1013** |
+| **Total** | **15** | **72** | **279** | **650** | **1016** |
 
 ### Epics
 
@@ -9812,6 +9812,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `src/NLightning.Infrastructure.VlsSigning/`, `tools/vls-gateway/`, `docs/agents/VLS_NODE_MVP.md`, application commitment/revocation hooks
 - **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The core spike uses artificial fixtures and DummyPersister. The subsequent `tools/vls-gateway` prototype has authenticated Unix semantic commands, separately credentialed keysend approval, injected seed and atomic transactional Redb policy-state/receipts, plus actual-process restart and policy/signature checks. The fresh-node sprint adds a C# semantic adapter, signed-invoice approval and a conservative regtest private-channel profile, with durable allocation/opening/commitment/activation/revocation workflows. Current acceptance execution is recorded in `docs/agents/VLS_NODE_MVP.md`. Full on-chain claims/penalties/sweeps, independent chain tracking, broader close recovery, external state freshness/fencing and enclave deployment remain unproven. Stock splice/taproot support is insufficient for the current node feature set.
 - **Progress (lane vls-onchain, NL-1320):** on-chain resolution of static_remotekey channels goes through VLS's semantic signers (HTLC transactions, delayed sweeps, claims on the peer's commitment, penalties, `to_remote`) and is proven live against LND for both force closes with an HTLC each way and an LND `channel.db` rollback penalty; anchors stay refused, and the sweep signatures are not node-owned workflows (NL-1321) nor checked against a tracked chain (NL-1322).
+- **Progress (anchors lane, 2026-10-08):** zero-fee-HTLC anchors channels are in the profile, and the CPFP of our commitment through our anchor (VLS `sign_holder_anchor_input` plus wallet fee inputs under VLS's onchain policy) is proven live against LND (NL-1325); anchors HTLC second-level transactions stay with the on-chain gate.
 - **Fix sketch:** FAFO owner decision (2026-10-07): only user, no prior-version compatibility requirement; use stock VLS derivation with fresh identities/wallets/channels and exclude legacy key/state migration. Extend the fresh-node ECDSA adapter beyond its bounded regtest proof: add complete on-chain claims and sweeps for anchors channels, independent chain tracking, application recovery for uncertain funding/close outcomes, and externally fenced signer state without native fallback.
 - **Blocks/Blocked-by:** NL-1304; scope and acceptance gates in the VLS assessment
 
@@ -10847,4 +10848,30 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `tools/vls-gateway/main.rs`; VLS `SimpleValidator::validate_{delayed,counterparty_htlc,justice}_sweep` (`policy-sweep-locktime`, `MAX_CHAIN_LAG` 2)
 - **Evidence:** VLS checks a sweep's `nLockTime` against the channel monitor's height + 2, and the gateway never adds blocks to VLS's chain tracker. Our sweeps use `nLockTime` 0 (timeout claims their `cltv_expiry`, checked against the script instead), so they pass; a sweep with an anti-fee-sniping locktime at the current height would be refused, and VLS's chain-state policies (funding depth, closing depth) see no chain.
 - **Fix sketch:** independent chain tracking for VLS (headers and TXOO proofs through `ChainTracker::add_block`), part of NL-1307's chain-tracking gate; until then keep sweep locktimes at 0 or `cltv_expiry`.
+
+### NL-1325 VLS mode refused anchors channels and the CPFP of our commitment
+- **Status:** fixed (c3e86ee1)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Configuration/VlsCapabilityProfile.cs`, `VlsChannelMappingRegistry.ValidateChannelProfile`, `src/NLightning.Infrastructure.VlsSigning/VlsLightningSigner.Anchors.cs`, `tools/vls-gateway/main.rs` (anchors block)
+- **Evidence:** the VLS profile forced `option_anchors` off, persisted anchors channels failed the startup check, and `SignAnchorInput`/`SignWalletTransaction` threw, although pinned VLS `cb8a64c7` signs `AnchorsZeroFeeHtlc` commitments (HTLC signatures `SIGHASH_SINGLE|ANYONECANPAY`) and offers `Channel::sign_holder_anchor_input` and `check_onchain_tx`/`unchecked_sign_onchain_tx`.
+- **Fix:** anchors stay as configured (Optional by default) and validate; the gateway's `sign_holder_anchor` and `wallet_sign_fee_inputs` back `SignAnchorInput` (checked locally against our keyed anchor script) and the `SignWalletTransaction` overloads (only P2WPKH inputs held by a fee reservation are signed; foreign inputs need their spent output and stay unsigned; every output must be ours under VLS's onchain policy). No local-key fallback. Proofs: `VlsAnchorsChannelHarnessTests` 2/2, `VlsChannelProfileTests` anchors cases, `VlsSigningConfigurationTests` anchors theory, live `Cluster/Live/VlsSignerLndAnchorsClusterTests` against LND green twice (batches rc-20261008173215, rc-20261008173857 on c3e86ee1) (anchors open, payments both ways in fractional msat, force close, the child through our anchor and a wallet input mined the zero-priority commitment in the same block).
+- **Blocks/Blocked-by:** NL-1307
+
+### NL-1326 VLS signs any spend of an anchor keyed to our funding key
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** pinned VLS `Channel::sign_holder_anchor_input`; gateway `sign_holder_anchor`
+- **Evidence:** VLS checks nothing about the transaction it signs for the anchor input (no commitment binding, no fee check of the child): the signature commits only to the outpoint, the keyed anchor script and 330 sat. The exposure is the 330-sat anchor itself; the wallet inputs of a child still go through VLS's onchain policy.
+- **Fix sketch:** have the gateway require the spent outpoint to be an anchor output of a holder or counterparty commitment VLS signed or validated for that channel, or upstream a policy check.
+- **Blocks/Blocked-by:** NL-1307
+
+### NL-1327 VLS onchain policy refuses wallet spends to foreign destinations
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `VlsLightningSigner.Anchors.cs` `SignFeeInputs`, VLS `validate_onchain_tx` (`policy-onchain-no-unknown-outputs`)
+- **Evidence:** the fee-input signing path accepts only outputs it can map to a VLS wallet path; any other destination (an operator `withdraw` to an external address, an LND-gRPC `SendCoins`) is refused by VLS with "unknown destinations". The CPFP child and the reclaim of its inputs pay our own wallet and are signed.
+- **Fix sketch:** an explicit operator approval or allowlist path (VLS `add_allowlist`/approval on the separately credentialed socket) for foreign destinations; never a local-key fallback.
 - **Blocks/Blocked-by:** NL-1307

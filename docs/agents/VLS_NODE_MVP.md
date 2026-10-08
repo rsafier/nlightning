@@ -42,12 +42,13 @@ separate backend; neither transport is a Nitro/vsock implementation.
 ## Supported prototype profile
 
 The host suppresses unsupported features before negotiation and validates the
-profile after options configuration. The initial profile is regtest, private,
-single-funded static-remotekey ECDSA channels. Regtest is this adapter
+profile after options configuration. The profile is regtest, private,
+single-funded ECDSA channels: static-remotekey or zero-fee-HTLC anchors (VLS
+`AnchorsZeroFeeHtlc`, `option_anchors` Optional as in native mode; NL-1325). Regtest is this adapter
 prototype's acceptance boundary, not a restriction imposed by VLS upstream. It supports node ECDH, BOLT 11,
 typed v1 gossip payloads, P2WPKH wallet funding, semantic commitments and peer
 revocations, and channel close signing. Public channels, outbound push amounts,
-anchors, taproot, dual funding, splicing, zero-conf, simple close, gossip v2,
+taproot, dual funding, splicing, zero-conf, simple close, gossip v2,
 BOLT 12, blinded/onion-message features, peer storage and native backups are
 outside this profile. Dust HTLCs are unsupported by this pinned VLS phase-two
 accounting path: the host advertises a 1,000-satoshi minimum HTLC and sets zero
@@ -247,3 +248,26 @@ import the runner into the selected cluster, then use:
 ```bash
 NLTG_RUNNER_IMAGE=nltg-spike-runner:YOUR_TAG scripts/run-cluster.sh --no-build -n 1 -p integration --class NLightning.Integration.Tests.Cluster.Live.VlsSignerInClusterRunnerTests --context YOUR_CONTEXT --timeout 1500
 ```
+
+## Anchors channels (NL-1325, 2026-10-08)
+
+Pinned VLS `cb8a64c7` handles `AnchorsZeroFeeHtlc` in setup, phase-two commitment
+signing and holder validation (HTLC signatures `SIGHASH_SINGLE|ANYONECANPAY`), and
+offers `Channel::sign_holder_anchor_input` (funding key over the keyed anchor
+script, 330 sat, `SIGHASH_ALL`; no policy binds it to a commitment, NL-1326) and
+`check_onchain_tx`/`unchecked_sign_onchain_tx`, which sign wallet inputs and leave
+inputs with an empty derivation path unsigned. The gateway exposes them as
+`sign_holder_anchor` and `wallet_sign_fee_inputs`; `VlsLightningSigner.Anchors.cs`
+implements `SignAnchorInput` (verified locally against our anchor script) and the
+three `SignWalletTransaction` overloads for P2WPKH inputs held by a fee
+reservation, foreign inputs (the anchor) passed with their spent output. VLS's
+onchain policy requires every output to be ours (the child's change), so a spend to
+a foreign address (e.g. `withdraw`) is refused (NL-1327). The 16-block anchor sweep
+needs no signature. The anchors reserve (`IAnchorReserveService`) is signer-independent
+and behaves as in native mode. Proofs: `VlsAnchorsChannelHarnessTests` (anchors
+channel, fractional-msat payments both ways verified by the native peer; CPFP
+child and reclaim script-verified; refusals of a wrong anchor amount, another
+reservation and an unknown destination) and the live
+`Cluster/Live/VlsSignerLndAnchorsClusterTests` (LND: anchors open at 1,000 sat/kw,
+payments both ways, force close, our child through the anchor and a wallet input
+confirms the zero-priority commitment in the same Core block).
