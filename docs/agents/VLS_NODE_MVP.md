@@ -50,11 +50,15 @@ revocations, and channel close signing. Public channels, outbound push amounts,
 anchors, taproot, dual funding, splicing, zero-conf, simple close, gossip v2,
 BOLT 12, blinded/onion-message features, peer storage and native backups are
 outside this profile. Dust HTLCs are unsupported by this pinned VLS phase-two
-accounting path. The host advertises a 1,000-satoshi minimum HTLC and sets zero
-allowed dust exposure. Only whole-satoshi HTLC amounts and balances are supported;
-fractional-satoshi inputs are refused before applying updates. Forwarding uses a
-fixed whole-satoshi base fee and zero proportional fee in this prototype.
-These precision restrictions are temporary guards, not the intended final API.
+accounting path: the host advertises a 1,000-satoshi minimum HTLC and sets zero
+allowed dust exposure. **Millisatoshi amounts are supported** (owner decision
+2026-10-08): the gateway runs VLS's default policy, whose node-wide balance check
+(`enforce_balance`) is off on every VLS network default, so balances, HTLC amounts
+and forwarding fees (base and proportional) keep their exact millisatoshis.
+VLS still checks every payment against its invoice or routed counterpart, the
+routing-fee cap and the CLTV bounds; it sees commitments in whole satoshis, as the
+outputs are. Making `enforce_balance` work with sub-satoshi values would need an
+upstream VLS core change and is not planned.
 Pre-offer, incoming-add and fee-update checks refuse
 trimmed HTLCs before applying updates without weakening VLS balance enforcement.
 Wallet withdrawals, named-account/watch-only imports and
@@ -118,33 +122,21 @@ force-close application recovery beyond the tested cases,
 receipt compaction, deadline monitoring, transport performance, vsock and attested
 seed provisioning remain deployment work. Keep `NL-1307` open for these gates.
 
-## Next engineering step: preserve millisatoshi accounting
+## Millisatoshi accounting (resolved 2026-10-08)
 
-Keep the precision guards until signer-side reconciliation is proven. The node's
-commitment engine retains exact millisatoshi balances and HTLC amounts; Bitcoin
-outputs floor each amount to whole satoshis. The gateway currently transmits only
-those rounded values. At the pinned VLS revision, `HTLCInfo2.value_sat`,
-`CommitmentInfo2`, `RoutedPayment` and claimable-balance summaries use satoshis;
-`claimable_balance` also credits residual output value to the funder. Switching
-from phase two to phase one does not restore the lost precision.
-
-For example, a non-funder with 100,000 satoshis offering a 10,000,001-msat HTLC
-has a 89,999-satoshi main output and a 10,000-satoshi HTLC output. That legitimate
-one-satoshi rounding residual appears to VLS as an unexplained balance loss.
-Rounding payments to whole satoshis or adding a policy epsilon would hide the
-problem rather than preserve the authorization invariant.
-
-The next isolated proof should carry the exact commitment specification alongside
-unchanged Bitcoin outputs, independently reconstruct outputs and fee residuals
-inside the signer, and persist exact-msat policy balances with the original
-request and receipt. Changed msat values sharing the same rounded output must
-still be rejected on retry. Prefer a VLS-core accounting change with a thin
-gateway transport extension; a gateway-only conversion is insufficient. Keep
-zero-dust restrictions for this first proof. Cover both funding roles, both
-commitment holders, bidirectional fractional HTLCs, fulfillment/failure,
-accumulated remainders, forwarding, peer signature verification and crash replay.
-Also replace the existing floating-point `LightningMoney.Satoshi` conversion
-with an integer quotient, with focused large-value boundary checks.
+VLS core counts HTLCs and routed payments in satoshis (`HTLCInfo2.value_sat`,
+`RoutedPayment`). Its per-payment check (`validate_payment_balance`) compares
+floored values, which a forward or an invoice payment never makes unbalanced; only
+the opt-in node-wide `enforce_balance` sees the floored residual as a shortfall.
+The gateway now keeps VLS's default (`enforce_balance` off) and the whole-satoshi
+guards are removed (`wip/vls-msat`). Proofs: `VlsChannelHarnessTests`
+fractional case (both directions, HTLCs in flight both ways, exact msat balances,
+peer-verified commitments) and the live `VlsSignerLndClusterTests` (fractional
+payments both ways across restarts with cooperative and force close, and an
+LND -> VLS -> LND forward of 200,000,123 msat with a 1,001 msat + 1,234 ppm fee
+settled with the exact fee), all green on OrbStack from the host. The gateway
+also makes accepted connections blocking: on BSD/macOS they inherit the
+listener's `O_NONBLOCK`, which dropped requests still in flight.
 
 ## Validation record
 

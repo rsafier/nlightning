@@ -122,7 +122,8 @@ public class VlsSignerLndClusterTests
             Assert.True(afterRestart.Succeeded, afterRestart.FailureReason);
             Assert.True(outgoingAfterRestart.Succeeded, outgoingAfterRestart.FailureReason);
             await WaitLocalBalanceAsync(nltg, fundingTxId, CapacitySat * 1000 - PushMsat - 2 * ToPeerMsat + 2 * ToUsMsat, ct);
-            await WaitLocalBalanceAsync(lnd, fundingTxId, PushMsat + 2 * ToPeerMsat - 2 * ToUsMsat, ct);
+            // LND's ListChannels reports whole satoshis (local_balance): its side matches to the satoshi
+            await WaitLocalBalanceAsync(lnd, fundingTxId, (PushMsat + 2 * ToPeerMsat - 2 * ToUsMsat) / 1000 * 1000, ct);
             Assert.NotNull(channel.ShortChannelId);
             Assert.Equal(channel.ShortChannelId, ourChannel.ShortChannelId?.ToString());
 
