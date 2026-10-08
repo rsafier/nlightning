@@ -18,7 +18,7 @@ public class VlsIncomingDustTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task IncomingFractionalSatoshiAmountsAreRefusedOnlyByVlsBeforePersistence(bool vls)
+    public async Task IncomingFractionalSatoshiAmountsAreAcceptedWithAndWithoutVls(bool vls)
     {
         var context = CreateContext(253);
         var before = context.State;
@@ -26,21 +26,11 @@ public class VlsIncomingDustTests
             LightningMoney.MilliSatoshis(10_000_001UL), TestChannelId, 600, 0, HashOf(SecretOf(1)), Onion));
         var receive = AddHandler(context, vls).HandleAsync(message, ChannelState.Open,
                                                         new FeatureOptions(), PeerNodeId);
-        if (vls)
-        {
-            var error = await Assert.ThrowsAsync<ChannelWarningException>(() => receive);
-            Assert.True(error.CloseConnection);
-            Assert.Contains("whole satoshis", error.Message);
-            Assert.Same(before, context.State);
-            Assert.Empty(context.Calls);
-            Assert.Empty(context.Applied);
-        }
-        else
-        {
-            Assert.Empty(await receive);
-            Assert.Equal(["apply", "save"], context.Calls);
-            Assert.Equal(10_000_001UL, context.State.GetHtlc(HtlcDirection.Incoming, 0)!.AmountMsat);
-        }
+        // VLS's default policy (enforce_balance off) takes millisatoshi HTLC amounts
+        Assert.Empty(await receive);
+        Assert.NotSame(before, context.State);
+        Assert.Equal(["apply", "save"], context.Calls);
+        Assert.Equal(10_000_001UL, context.State.GetHtlc(HtlcDirection.Incoming, 0)!.AmountMsat);
         Assert.Empty(context.LightningSigner.Invocations);
     }
 

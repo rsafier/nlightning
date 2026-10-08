@@ -180,8 +180,7 @@ fn process_restart_atomic_receipts_policy_and_auth() {
     d.call("setup", json!({"op":"setup","channel":ch,"setup":setup}));
     // Independent peer fixture reconstructs the transactions and signs our holder commitment.
     // It is not part of the daemon and does not export keys from it.
-    let mut policy = make_default_simple_policy(Network::Regtest);
-    policy.enforce_balance = true;
+    let policy = make_default_simple_policy(Network::Regtest);
     let fixture = Arc::new(Node::new(
         NodeConfig {
             use_checkpoints: false,

@@ -94,7 +94,8 @@ public class VlsSigningConfigurationTests
         Assert.Equal(FeatureSupport.No, options.Features.DualFund);
         Assert.Equal(FeatureSupport.No, options.Features.OptionProvideStorage);
         Assert.False(profiled.GetValue<bool>("Gossip:AcceptPublicChannels"));
-        Assert.Equal(0U, options.Routing.FeeProportionalMillionths);
+        // The profile no longer forces whole-satoshi forwarding fees
+        Assert.Equal(500U, options.Routing.FeeProportionalMillionths);
         Assert.Empty(ConfigurationCheck.Run(configuration, "regtest"));
         Assert.Equal("Optional", configuration["Node:Features:OptionSimpleTaproot"]);
     }
@@ -115,15 +116,14 @@ public class VlsSigningConfigurationTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void CapabilityValidationRejectsForwardingFeesThatCanProduceFractionalSatoshis(bool proportional)
+    public void CapabilityValidationAcceptsMillisatoshiForwardingFees(bool proportional)
     {
         var options = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest };
         VlsCapabilityProfile.Apply(options);
         if (proportional) options.Routing.FeeProportionalMillionths = 1;
         else options.Routing.FeeBaseMsat = 1_001;
 
-        Assert.Contains(VlsCapabilityProfile.GetValidationErrors(options),
-            message => message.Contains("fixed whole-satoshi forwarding fees", StringComparison.Ordinal));
+        Assert.Empty(VlsCapabilityProfile.GetValidationErrors(options));
     }
 
     private static IConfiguration Configuration(string network, params (string Key, string Value)[] overrides)

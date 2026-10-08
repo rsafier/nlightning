@@ -97,13 +97,7 @@ public sealed class VlsChannelMappingRegistry(VlsSignerConnection connection, IS
             throw new InvalidOperationException("Persisted VLS channel requires zero dust exposure and a minimum HTLC of 1,000 satoshis.");
         if (channel.Commitments is null && channel.State is ChannelState.Open or ChannelState.ShuttingDown)
             throw new InvalidOperationException("An active VLS channel requires a persisted commitment and dust policy.");
-        if (channel.LocalBalance.MilliSatoshi % 1_000 != 0 || channel.RemoteBalance.MilliSatoshi % 1_000 != 0)
-            throw new InvalidOperationException("Persisted VLS channel balances must be whole-satoshi amounts.");
         if (channel.Commitments is not { } state) return;
-        if (state.Htlcs.Values.Any(htlc => htlc.AmountMsat % 1_000 != 0)
-         || HasFractionalAmounts(state.LocalCommit.Spec) || HasFractionalAmounts(state.RemoteCommit.Spec)
-         || state.RemoteNextCommit is { } unacked && HasFractionalAmounts(unacked.Commit.Spec))
-            throw new InvalidOperationException("Persisted VLS channel commitments and HTLCs must use whole-satoshi amounts.");
         foreach (var side in new[] { CommitmentSide.Local, CommitmentSide.Remote })
         {
             var dust = state.Params.Holder(side).DustLimitSatoshis;
@@ -122,10 +116,6 @@ public sealed class VlsChannelMappingRegistry(VlsSignerConnection connection, IS
                 throw new InvalidOperationException("Persisted VLS channel contains trimmed HTLCs outside the zero-dust prototype.");
         }
     }
-
-    private static bool HasFractionalAmounts(CommitmentSpec spec) =>
-        spec.LocalMsat % 1_000 != 0 || spec.RemoteMsat % 1_000 != 0
-     || spec.Htlcs.Any(htlc => htlc.AmountMsat % 1_000 != 0);
 
     public void Bind(ChannelId channelId, uint keyIndex)
     {

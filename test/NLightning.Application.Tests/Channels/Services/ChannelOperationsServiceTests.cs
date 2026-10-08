@@ -67,7 +67,7 @@ public class ChannelOperationsServiceTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task FractionalSatoshiOffersAreRefusedOnlyByVlsBeforePersistenceOrPublication(bool vls)
+    public async Task FractionalSatoshiOffersAreAcceptedWithAndWithoutVls(bool vls)
     {
         var signer = new Mock<IVlsChannelSigner>(MockBehavior.Strict);
         var service = CreateService(vlsSigner: vls ? signer.Object : null);
@@ -76,25 +76,12 @@ public class ChannelOperationsServiceTests
         var offer = service.OfferHtlcAsync(TestChannelId, LightningMoney.MilliSatoshis(10_000_001UL),
                                          hash, 600, s_onion, null, HtlcOrigin.Local(hash),
                                          TestContext.Current.CancellationToken);
-        if (vls)
-        {
-            var refused = await Assert.ThrowsAsync<CommitmentRefusedException>(() => offer);
-            Assert.Equal("VLS-AMOUNT-PRECISION", refused.RequirementId);
-            Assert.Same(before, _context.State);
-            Assert.Empty(_context.Calls);
-            Assert.Empty(_context.Applied);
-            Assert.Empty(_published);
-            _scheduler.Verify(s => s.Schedule(It.IsAny<ChannelId>()), Times.Never);
-            _probe.Verify(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
-                                              It.IsAny<CancellationToken>()), Times.Never);
-        }
-        else
-        {
-            Assert.Equal(0UL, await offer);
-            Assert.Equal(["apply", "save", "publish", "schedule"], _context.Calls);
-            Assert.Equal(10_000_001UL, Assert.IsType<UpdateAddHtlcMessage>(Assert.Single(_published))
-                                           .Payload.Amount.MilliSatoshi);
-        }
+        // VLS's default policy (enforce_balance off) takes millisatoshi HTLC amounts
+        Assert.Equal(0UL, await offer);
+        Assert.NotSame(before, _context.State);
+        Assert.Equal(["apply", "save", "publish", "schedule"], _context.Calls);
+        Assert.Equal(10_000_001UL, Assert.IsType<UpdateAddHtlcMessage>(Assert.Single(_published))
+                                       .Payload.Amount.MilliSatoshi);
         signer.VerifyNoOtherCalls();
     }
 

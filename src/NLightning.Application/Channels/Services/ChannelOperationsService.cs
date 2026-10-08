@@ -139,9 +139,6 @@ public sealed class ChannelOperationsService : IChannelOperations
         // for its retransmissions
         var encodedRecords = WireCustomRecordCodec.EncodeForUpdateAddHtlc(wireCustomRecords, pathKey is not null);
         ArgumentNullException.ThrowIfNull(amount);
-        if (_vlsSigner is not null && amount.MilliSatoshi % 1_000 != 0)
-            throw new CommitmentRefusedException("VLS-AMOUNT-PRECISION",
-                                                 "VLS requires HTLC amounts in whole satoshis");
         if (!origin.IsValid)
             throw new ArgumentException("The HTLC origin routes nowhere", nameof(origin));
         if (onion.Length == 0)

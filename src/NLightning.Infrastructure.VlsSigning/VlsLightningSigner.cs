@@ -212,7 +212,6 @@ public sealed class VlsLightningSigner(VlsSignerConnection connection, VlsChanne
     private JsonObject CommitmentCommand(string op, ChannelId channel, CommitmentTransactionModel model, bool remote)
     {
         if (model.IsSimpleTaproot) throw Unsupported();
-        ValidateWholeSatoshiAmounts(model);
         return new JsonObject
         {
             ["op"] = op,
@@ -224,14 +223,6 @@ public sealed class VlsLightningSigner(VlsSignerConnection connection, VlsChanne
             ["offered"] = Htlcs(model.OfferedHtlcOutputs),
             ["received"] = Htlcs(model.ReceivedHtlcOutputs)
         };
-    }
-    private static void ValidateWholeSatoshiAmounts(CommitmentTransactionModel model)
-    {
-        if (model.ToLocalOutput?.Amount.MilliSatoshi % 1000 is > 0
-            || model.ToRemoteOutput?.Amount.MilliSatoshi % 1000 is > 0
-            || model.OfferedHtlcOutputs.Any(h => h.Amount.MilliSatoshi % 1000 != 0)
-            || model.ReceivedHtlcOutputs.Any(h => h.Amount.MilliSatoshi % 1000 != 0))
-            throw new SignerException("VLS prototype commitments require whole-satoshi balances and HTLC amounts.");
     }
     private static JsonArray Htlcs(IEnumerable<HtlcOutputInfo> outputs) => new(outputs.Select(h => (JsonNode)new JsonObject { ["value_sat"] = h.Amount.Satoshi, ["payment_hash"] = Bytes((byte[])h.PaymentHash), ["cltv_expiry"] = h.CltvExpiry }).ToArray());
     private void RecordPreimages(ChannelModel channel)

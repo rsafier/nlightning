@@ -21,8 +21,11 @@ public class VlsSignerLndClusterTests
     private const long WalletSat = 2_000_000;
     private const long CapacitySat = 1_000_000;
     private const long PushMsat = 300_000_000;
-    private const long ToPeerMsat = 200_000_000;
-    private const long ToUsMsat = 50_000_000;
+    // Fractional satoshis on purpose: VLS's default policy (enforce_balance off) takes millisatoshi amounts
+    private const long ToPeerMsat = 200_000_123;
+    private const long ToUsMsat = 50_000_777;
+    private const uint FeeBaseMsat = 1_001;
+    private const uint FeeProportionalMillionths = 1_234;
 
     private static readonly TimeSpan s_stepTimeout = TimeSpan.FromMinutes(2);
 
@@ -62,8 +65,8 @@ public class VlsSignerLndClusterTests
                     ConservativeFeatures(options.Features);
                     options.MaxDustHtlcExposureMsat = 0;
                     options.HtlcMinimumAmount = NLightning.Domain.Money.LightningMoney.Satoshis(1_000);
-                    options.Routing.FeeBaseMsat = 1_000;
-                    options.Routing.FeeProportionalMillionths = 0;
+                    options.Routing.FeeBaseMsat = FeeBaseMsat;
+                    options.Routing.FeeProportionalMillionths = FeeProportionalMillionths;
                 },
                 ConfigureNode = node =>
                 {
@@ -208,8 +211,8 @@ public class VlsSignerLndClusterTests
                     ConservativeFeatures(options.Features);
                     options.MaxDustHtlcExposureMsat = 0;
                     options.HtlcMinimumAmount = NLightning.Domain.Money.LightningMoney.Satoshis(1_000);
-                    options.Routing.FeeBaseMsat = 1_000;
-                    options.Routing.FeeProportionalMillionths = 0;
+                    options.Routing.FeeBaseMsat = FeeBaseMsat;
+                    options.Routing.FeeProportionalMillionths = FeeProportionalMillionths;
                 },
             ConfigureNode = node =>
             {
@@ -237,8 +240,8 @@ public class VlsSignerLndClusterTests
         var toCarol = Assert.Single(carolChannels.Channels, x => x.RemotePubkey == intermediary && x.Active);
         var policy = node.TestNode.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<
             NLightning.Domain.Node.Options.NodeOptions>>().Value.Routing;
-        Assert.Equal(1_000u, policy.FeeBaseMsat);
-        Assert.Equal(0u, policy.FeeProportionalMillionths);
+        Assert.Equal(FeeBaseMsat, policy.FeeBaseMsat);
+        Assert.Equal(FeeProportionalMillionths, policy.FeeProportionalMillionths);
         var hint = new RouteHint();
         hint.HopHints.Add(new HopHint
         {
@@ -281,6 +284,9 @@ public class VlsSignerLndClusterTests
                 Assert.NotNull(circuit.OutgoingChannelId);
                 Assert.NotEqual(circuit.IncomingChannelId, circuit.OutgoingChannelId.Value);
                 Assert.Equal((ulong)ToPeerMsat, circuit.OutgoingAmount.MilliSatoshi);
+                // The fractional forwarding fee (base + proportional) reaches the incoming HTLC exactly
+                Assert.Equal(FeeBaseMsat + (ulong)ToPeerMsat * FeeProportionalMillionths / 1_000_000,
+                             circuit.ActualFee.MilliSatoshi);
             });
             return null;
         }, s_stepTimeout, "VLS node persisted successful forwarding", ct);

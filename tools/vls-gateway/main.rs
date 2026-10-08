@@ -226,8 +226,9 @@ impl Gateway {
             TransactionalKVVStore::new(RedbKVVStore::new(dir)),
             JsonFormat,
         ));
-        let mut policy = make_default_simple_policy(Network::Regtest);
-        policy.enforce_balance = true;
+        // VLS's default policy: per-payment routing/invoice balance checks; the node-wide balance (enforce_balance)
+        // stays off as on every VLS network default, so millisatoshi amounts need no signer-side change
+        let policy = make_default_simple_policy(Network::Regtest);
         let services = NodeServices {
             validator_factory: Arc::new(SimpleValidatorFactory::new_with_policy(policy)),
             starting_time_factory: ClockStartingTimeFactory::new(),
@@ -240,7 +241,7 @@ impl Gateway {
             ..NodeConfig::new(Network::Regtest)
         };
         let fresh = Arc::new(Node::new(config.clone(), seed, vec![], services.clone()));
-        let binding = json!({"version":1,"network":"regtest","derivation":"native","balance":true,"node":fresh.get_id().to_string()});
+        let binding = json!({"version":1,"network":"regtest","derivation":"native","balance":false,"node":fresh.get_id().to_string()});
         let nodes = store.get_nodes().map_err(|e| format!("restore: {e:?}"))?;
         let node = if nodes.is_empty() {
             if store
@@ -745,6 +746,11 @@ fn run() -> Result<(), String> {
             match l.accept() {
                 Ok((s, _)) => {
                     work = true;
+                    // BSD/macOS accepted sockets inherit the listener's O_NONBLOCK (Linux's do not); a request still in
+                    // flight would read as WouldBlock and drop the connection
+                    if s.set_nonblocking(false).is_err() {
+                        continue;
+                    }
                     let _ = handle(s, &gateway, a);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}

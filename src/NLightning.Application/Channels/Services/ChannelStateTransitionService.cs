@@ -605,11 +605,6 @@ public sealed class ChannelStateTransitionService
     public void ValidateVlsIncomingDust(ChannelModel channel, ChannelCommitments candidate)
     {
         if (_vlsSigner is null) return;
-        if (candidate.Htlcs.Values.Any(htlc => htlc.AmountMsat % 1_000 != 0))
-            throw new ChannelWarningException("VLS requires HTLC amounts in whole satoshis", channel.ChannelId)
-            {
-                CloseConnection = true
-            };
         if (candidate.Params.MaxDustHtlcExposureMsat != 0)
             throw new ChannelWarningException("VLS requires zero dust exposure on incoming updates", channel.ChannelId)
             {

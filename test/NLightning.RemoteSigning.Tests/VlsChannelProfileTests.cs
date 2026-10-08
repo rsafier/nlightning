@@ -75,7 +75,7 @@ public sealed class VlsChannelProfileTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void StartupRejectsFractionalPendingHtlcsWithoutChangingState(bool outgoing)
+    public void StartupAcceptsFractionalPendingHtlcsWithoutChangingState(bool outgoing)
     {
         var channel = Channel(2_500);
         var state = channel.Commitments!;
@@ -84,16 +84,16 @@ public sealed class VlsChannelProfileTests
         SetZeroBudget(channel, state);
         var before = channel.Commitments;
 
-        var failure = Assert.Throws<InvalidOperationException>(() => VlsChannelMappingRegistry.ValidateChannelProfile(channel));
+        // VLS's default policy (enforce_balance off) takes millisatoshi HTLCs above the trimming threshold
+        VlsChannelMappingRegistry.ValidateChannelProfile(channel);
 
-        Assert.Contains("whole-satoshi", failure.Message);
         Assert.Same(before, channel.Commitments);
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void StartupRejectsFractionalBalancesEvenWhenTheirTotalIsWholeSatoshis(bool localFraction)
+    public void StartupAcceptsFractionalBalances(bool localFraction)
     {
         var channel = Channel(2_500);
         var local = localFraction ? 800_000_001UL : 799_999_999UL;
@@ -103,9 +103,8 @@ public sealed class VlsChannelProfileTests
         SetZeroBudget(channel, state);
         var before = channel.Commitments;
 
-        var failure = Assert.Throws<InvalidOperationException>(() => VlsChannelMappingRegistry.ValidateChannelProfile(channel));
+        VlsChannelMappingRegistry.ValidateChannelProfile(channel);
 
-        Assert.Contains("whole-satoshi", failure.Message);
         Assert.Same(before, channel.Commitments);
         Assert.Equal(local, channel.LocalBalance.MilliSatoshi);
         Assert.Equal(remote, channel.RemoteBalance.MilliSatoshi);

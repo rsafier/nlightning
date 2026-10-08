@@ -12,7 +12,6 @@ internal static class VlsCapabilityProfile
     {
         options.MaxDustHtlcExposureMsat = 0;
         options.HtlcMinimumAmount = LightningMoney.Satoshis(1_000);
-        options.Routing.FeeProportionalMillionths = 0;
         var features = options.Features;
         features.OptionAnchors = FeatureSupport.No;
         features.DualFund = FeatureSupport.No;
@@ -36,8 +35,6 @@ internal static class VlsCapabilityProfile
             errors.Add("The VLS prototype supports regtest only.");
         if (options.MaxDustHtlcExposureMsat != 0 || options.HtlcMinimumAmount < LightningMoney.Satoshis(1_000))
             errors.Add("The VLS prototype requires zero dust HTLC exposure and a minimum HTLC of 1,000 satoshis.");
-        if (options.Routing.FeeProportionalMillionths != 0 || options.Routing.FeeBaseMsat % 1_000 != 0)
-            errors.Add("The VLS prototype requires fixed whole-satoshi forwarding fees.");
         var features = options.Features;
         if (features.OptionAnchors != FeatureSupport.No || features.DualFund != FeatureSupport.No
          || features.OptionQuiesce != FeatureSupport.No || features.OptionSplice != FeatureSupport.No
@@ -55,7 +52,6 @@ internal static class VlsCapabilityProfile
         .AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Node:MaxDustHtlcExposureMsat"] = "0",
-            ["Node:Routing:FeeProportionalMillionths"] = "0",
             ["Gossip:AcceptPublicChannels"] = "false",
             ["Gossip:AllowPublicChannelsOnMainnet"] = "false",
             ["Node:Features:OptionAnchors"] = "No",
