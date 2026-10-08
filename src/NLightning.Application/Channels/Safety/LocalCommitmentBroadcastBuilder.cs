@@ -3,6 +3,7 @@ namespace NLightning.Application.Channels.Safety;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Interfaces;
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Models;
@@ -53,6 +54,39 @@ public sealed class LocalCommitmentBroadcastBuilder
     /// stored signature does not verify).</exception>
     public SignedLocalCommitment Build(ChannelModel channel)
     {
+        var (number, built, remoteSignature, remotePartialSignature) = BuildUnsigned(channel);
+        SignedTransaction signed;
+        if (channel.ChannelParams.OptionSimpleTaproot)
+        {
+            // MuSig2 (NL-877 T3): our half from the verification nonce of this number, aggregated with the peer's
+            var partial = remotePartialSignature
+                       ?? throw new InvalidOperationException(
+                              $"Local commitment {number} of channel {channel.ChannelId} has no peer partial signature");
+            signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, null, number,
+                                                                      built.Transaction, partial);
+        }
+        else
+        {
+            signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, number, built.Transaction,
+                                                                      remoteSignature);
+        }
+
+        return new SignedLocalCommitment(number, signed, built.HtlcOutputsInTxOrder.Count);
+    }
+
+    /// <summary>
+    /// The number and unsigned txid of the commitment <see cref="Build"/> would sign, without signing it (a VLS force
+    /// close binds its durable intent to them, NL-1330). A segwit txid is the same once signed.
+    /// </summary>
+    public (ulong Number, TxId UnsignedTxId, int HtlcOutputCount) Describe(ChannelModel channel)
+    {
+        var (number, built, _, _) = BuildUnsigned(channel);
+        return (number, built.Transaction.TxId, built.HtlcOutputsInTxOrder.Count);
+    }
+
+    private (ulong Number, CommitmentTransactionBuildResult Built, CompactSignature RemoteSignature,
+        MusigPartialSignatureWithNonce? RemotePartialSignature) BuildUnsigned(ChannelModel channel)
+    {
         ArgumentNullException.ThrowIfNull(channel);
 
         ulong number;
@@ -90,22 +124,6 @@ public sealed class LocalCommitmentBroadcastBuilder
         var model = _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
             channel, spec, CommitmentSide.Local, number);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
-        SignedTransaction signed;
-        if (channel.ChannelParams.OptionSimpleTaproot)
-        {
-            // MuSig2 (NL-877 T3): our half from the verification nonce of this number, aggregated with the peer's
-            var partial = remotePartialSignature
-                       ?? throw new InvalidOperationException(
-                              $"Local commitment {number} of channel {channel.ChannelId} has no peer partial signature");
-            signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, null, number,
-                                                                      built.Transaction, partial);
-        }
-        else
-        {
-            signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, number, built.Transaction,
-                                                                      remoteSignature);
-        }
-
-        return new SignedLocalCommitment(number, signed, built.HtlcOutputsInTxOrder.Count);
+        return (number, built, remoteSignature, remotePartialSignature);
     }
 }

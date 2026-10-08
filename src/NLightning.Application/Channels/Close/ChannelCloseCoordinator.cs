@@ -61,6 +61,7 @@ public sealed class ChannelCloseCoordinator
     private readonly ClosingTimeoutMonitor? _timeouts;
     private readonly ChannelStateTransitionService _transitions;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly VlsCloseSigningWorkflows? _vlsCloses;
 
     public ChannelCloseCoordinator(IClosingTransactionBuilder closingTransactionBuilder,
                                    IChannelMemoryRepository channelMemoryRepository, IFeeService feeService,
@@ -71,8 +72,10 @@ public sealed class ChannelCloseCoordinator
                                    IBlockchainMonitor? blockchainMonitor = null,
                                    ClosingTimeoutMonitor? timeouts = null,
                                    ClosingFeeEstimator? feeEstimator = null,
-                                   SimpleCloseCoordinator? simpleClose = null)
+                                   SimpleCloseCoordinator? simpleClose = null,
+                                   VlsCloseSigningWorkflows? vlsCloses = null)
     {
+        _vlsCloses = vlsCloses;
         _blockchainMonitor = blockchainMonitor;
         _timeouts = timeouts;
         _closingTransactionBuilder = closingTransactionBuilder;
@@ -395,7 +398,7 @@ public sealed class ChannelCloseCoordinator
                 await ResolveEstimateAsync(entry);
                 var context = BuildContext(channel, entry);
                 var (decision, next) = LegacyClosingNegotiator.Open(context.InitialState, context.IdealFeeSat);
-                messages.Add(CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange));
+                messages.Add(await CreateClosingSignedAsync(channel, context, decision.FeeSat, decision.FeeRange));
                 entry.Negotiation = next;
                 _timeouts?.ArmReply(channel.ChannelId);
                 _logger.LogInformation(
@@ -565,7 +568,7 @@ public sealed class ChannelCloseCoordinator
                     RequirementId = decision.RequirementId
                 };
             case ClosingDecisionKind.Propose:
-                var proposal = CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange);
+                var proposal = await CreateClosingSignedAsync(channel, context, decision.FeeSat, decision.FeeRange);
                 _timeouts?.ArmReply(channelId);
                 return [proposal];
             default:
@@ -583,12 +586,17 @@ public sealed class ChannelCloseCoordinator
                                                                      CompactSignature peerSignature,
                                                                      ClosingDecision decision)
     {
+        // VLS (NL-1330): the signature's intent and receipt are saved before it is used, and consumed with Closing
+        using var workflow = await BeginVlsMutualCloseAsync(channel, signed.Model);
+        workflow?.Activate();
         var ourSignature = SignClosingModel(channel, signed.Model, signed.Transaction);
         var closingTransaction = _closingTransactionBuilder.AddWitness(signed.Transaction, context.Funding,
                                                                        ourSignature, peerSignature);
 
         // The watch is saved in the same save as Closing, so no crash leaves a Closing channel without it
         var watch = StageClosingWatch(channel, closingTransaction.TxId);
+        if (workflow is not null)
+            await workflow.StageConsumeAsync(_unitOfWork);
         await PersistAsync(channel, m =>
         {
             m.SetClosingTransaction(closingTransaction);
@@ -790,17 +798,41 @@ public sealed class ChannelCloseCoordinator
         entry.FeeRangeDueAt = null;
     }
 
-    /// <summary>Our <c>closing_signed</c> at <paramref name="feeSat"/>: our variant (our dust limit), signed.</summary>
-    private ClosingSignedMessage CreateClosingSigned(ChannelModel channel, CloseContext context, ulong feeSat,
-                                                     ClosingFeeRange? feeRange)
+    /// <summary>
+    /// Our <c>closing_signed</c> at <paramref name="feeSat"/>: our variant (our dust limit), signed. Through VLS the
+    /// signature's workflow is consumed in its own save before the message can go out (NL-1330).
+    /// </summary>
+    private async Task<ClosingSignedMessage> CreateClosingSignedAsync(ChannelModel channel, CloseContext context,
+                                                                      ulong feeSat, ClosingFeeRange? feeRange)
     {
         var model = LegacyClosingTransactionFactory.Create(context.Funding, context.LocalBalanceMsat,
                                                            context.RemoteBalanceMsat, context.IsFunder, feeSat,
                                                            context.LocalScript, context.RemoteScript,
                                                            context.LocalDustLimitSat);
         var unsigned = _closingTransactionBuilder.Build(model);
+        using var workflow = await BeginVlsMutualCloseAsync(channel, model);
+        workflow?.Activate();
         var signature = SignClosingModel(channel, model, unsigned);
+        if (workflow is not null)
+        {
+            await workflow.StageConsumeAsync(_unitOfWork);
+            await _unitOfWork.SaveChangesAsync();
+        }
+
         return CreateClosingSigned(channel.ChannelId, feeSat, feeRange, signature);
+    }
+
+    /// <summary>The durable intent of a VLS mutual close signature of <paramref name="model"/>, null otherwise.</summary>
+    private async Task<Domain.Signing.Recovery.ISigningWorkflowScope?> BeginVlsMutualCloseAsync(ChannelModel channel,
+        ClosingTransactionModel model)
+    {
+        if (_lightningSigner is not IVlsChannelSigner)
+            return null;
+
+        return await (_vlsCloses ?? throw new InvalidOperationException("VLS close signing requires its workflows."))
+                    .BeginMutualCloseAsync(channel, checked((ulong)(model.LocalOutput?.Amount.Satoshi ?? 0)),
+                                           checked((ulong)(model.RemoteOutput?.Amount.Satoshi ?? 0)),
+                                           model.LocalOutput?.ScriptPubKey, model.RemoteOutput?.ScriptPubKey);
     }
 
     private CompactSignature SignClosingModel(ChannelModel channel, ClosingTransactionModel model,
@@ -922,7 +954,10 @@ public sealed class ChannelCloseCoordinator
             if (unsigned.TxId != stored.TxId)
                 continue;
 
-            var signature = SignClosingModel(channel, model, unsigned);
+            // VLS (NL-1330): our signature as saved in the stored transaction, never asked for again
+            var signature = _lightningSigner is IVlsChannelSigner
+                                ? VlsClosingSignatures.FromStoredClosing(stored, channel)
+                                : SignClosingModel(channel, model, unsigned);
             if (receivedFeeSat is null || feeSat == receivedFeeSat)
                 entry.AgreedClosingSignedSentOnConnection = true;
             var range = receivedFeeSat is null && context.InitialState.SendFeeRange

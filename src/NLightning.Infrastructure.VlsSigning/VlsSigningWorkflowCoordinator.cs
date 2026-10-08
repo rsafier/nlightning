@@ -11,7 +11,7 @@ using StoredRequest = NLightning.Domain.Signing.Recovery.SigningRequest;
 namespace NLightning.Infrastructure.VlsSigning;
 
 /// <summary>Captures requests only inside validated application transitions; recovery never guesses a new request ID.</summary>
-public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordinator, IRemoteSigningRequestCapture, IDisposable
+public sealed partial class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordinator, IRemoteSigningRequestCapture, IDisposable
 {
     public const int SchemaVersion = 2;
     public const int MaximumEnvelopeBytes = 1024 * 1024;
@@ -45,6 +45,7 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
             var pending = await uow.SigningWorkflowDbRepository.GetPendingForChannelAsync(descriptor.ChannelId);
             if (pending.Count > 1) throw Blocked("The channel has multiple pending signing workflows.");
             SigningWorkflow workflow;
+            var unsaved = false;
             if (pending.Count == 1)
             {
                 workflow = pending[0];
@@ -53,12 +54,26 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
             else
             {
                 workflow = CreateWorkflow(descriptor);
-                await uow.SigningWorkflowDbRepository.AddWorkflowAsync(workflow);
-                await uow.SaveChangesAsync();
+                // Funding and close intents are saved with their first request envelope (see the FundingClose part).
+                unsaved = SavesIntentWithFirstRequest(descriptor.Kind);
+                if (!unsaved)
+                {
+                    await uow.SigningWorkflowDbRepository.AddWorkflowAsync(workflow);
+                    await uow.SaveChangesAsync();
+                }
             }
-            var requests = await uow.SigningWorkflowDbRepository.GetRequestsAsync(workflow.WorkflowId);
+            var requests = unsaved ? [] : await uow.SigningWorkflowDbRepository.GetRequestsAsync(workflow.WorkflowId);
+            if (!unsaved && requests.Count == 0 && SavesIntentWithFirstRequest(workflow.Kind))
+            {
+                // Such an intent is only ever saved with its request: its envelope was lost, so its outcome is unknown
+                await uow.SigningWorkflowDbRepository.UpdateWorkflowAsync(workflow with
+                { State = SigningWorkflowState.Blocked, UpdatedAtTicks = DateTime.UtcNow.Ticks });
+                await uow.SaveChangesAsync();
+                throw Blocked("The saved signing intent lost its original request; recovery requires attention.");
+            }
             ValidateRequests(workflow, requests);
-            return new WorkflowScope(this, CloneWorkflow(workflow), requests.Select(CloneRequest).ToList(), gate);
+            return new WorkflowScope(this, CloneWorkflow(workflow), requests.Select(CloneRequest).ToList(), gate)
+            { Unsaved = unsaved };
         }
         catch { gate.Release(); throw; }
     }
@@ -147,6 +162,9 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
         SigningWorkflowKind.Opening => operation is VlsOperations.Setup or VlsOperations.SignRemote
                                                  or VlsOperations.ValidateHolder,
         SigningWorkflowKind.Activate => operation == VlsOperations.Activate,
+        SigningWorkflowKind.Funding => operation == VlsOperations.WalletSign,
+        SigningWorkflowKind.MutualClose => operation == VlsOperations.MutualClose,
+        SigningWorkflowKind.ForceClose => operation == VlsOperations.ForceClose,
         _ => false
     };
     private static void ValidateEnvelope(uint operation, byte[] envelope, byte[] fingerprint, Guid requestId)
@@ -166,6 +184,9 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
             VlsOperations.Activate => "activate",
             VlsOperations.RevokeHolder => "revoke_holder",
             VlsOperations.ValidateRevocation => "validate_revocation",
+            VlsOperations.WalletSign => "wallet_sign",
+            VlsOperations.MutualClose => "mutual_close",
+            VlsOperations.ForceClose => "force_close",
             _ => throw Blocked("Saved VLS operation is outside this recovery scope.")
         };
         if (command.GetProperty("op").GetString() != expected)
@@ -176,6 +197,8 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
         commandBytes.CopyTo(material.AsSpan(sizeof(uint)));
         if (!CryptographicOperations.FixedTimeEquals(fingerprint, SHA256.HashData(material)))
             throw Blocked("Saved VLS request arguments do not match their fingerprint.");
+        // Wallet signing names wallet paths, not a channel; its workflow binds the channel snapshot instead.
+        if (operation == VlsOperations.WalletSign) return;
         var channelBytes = Convert.FromHexString(command.GetProperty("channel").GetString()
                          ?? throw Blocked("Saved VLS request has no channel identity."));
         if (channelBytes.Length != 41)
@@ -183,6 +206,7 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
     }
     private void ValidateMappedChannel(byte[] envelope, SigningWorkflow workflow)
     {
+        if (workflow.Kind == SigningWorkflowKind.Funding) return;
         using var scope = _scopes.CreateScope();
         var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var mapping = Task.Run(() => uow.VlsChannelMappingDbRepository.GetByChannelIdAsync(workflow.ChannelId))
@@ -218,6 +242,11 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
         private bool _disposed;
         private bool _consumeStaged;
         public Guid WorkflowId => workflow.WorkflowId;
+        public SigningWorkflowKind Kind => workflow.Kind;
+        public SigningWorkflow Saved => CloneWorkflow(workflow);
+        public IReadOnlyList<StoredRequest> SavedRequests => requests.Select(CloneRequest).ToArray();
+        /// <summary>The intent row is written with the first request envelope, so no intent exists without one.</summary>
+        public bool Unsaved { get; set; }
         public void Activate()
         {
             if (_disposed || Interlocked.CompareExchange(ref _activated, 1, 0) != 0)
@@ -242,7 +271,8 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
                 if (!Allowed(workflow.Kind, operation) || fingerprint.Length != 32
                  || proposedEnvelope.Length is <= 0 or > MaximumEnvelopeBytes || _ordinal >= MaximumRequestsPerWorkflow)
                 {
-                    MarkWorkflowBlocked();
+                    // Nothing was dispatched for an unsaved intent: refusing leaves no uncertain outcome to record.
+                    if (!Unsaved) MarkWorkflowBlocked();
                     throw Blocked("The signing operation is outside this workflow's supported recovery scope.");
                 }
                 using var proposed = JsonDocument.Parse(proposedEnvelope);
@@ -265,7 +295,13 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
                     var ticks = DateTime.UtcNow.Ticks;
                     request = new StoredRequest(proposedId, WorkflowId, _ordinal, operation, proposedEnvelope.ToArray(),
                         fingerprint.ToArray(), SigningRequestState.Prepared, null, ticks, ticks);
-                    Persist(async uow => await uow.SigningWorkflowDbRepository.AddRequestAsync(request));
+                    var addWorkflow = Unsaved;
+                    Persist(async uow =>
+                    {
+                        if (addWorkflow) await uow.SigningWorkflowDbRepository.AddWorkflowAsync(workflow);
+                        await uow.SigningWorkflowDbRepository.AddRequestAsync(request);
+                    });
+                    Unsaved = false;
                     requests.Add(request);
                 }
                 if (request.State == SigningRequestState.Completed)
@@ -323,6 +359,8 @@ public sealed class VlsSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordi
             _consumeStaged = true;
             await unitOfWork.SigningWorkflowDbRepository.ConsumeWorkflowAsync(WorkflowId);
         }
+        /// <summary>Blocks the saved intent through its first request (recovery found it inconsistent).</summary>
+        public void BlockSaved() => BlockStored(requests[0]);
         private void BlockStored(StoredRequest request)
         {
             var ticks = DateTime.UtcNow.Ticks;

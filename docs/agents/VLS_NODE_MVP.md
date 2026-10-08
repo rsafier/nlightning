@@ -115,12 +115,49 @@ replying. This does not establish external rollback protection or cloned-writer
 fencing. The regtest policy does not independently track/validate the chain.
 Force-close broadcast acceptance is distinct from complete output recovery:
 HTLC claims, penalties, delayed sweeps and anchors need a separate adapter proof.
-Wallet funding and close calls have gateway receipts, but their original request
-IDs are not yet persisted as complete node application workflows. Unknown
-funding/close outcomes therefore remain a deployment gate. Mutual-close and
-force-close application recovery beyond the tested cases,
-receipt compaction, deadline monitoring, transport performance, vsock and attested
-seed provisioning remain deployment work. Keep `NL-1307` open for these gates.
+Wallet funding, legacy mutual-close and force-close signatures are node workflows
+since NL-1330 (below). Receipt compaction, deadline monitoring, transport
+performance, vsock and attested seed provisioning remain deployment work. Keep
+`NL-1307` open for these gates.
+
+## Durable funding and close workflows (NL-1330, 2026-10-08)
+
+`wallet_sign` (channel funding), `mutual_close` and `force_close` follow the same
+ordering as the commitment workflows: the intent row and the original request
+envelope are saved together before dispatch (no intent ever exists without its
+request ID; one that lost its request is blocked), the exact receipt is saved before
+it is used, the workflow is consumed in the save of the node transition, and only
+then is anything published or sent.
+
+- Funding: consumed in the `V1FundingSigned` save with the funding broadcast row and
+  watches; the inputs stay reserved meanwhile. At registration an interrupted funding
+  replays the saved envelope (reconcile, else the same envelope under the same ID)
+  and rebuilds the signed transaction from the receipt's witnesses.
+- Legacy mutual close (simple close is disabled in VLS mode): each `closing_signed`
+  signature is consumed before the message can go out; the agreed one in the
+  `Closing` save with the closing transaction and its watch. A restarted negotiation
+  of a `Closing` channel answers with our signature read from the stored transaction,
+  never a new VLS request. An interrupted signature is replayed under its original ID
+  at registration and retired: it was never sent, and the negotiation restarts on the
+  next connection.
+- Force close: the intent is bound to the commitment number and unsigned txid and
+  consumed in the `Failed` save with the `LocalCommitment` row. Retries and resumed
+  failures republish that row's exact bytes; registration completes an interrupted
+  force close with the original request, then publishes.
+
+Proof: `VlsFundingCloseCrashTests` kills the node process (real SQLite, actual Rust
+gateway restarted too) at intent+envelope, gateway committed before the reply,
+receipt saved, consumed with the transition and after publication, for funding,
+both mutual-close signatures and force close (16 cases), plus 5 refusals (altered
+receipt, altered envelope, lost request) that block without signing. Recovery keeps
+every original request ID and receipt; funding converges to a confirmed channel with
+payments both ways, the close to both peers `Closing` on one transaction that is
+script-valid against the funding output, the force close to a script-valid commitment.
+Run it with the other explicit process proofs:
+`dotnet test/NLightning.RemoteSigning.Tests/bin/Release/net10.0/NLightning.RemoteSigning.Tests.dll -explicit only -class NLightning.RemoteSigning.Tests.VlsFundingCloseCrashTests -parallel none`
+(`ChildEntrypoint` is the worker and fails when started by itself). The live
+`VlsSignerLndClusterTests` ran 3/3 green on these paths from the host (batch
+`rc-20261008175852`).
 
 ## Millisatoshi accounting (resolved 2026-10-08)
 

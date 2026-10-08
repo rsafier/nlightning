@@ -43,6 +43,7 @@ public static class CommitmentEngineServiceCollectionExtensions
         services.TryAddSingleton<ISecretStorageServiceFactory, SecretStorageServiceFactory>();
         services.AddScoped<ChannelDomainEventQueue>();
         services.AddScoped<ChannelStateTransitionService>();
+        services.TryAddSingleton<VlsCloseSigningWorkflows>();
 
         return services;
     }

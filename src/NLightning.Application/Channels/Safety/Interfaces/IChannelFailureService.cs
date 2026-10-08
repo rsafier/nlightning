@@ -140,6 +140,9 @@ public sealed class PreparedChannelFailure
     internal SignedLocalCommitment? Commitment { get; set; }
     internal Domain.Onchain.Models.BroadcastTransactionModel? Broadcast { get; set; }
     internal bool BroadcastStaged { get; set; }
+
+    /// <summary>A VLS force close signature's workflow, consumed in the Failed save (NL-1330).</summary>
+    internal Domain.Signing.Recovery.ISigningWorkflowScope? SigningWorkflow { get; set; }
 }
 
 /// <summary>The outcome of failing a channel.</summary>
