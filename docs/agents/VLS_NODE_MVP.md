@@ -149,7 +149,8 @@ with an integer quotient, with focused large-value boundary checks.
 ## Validation record
 
 - Full Release solution build passes for .NET 10 and .NET 11 with zero warnings
-  and errors; solution configuration checks cover all 45 projects.
+  and errors; the full formatter check and solution configuration checks pass
+  across all 45 projects.
 - The exact pinned Rust gateway process proof passes (1 case).
 - Four C#-to-Rust gateway cases, the real mixed-HTLC harness, and nine actual
   node/signer crash-recovery cases pass, with no skipped cases. The mixed harness
@@ -163,13 +164,26 @@ with an integer quotient, with focused large-value boundary checks.
   not run. Native/default remote regression: 70 executed cases pass; explicit
   VLS proofs run separately.
 - The broad Application run executes 4,575 cases: 4,574 pass and one accounting
-  classification case fails. That exact case passes alone. Classification's
+  classification case fails (`FinancialBooksProjectorTests.Given_ARuleAddedAfterAClose_When_Projected_Then_OnlyTheOpenPeriodIsReclassified`).
+  That exact case passes alone. Classification's
   100-ms regex timeout is suspected load sensitivity (see NL-729); the cause was
   not established by the failure output, and accounting code was not changed.
-- Earlier live LND runs confirm cooperative and force closes after payments in
-  both directions, node/signer restart and further payments. Bitcoin Core checks
-  six confirmations and the exact original funding input. The final three-case
-  run, including forwarded settlement, is pending. Explicit skips are not proof.
+- Final live LND acceptance passes all three actual cases with zero skips or
+  cases not run. Cooperative and force closes follow payments in both directions,
+  node/signer restart and further payments; Bitcoin Core confirms at least six
+  blocks and the exact original funding input. LND → VLS → LND forwards a
+  200,000,000-msat payment; the persisted fulfilled circuit binds distinct input
+  and output channels and the actual forwarded amounts. Together with local
+  proofs, 17 actual C# VLS cases pass. Force-close output sweeps remain unproved.
+
+Final live runner: `nltg-spike-runner:vls-signer-20261008-d`, config SHA
+`f3f621252ff3cf7af5d98e6700360ea10383fc845dde109d6221a90536adee70`.
+Pinned gateway binary SHA256:
+`3f93bd1c07ca9018b2271266273f71f171295233492597a6af8ef26bec3c564d`.
+The successful final batch is `rc-20261008023830`. Cooperative transaction:
+`c7a0e99534429916bfccdd51aa27530029ffca106158ab45dbf878b8d28faeb0`;
+force-close transaction:
+`c7d31e078d5b06b9782c4404dd4726dccca3a200ae274ce4475af76a57c58f24`.
 
 Reproduce the local process proofs after building the solution and pinned gateway:
 
