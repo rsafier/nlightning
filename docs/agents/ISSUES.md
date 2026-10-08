@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 94 | 96 |
+| open | 0 | 0 | 2 | 95 | 97 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
 | fixed | 15 | 73 | 264 | 535 | 887 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **74** | **283** | **651** | **1023** |
+| **Total** | **15** | **74** | **283** | **652** | **1024** |
 
 ### Epics
 
@@ -10877,6 +10877,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `tools/vls-gateway/main.rs`; VLS `SimpleValidator::validate_{delayed,counterparty_htlc,justice}_sweep` (`policy-sweep-locktime`, `MAX_CHAIN_LAG` 2)
 - **Evidence:** VLS checks a sweep's `nLockTime` against the channel monitor's height + 2, and the gateway never adds blocks to VLS's chain tracker. Our sweeps use `nLockTime` 0 (timeout claims their `cltv_expiry`, checked against the script instead), so they pass; a sweep with an anti-fee-sniping locktime at the current height would be refused, and VLS's chain-state policies (funding depth, closing depth) see no chain.
 - **Fix sketch:** independent chain tracking for VLS (headers and TXOO proofs through `ChainTracker::add_block`), part of NL-1307's chain-tracking gate; until then keep sweep locktimes at 0 or `cltv_expiry`.
+
+### NL-1324 VLS signs our anchors HTLC transactions SIGHASH_SINGLE|ANYONECANPAY, so their fee inputs can be swapped
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `tools/vls-gateway/main.rs` (`sign_holder_htlc`), `src/NLightning.Infrastructure.VlsSigning/VlsLightningSigner.Onchain.cs`, `HtlcTransactionBuilder.AddWitness`
+- **Evidence:** on a zero-fee-HTLC anchors commitment, VLS's phase 1 `sign_holder_htlc_tx` (cb8a64c7) signs our HTLC input `SIGHASH_SINGLE|ANYONECANPAY`, where native NLightning, LND and LDK sign `SIGHASH_ALL` (BOLT 3 only fixes the peer's signature). The witness is valid and the HTLC pair (input 0, output 0) stays committed, so no funds can be redirected. But with both HTLC signatures SINGLE|ANYONECANPAY, anyone holding the transaction can replace or drop our wallet fee inputs, producing a different txid for our second-level output (a fee-less variant can't confirm; a third-party-funded variant can).
+- **Fix sketch:** confirm the resolvers and `SweepScheduler` follow a second-level output by the spend of the commitment's HTLC output rather than by our own txid (mempool reactor/watch), and add a test with a variant built from other fee inputs. Upstream VLS could sign SIGHASH_ALL over the final transaction; out of scope (owner: no upstreaming).
 
 ### NL-1325 VLS mode refused anchors channels and the CPFP of our commitment
 - **Status:** fixed (c3e86ee1)
