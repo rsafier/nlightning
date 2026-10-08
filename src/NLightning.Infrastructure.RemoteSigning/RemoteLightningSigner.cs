@@ -133,6 +133,8 @@ public sealed class RemoteLightningSigner : ILightningSigner
         var result = _connection.Invoke(SignerOperations.SignLocalHtlcTransaction, channelId, htlcTransaction);
         return SignerWire.Read<CompactSignature>(result[0]);
     }
+    // The native signer signs our anchors HTLC input SIGHASH_ALL (only VLS signs SINGLE|ANYONECANPAY, NL-1324)
+    public bool SignsAnchorHtlcWithSingleAnyoneCanPay => false;
     public SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, ulong commitmentNumber, SignedTransaction unsignedCommitment, CompactSignature remoteSignature)
     {
         EnsureChannel(channelId);

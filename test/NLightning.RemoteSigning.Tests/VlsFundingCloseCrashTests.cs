@@ -258,67 +258,67 @@ public sealed class VlsFundingCloseCrashTests
         switch (flow)
         {
             case "funding":
-            {
-                // The funding saved with its broadcast row is exactly the original request's receipt, witnessed by VLS
-                var row = Assert.Single(await RowsAsync(alice, channelId), b => b.Purpose == BroadcastPurpose.Funding);
-                var tx = Transaction.Load(row.RawTransaction, Network.RegTest);
-                var walletKey = new PubKey((byte[])alice.PublicKeyManager.GetWalletPublicKey(0, false, AddressType.P2Wpkh));
-                var spent = new TxOut(Money.Satoshis(TaprootOpenHarness.WalletSat), walletKey.WitHash.ScriptPubKey);
-                Assert.Null(tx.CreateValidator([spent]).ValidateInput(0).Error);
-                await harness.ReconnectAsync();
-                await harness.PumpAsync();
-                await harness.ConfirmFundingAsync(channelId, row.TransactionId);
-                await alice.PayAsync(harness.Bob, channelId, LightningMoney.Satoshis(20_000),
-                    invoice => approval.AuthorizeInvoice(Guid.NewGuid(), invoice.Bolt11!));
-                await harness.PumpAsync();
-                await harness.Bob.PayAsync(alice, channelId, LightningMoney.Satoshis(10_000));
-                await harness.PumpAsync();
-                var a = alice.Channel(channelId).Commitments!;
-                var b = harness.Bob.Channel(channelId).Commitments!;
-                Assert.True(a.Htlcs.IsEmpty && b.Htlcs.IsEmpty);
-                Assert.Equal(a.LocalBalanceMsat, b.RemoteBalanceMsat);
-                Assert.Equal(a.RemoteBalanceMsat, b.LocalBalanceMsat);
-                break;
-            }
+                {
+                    // The funding saved with its broadcast row is exactly the original request's receipt, witnessed by VLS
+                    var row = Assert.Single(await RowsAsync(alice, channelId), b => b.Purpose == BroadcastPurpose.Funding);
+                    var tx = Transaction.Load(row.RawTransaction, Network.RegTest);
+                    var walletKey = new PubKey((byte[])alice.PublicKeyManager.GetWalletPublicKey(0, false, AddressType.P2Wpkh));
+                    var spent = new TxOut(Money.Satoshis(TaprootOpenHarness.WalletSat), walletKey.WitHash.ScriptPubKey);
+                    Assert.Null(tx.CreateValidator([spent]).ValidateInput(0).Error);
+                    await harness.ReconnectAsync();
+                    await harness.PumpAsync();
+                    await harness.ConfirmFundingAsync(channelId, row.TransactionId);
+                    await alice.PayAsync(harness.Bob, channelId, LightningMoney.Satoshis(20_000),
+                        invoice => approval.AuthorizeInvoice(Guid.NewGuid(), invoice.Bolt11!));
+                    await harness.PumpAsync();
+                    await harness.Bob.PayAsync(alice, channelId, LightningMoney.Satoshis(10_000));
+                    await harness.PumpAsync();
+                    var a = alice.Channel(channelId).Commitments!;
+                    var b = harness.Bob.Channel(channelId).Commitments!;
+                    Assert.True(a.Htlcs.IsEmpty && b.Htlcs.IsEmpty);
+                    Assert.Equal(a.LocalBalanceMsat, b.RemoteBalanceMsat);
+                    Assert.Equal(a.RemoteBalanceMsat, b.LocalBalanceMsat);
+                    break;
+                }
             case "close":
-            {
-                var closingAtStart = alice.Channel(channelId).State == ChannelState.Closing;
-                await harness.ReconnectAsync();
-                await harness.PumpAsync();
-                var ours = alice.Channel(channelId);
-                var theirs = harness.Bob.Channel(channelId);
-                Assert.Equal(ChannelState.Closing, ours.State);
-                Assert.Equal(ChannelState.Closing, theirs.State);
-                Assert.Equal(theirs.ClosingTransaction!.RawTxBytes, ours.ClosingTransaction!.RawTxBytes);
-                var tx = Transaction.Load(ours.ClosingTransaction.RawTxBytes, Network.RegTest);
-                Assert.Null(tx.CreateValidator([FundingTxOut(ours)]).ValidateInput(0).Error);
-                // Every closing_signed we sent after the restart carries VLS's saved signature, never a new one
-                var stored = VlsClosingSignature(tx, ours);
-                var agreed = harness.Sent.Where(s => s.From == "Alice").Select(s => s.Message)
-                                    .OfType<ClosingSignedMessage>()
-                                    .Where(m => m.Payload.FeeAmount.Satoshi == FeeOf(tx, ours)).ToList();
-                Assert.All(agreed, m => Assert.Equal(stored, m.Payload.Signature.Value));
-                // A node already Closing answers the restarted negotiation with the saved signature
-                if (closingAtStart)
-                    Assert.NotEmpty(agreed);
-                break;
-            }
+                {
+                    var closingAtStart = alice.Channel(channelId).State == ChannelState.Closing;
+                    await harness.ReconnectAsync();
+                    await harness.PumpAsync();
+                    var ours = alice.Channel(channelId);
+                    var theirs = harness.Bob.Channel(channelId);
+                    Assert.Equal(ChannelState.Closing, ours.State);
+                    Assert.Equal(ChannelState.Closing, theirs.State);
+                    Assert.Equal(theirs.ClosingTransaction!.RawTxBytes, ours.ClosingTransaction!.RawTxBytes);
+                    var tx = Transaction.Load(ours.ClosingTransaction.RawTxBytes, Network.RegTest);
+                    Assert.Null(tx.CreateValidator([FundingTxOut(ours)]).ValidateInput(0).Error);
+                    // Every closing_signed we sent after the restart carries VLS's saved signature, never a new one
+                    var stored = VlsClosingSignature(tx, ours);
+                    var agreed = harness.Sent.Where(s => s.From == "Alice").Select(s => s.Message)
+                                        .OfType<ClosingSignedMessage>()
+                                        .Where(m => m.Payload.FeeAmount.Satoshi == FeeOf(tx, ours)).ToList();
+                    Assert.All(agreed, m => Assert.Equal(stored, m.Payload.Signature.Value));
+                    // A node already Closing answers the restarted negotiation with the saved signature
+                    if (closingAtStart)
+                        Assert.NotEmpty(agreed);
+                    break;
+                }
             case "force":
-            {
-                // A force close saved before the crash is published again from its exact saved bytes
-                if (alice.Channel(channelId).State == ChannelState.Failed)
-                    await alice.Services.GetRequiredService<IChannelFailureService>()
-                               .FailChannelAsync(channelId, new ChannelFailureRequest("crash proof", "crash proof"), ct);
-                var row = Assert.Single(await RowsAsync(alice, channelId),
-                                        b => b.Purpose == BroadcastPurpose.LocalCommitment);
-                Assert.Contains(published, p => p.RawTxBytes.AsSpan().SequenceEqual(row.RawTransaction));
-                var ours = alice.Channel(channelId);
-                Assert.Equal(ChannelState.Failed, ours.State);
-                Assert.Equal(ours.Commitments!.LocalCommit.Number, row.CommitmentNumber);
-                var tx = Transaction.Load(row.RawTransaction, Network.RegTest);
-                Assert.Null(tx.CreateValidator([FundingTxOut(ours)]).ValidateInput(0).Error);
-                break;
-            }
+                {
+                    // A force close saved before the crash is published again from its exact saved bytes
+                    if (alice.Channel(channelId).State == ChannelState.Failed)
+                        await alice.Services.GetRequiredService<IChannelFailureService>()
+                                   .FailChannelAsync(channelId, new ChannelFailureRequest("crash proof", "crash proof"), ct);
+                    var row = Assert.Single(await RowsAsync(alice, channelId),
+                                            b => b.Purpose == BroadcastPurpose.LocalCommitment);
+                    Assert.Contains(published, p => p.RawTxBytes.AsSpan().SequenceEqual(row.RawTransaction));
+                    var ours = alice.Channel(channelId);
+                    Assert.Equal(ChannelState.Failed, ours.State);
+                    Assert.Equal(ours.Commitments!.LocalCommit.Number, row.CommitmentNumber);
+                    var tx = Transaction.Load(row.RawTransaction, Network.RegTest);
+                    Assert.Null(tx.CreateValidator([FundingTxOut(ours)]).ValidateInput(0).Error);
+                    break;
+                }
         }
     }
 
