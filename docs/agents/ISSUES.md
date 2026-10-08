@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 89 | 91 |
-| in-progress | 0 | 0 | 7 | 0 | 7 |
-| fixed | 15 | 72 | 259 | 535 | 881 |
+| open | 0 | 0 | 2 | 90 | 92 |
+| in-progress | 0 | 1 | 8 | 0 | 9 |
+| fixed | 15 | 73 | 260 | 535 | 883 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **72** | **277** | **646** | **1010** |
+| **Total** | **15** | **74** | **279** | **647** | **1015** |
 
 ### Epics
 
@@ -9810,7 +9810,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.VlsSigning/`, `tools/vls-gateway/`, `docs/agents/VLS_NODE_MVP.md`, application commitment/revocation hooks
-- **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The core spike uses artificial fixtures and DummyPersister. The subsequent `tools/vls-gateway` prototype has authenticated Unix semantic commands, separately credentialed keysend approval, injected seed and atomic transactional Redb policy-state/receipts, plus actual-process restart and policy/signature checks. The fresh-node sprint adds a C# semantic adapter, signed-invoice approval and a conservative regtest private-channel profile, with durable allocation/opening/commitment/activation/revocation workflows. Current acceptance execution is recorded in `docs/agents/VLS_NODE_MVP.md`. Full on-chain claims/penalties/sweeps, independent chain tracking, broader close recovery, external state freshness/fencing and enclave deployment remain unproven. Stock splice/taproot support is insufficient for the current node feature set.
+- **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The core spike uses artificial fixtures and DummyPersister. The subsequent `tools/vls-gateway` prototype has authenticated Unix semantic commands, separately credentialed keysend approval, injected seed and atomic transactional Redb policy-state/receipts, plus actual-process restart and policy/signature checks. The fresh-node sprint adds a C# semantic adapter, signed-invoice approval and a conservative regtest private-channel profile, with durable allocation/opening/commitment/activation/revocation workflows. Current acceptance execution is recorded in `docs/agents/VLS_NODE_MVP.md`. Full on-chain claims/penalties/sweeps, independent chain tracking, broader close recovery, external state freshness/fencing and enclave deployment remain unproven. Stock splice/taproot support is insufficient for the current node feature set. Public channels (VLS-signed `channel_announcement`, proven by LND learning the channel by gossip), withdrawals to operator-allowlisted addresses and LND-style `signmessage` now go through VLS (NL-1335); withdrawal request-ID recovery is NL-1336.
 - **Fix sketch:** FAFO owner decision (2026-10-07): only user, no prior-version compatibility requirement; use stock VLS derivation with fresh identities/wallets/channels and exclude legacy key/state migration. Extend the fresh-node ECDSA adapter beyond its bounded regtest proof: add complete on-chain claims and sweeps, independent chain tracking, application recovery for uncertain funding/close outcomes, and externally fenced signer state without native fallback.
 - **Blocks/Blocked-by:** NL-1304; scope and acceptance gates in the VLS assessment
 
@@ -10818,3 +10818,23 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** durable sessions expire during explicit operations; background callbacks do not mutate their journal. Shutdown closes the store under the session gate and queued callbacks reject disposed state.
 - **Validation:** all three lifecycle cases pass in the 219-case sequential native RPC regression: idle expiry preserves committed history, shutdown serializes with an active session creation/write, and queued callbacks cannot touch a disposed journal.
 - **Blocks/Blocked-by:** NL-1311; native signer lifecycle recovery.
+
+
+### NL-1335 VLS mode refused public channels, withdrawals and signmessage
+- **Status:** fixed (wip/vls-public)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.VlsSigning/VlsLightningSigner.Public.cs`, `VlsWalletApprovalClient.cs`, `tools/vls-gateway/main.rs` (`dispatch_public`), `ChannelFactory`, `VlsCapabilityProfile`, `tools/vls-approve/approve.py`
+- **Evidence:** the VLS profile refused `--public` and announced opens and forced `Gossip:AcceptPublicChannels` off, `SignChannelAnnouncement` and the reserved-input `SignWalletTransaction` threw, and `SignLightningMessage` was the interface default (not supported). The pinned VLS revision `cb8a64c7` has `Channel::sign_channel_announcement_with_funding_key`, the node-key gossip signer, `Node::sign_message` and the allowlist that `check_onchain_tx` consults for non-wallet outputs.
+- **Fix:** gateway `sign_channel_announcement` (parsed and bound to the VLS channel: chain, node order, our node id, the channel's peer, both funding keys, funding output index, data loss and closed refusals), `sign_message`, and approval-socket `allowlist_address`; the C# signer binds announcements to the registered channel and verifies both signatures, signs `withdraw` through `wallet_sign` over inputs held by the withdrawal's reservation only, and returns LND's recoverable signature form (checked to recover the node key). The public-channel refusals in `ChannelFactory` and the profile's `AcceptPublicChannels` override are gone (`AllowPublicChannelsOnMainnet` stays false). Refused explicitly, no local fallback: single-SHA256 `signmessage` (VLS has only SHA256d), wallet spends with non-wallet inputs (PSBT, fee inputs), gossip v2.
+- **Validation:** `VlsPublicSigningTests` 3/3 against the pinned gateway; `VlsSignerPublicLndClusterTests` 1/1 live (`rc-20261008173423`): LND learned the public channel (both policies) and our node by gossip, LND `VerifyMessage` valid for our pubkey, a non-allowlisted withdrawal refused, the allowlisted one accepted and confirmed 6 deep by Bitcoin Core with change to a VLS change address. Existing VLS proofs unchanged: gateway process test 1/1, `VlsGatewayProcessTests` 4/4, `VlsChannelHarnessTests` 2/2, `VlsChannelProfileTests` 8/8, `VlsWorkflowReceiptPolicyTests` 5/5, the node crash proof 9/9.
+- **Blocks/Blocked-by:** NL-1307
+
+### NL-1336 VLS withdrawal signing has no node-owned request-ID recovery workflow
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `WalletSpendService` (VLS mode), `VlsLightningSigner.SignWalletTransaction`, `VlsSigningWorkflowCoordinator`
+- **Evidence:** a VLS withdrawal's `wallet_sign` gets a gateway receipt, but the node does not persist its request ID and command before dispatch (`WalletSpendService` only captures workflows for the native signer). A crash between the signature and the `WalletSend` row leaves the reservation to the orphan sweep and a signed transaction the node cannot reconcile; funding and close have the same gap (NL-1307).
+- **Fix sketch:** capture the withdrawal's VLS request in the workflow coordinator before dispatch and reconcile its receipt at startup, as the native withdrawal recovery does.
+- **Blocks/Blocked-by:** NL-1307, NL-1335

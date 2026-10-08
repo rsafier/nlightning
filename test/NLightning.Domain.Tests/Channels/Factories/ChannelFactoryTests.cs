@@ -7,6 +7,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Factories;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Validators.Parameters;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Crypto.Hashes;
@@ -69,7 +70,6 @@ public class ChannelFactoryTests
     }
 
     [Theory]
-    [InlineData("public", "private channels only")]
     [InlineData("push", "push amounts")]
     [InlineData("taproot", "ECDSA channels only")]
     [InlineData("funding", "whole satoshis")]
@@ -79,7 +79,6 @@ public class ChannelFactoryTests
         var vls = signer.As<IVlsChannelSigner>();
         var factory = CreateVlsRejectionFactory(signer.Object);
         var request = CreateRequest(LightningMoney.Satoshis(100_000));
-        request.IsPublic = kind == "public";
         request.IsSimpleTaproot = kind == "taproot";
         if (kind == "push") request.PushAmount = LightningMoney.MilliSatoshis(1UL);
         if (kind == "funding") request.FundingAmount = LightningMoney.MilliSatoshis(100_000_001UL);
@@ -96,23 +95,46 @@ public class ChannelFactoryTests
     }
 
     [Fact]
-    public async Task PublicVlsInboundOpenIsRejectedBeforeKeyAllocation()
+    public async Task Given_VlsSigner_When_OpeningAPublicChannel_Then_TheOpenPassesTheVlsGate()
     {
+        // Arrange: public channels are signed through VLS (NL-1335); the next check (the channel size) answers
         var signer = new Mock<ILightningSigner>(MockBehavior.Strict);
-        var vls = signer.As<IVlsChannelSigner>();
+        signer.As<IVlsChannelSigner>();
         var factory = CreateVlsRejectionFactory(signer.Object);
+        var request = CreateRequest(LightningMoney.Satoshis(999));
+        request.IsPublic = true;
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(() =>
+            factory.CreateChannelV1AsInitiatorAsync(request, s_noSplice, s_remoteNodeId));
+
+        // Assert
+        Assert.Contains("MinimumChannelSize", exception.Message);
+        Assert.Empty(signer.Invocations);
+    }
+
+    [Fact]
+    public async Task Given_VlsSigner_When_APeerOpensAPublicChannel_Then_TheOpenReachesTheOpenValidator()
+    {
+        // Arrange: the strict validator is the first collaborator after the VLS gate
+        var signer = new Mock<ILightningSigner>(MockBehavior.Strict);
+        signer.As<IVlsChannelSigner>();
+        var validator = new Mock<IChannelOpenValidator>(MockBehavior.Strict);
+        validator.Setup(v => v.PerformOptionalChecks(It.IsAny<ChannelOpenOptionalValidationParameters>()))
+                 .Throws(new ChannelErrorException("validator reached"));
+        var factory = new ChannelFactory(new Mock<IChannelIdFactory>(MockBehavior.Strict).Object, validator.Object,
+                                         new Mock<IFeeService>(MockBehavior.Strict).Object, signer.Object,
+                                         new NodeOptions { MinimumChannelSize = LightningMoney.Satoshis(1_000) },
+                                         new Mock<ISha256>(MockBehavior.Strict).Object);
         var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
                                                channelFlags: ChannelFlag.AnnounceChannel);
 
+        // Act
         var exception = await Assert.ThrowsAsync<ChannelErrorException>(() =>
             factory.CreateChannelV1AsNonInitiatorAsync(message, s_noSplice, s_remoteNodeId));
 
-        Assert.Contains("private channels only", exception.Message);
-        Assert.Equal(s_temporaryChannelId, exception.ChannelId);
-        ChannelBasepoints basepoints = default;
-        CompactPubKey point = default;
-        vls.Verify(s => s.CreateNewChannel(It.IsAny<CompactPubKey>(), out basepoints, out point), Times.Never);
-        signer.Verify(s => s.CreateNewChannel(out basepoints, out point), Times.Never);
+        // Assert
+        Assert.Equal("validator reached", exception.Message);
         Assert.Empty(signer.Invocations);
     }
 

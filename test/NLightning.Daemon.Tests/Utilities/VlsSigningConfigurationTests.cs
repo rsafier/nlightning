@@ -93,7 +93,9 @@ public class VlsSigningConfigurationTests
         Assert.Equal(FeatureSupport.No, options.Features.OptionSplice);
         Assert.Equal(FeatureSupport.No, options.Features.DualFund);
         Assert.Equal(FeatureSupport.No, options.Features.OptionProvideStorage);
-        Assert.False(profiled.GetValue<bool>("Gossip:AcceptPublicChannels"));
+        // Public channels are signed through VLS (NL-1335): the profile leaves the operator's choice alone
+        Assert.True(profiled.GetValue<bool>("Gossip:AcceptPublicChannels"));
+        Assert.False(profiled.GetValue<bool>("Gossip:AllowPublicChannelsOnMainnet"));
         // The profile no longer forces whole-satoshi forwarding fees
         Assert.Equal(500U, options.Routing.FeeProportionalMillionths);
         Assert.Empty(ConfigurationCheck.Run(configuration, "regtest"));

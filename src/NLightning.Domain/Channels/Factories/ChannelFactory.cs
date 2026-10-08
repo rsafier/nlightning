@@ -72,8 +72,6 @@ public class ChannelFactory : IAllocatedV1ChannelFactory
         if (_lightningSigner is IVlsChannelSigner
          && (payload.PushAmount.MilliSatoshi % 1_000 != 0 || payload.FundingAmount.MilliSatoshi % 1_000 != 0))
             throw new ChannelErrorException("VLS requires opening balances in whole satoshis", payload.ChannelId);
-        if (_lightningSigner is IVlsChannelSigner && payload.ChannelFlags.AnnounceChannel)
-            throw new ChannelErrorException("The VLS prototype supports private channels only", payload.ChannelId);
         if (_lightningSigner is IVlsChannelSigner
          && TaprootChannelType.IsTaprootChannelType(message.ChannelTypeTlv?.Features))
             throw new ChannelErrorException("VLS supports single-funded ECDSA channels only", payload.ChannelId);
@@ -215,8 +213,6 @@ public class ChannelFactory : IAllocatedV1ChannelFactory
     {
         if (_lightningSigner is IVlsChannelSigner && request.FundingAmount.MilliSatoshi % 1_000 != 0)
             throw new ChannelErrorException("VLS requires opening balances in whole satoshis");
-        if (_lightningSigner is IVlsChannelSigner && request.IsPublic)
-            throw new ChannelErrorException("The VLS prototype supports private channels only");
         if (_lightningSigner is IVlsChannelSigner && request.IsSimpleTaproot)
             throw new ChannelErrorException("VLS supports single-funded ECDSA channels only");
         if (_lightningSigner is IVlsChannelSigner && request.PushAmount is { } push && push > LightningMoney.Zero)

@@ -85,3 +85,21 @@ does not print credentials, invoices, hashes, or gateway-supplied error text.
 `VlsPaymentApprovalClient` offers equivalent explicit approval operations for a
 trusted .NET operator application; it must remain outside node dependency
 injection. Approval does not submit a payment and the node does not call it.
+
+## Withdrawal destination
+
+VLS signs a withdrawal only to its own wallet (change) or to an allowlisted
+destination (NL-1335). After checking the destination address independently,
+allowlist it, then run the node's ordinary `withdraw`:
+
+```bash
+python3 tools/vls-approve/approve.py \
+  --socket /private/vls-gateway/approval.sock \
+  --token-file /private/vls-gateway/approval-token \
+  --request-id YOUR_SAVED_UUID \
+  allowlist --address bcrt1q...
+nltg withdraw bcrt1q... 250000
+```
+
+The allowlist is VLS node state and survives gateway restarts. A withdrawal to any
+other address is refused by VLS's on-chain policy and nothing is published.

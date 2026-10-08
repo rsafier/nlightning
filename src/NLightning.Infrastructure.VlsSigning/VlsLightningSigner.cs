@@ -20,7 +20,7 @@ using TxId = NLightning.Domain.Bitcoin.ValueObjects.TxId;
 namespace NLightning.Infrastructure.VlsSigning;
 
 /// <summary>VLS semantic policy operations; generic channel signing is explicitly refused.</summary>
-public sealed class VlsLightningSigner(VlsSignerConnection connection, VlsChannelMappingRegistry mappings,
+public sealed partial class VlsLightningSigner(VlsSignerConnection connection, VlsChannelMappingRegistry mappings,
     IChannelSigningInfoSource? signingInfoSource = null, IUtxoMemoryRepository? wallet = null) : ILightningSigner, IVlsChannelSigner, IVlsGossipSigner
 {
     private readonly Dictionary<ChannelId, ChannelSigningInfo> _registered = [];
@@ -115,7 +115,6 @@ public sealed class VlsLightningSigner(VlsSignerConnection connection, VlsChanne
     {
         try { return new PubKey(nodeId).Verify(new uint256(messageHash), ParseSignature(signature)); } catch { return false; }
     }
-    public ChannelAnnouncementSignatures SignChannelAnnouncement(ChannelId channelId, ReadOnlyMemory<byte> unsignedAnnouncement, ShortChannelId shortChannelId) => throw Unsupported();
     public IReadOnlyList<CompactSignature> SignRemoteHtlcTransactions(ChannelId channelId, IReadOnlyList<HtlcSigningContext> htlcTransactions) => throw Unsupported();
     public void ValidateLocalHtlcSignatures(ChannelId channelId, IReadOnlyList<HtlcSigningContext> htlcTransactions, IReadOnlyList<CompactSignature> signatures) => throw Unsupported();
     public CompactSignature SignLocalHtlcTransaction(ChannelId channelId, HtlcSigningContext htlcTransaction) => throw Unsupported();
@@ -155,7 +154,6 @@ public sealed class VlsLightningSigner(VlsSignerConnection connection, VlsChanne
     public CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context) => throw Unsupported();
     public bool SignWalletTransaction(SignedTransaction unsignedTransaction) => throw new NotSupportedException("VLS prototype only permits policy-checked channel funding transactions.");
     public bool SignWalletTransaction(SignedTransaction unsignedTransaction, IReadOnlyList<SpentOutput> otherSpentOutputs) => throw Unsupported();
-    public bool SignWalletTransaction(SignedTransaction unsignedTransaction, Guid reservationId, IReadOnlyList<SpentOutput> otherSpentOutputs) => throw Unsupported();
     public bool SignFundingTransaction(ChannelId channelId, SignedTransaction unsignedTransaction)
     {
         if (wallet is null) throw new SignerException("VLS wallet context unavailable.");

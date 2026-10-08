@@ -43,10 +43,16 @@ def main():
     keysend.add_argument("--payee", required=True)
     keysend.add_argument("--payment-hash", required=True)
     keysend.add_argument("--amount-msat", required=True, type=int)
+    allowlist = commands.add_parser("allowlist", help="allowlist an independently checked withdrawal address")
+    allowlist.add_argument("--address", required=True)
     args = parser.parse_args()
 
     if args.action == "invoice":
         command = {"op": "authorize_invoice", "invoice": Path(args.invoice_file).read_text().strip()}
+    elif args.action == "allowlist":
+        if not args.address.isascii() or not args.address.isalnum():
+            raise ValueError("address must be a bech32 or base58 address")
+        command = {"op": "allowlist_address", "address": args.address}
     else:
         if not 0 < args.amount_msat < 2 ** 64:
             raise ValueError("amount must be a positive uint64 in millisatoshis")
@@ -75,8 +81,11 @@ def main():
                 raise ValueError("approval response exceeds gateway frame limit")
     reply = json.loads(response.split(b"\n", 1)[0])
     if reply.get("ok") is not True or reply.get("result", {}).get("added") is not True:
-        raise ValueError("payment was not admitted; do not submit it to the node")
-    print("Payment admitted by VLS. Submit the matching payment to the node.")
+        raise ValueError("request was not admitted; do not submit it to the node")
+    if args.action == "allowlist":
+        print("Address allowlisted by VLS. Withdrawals to it may now be submitted to the node.")
+    else:
+        print("Payment admitted by VLS. Submit the matching payment to the node.")
 
 
 if __name__ == "__main__":
