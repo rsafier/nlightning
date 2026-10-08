@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 89 | 91 |
+| open | 0 | 0 | 2 | 91 | 93 |
 | in-progress | 0 | 0 | 7 | 0 | 7 |
-| fixed | 15 | 72 | 259 | 535 | 881 |
+| fixed | 15 | 72 | 260 | 535 | 882 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **72** | **277** | **646** | **1010** |
+| **Total** | **15** | **72** | **278** | **648** | **1013** |
 
 ### Epics
 
@@ -9811,7 +9811,8 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.VlsSigning/`, `tools/vls-gateway/`, `docs/agents/VLS_NODE_MVP.md`, application commitment/revocation hooks
 - **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The core spike uses artificial fixtures and DummyPersister. The subsequent `tools/vls-gateway` prototype has authenticated Unix semantic commands, separately credentialed keysend approval, injected seed and atomic transactional Redb policy-state/receipts, plus actual-process restart and policy/signature checks. The fresh-node sprint adds a C# semantic adapter, signed-invoice approval and a conservative regtest private-channel profile, with durable allocation/opening/commitment/activation/revocation workflows. Current acceptance execution is recorded in `docs/agents/VLS_NODE_MVP.md`. Full on-chain claims/penalties/sweeps, independent chain tracking, broader close recovery, external state freshness/fencing and enclave deployment remain unproven. Stock splice/taproot support is insufficient for the current node feature set.
-- **Fix sketch:** FAFO owner decision (2026-10-07): only user, no prior-version compatibility requirement; use stock VLS derivation with fresh identities/wallets/channels and exclude legacy key/state migration. Extend the fresh-node ECDSA adapter beyond its bounded regtest proof: add complete on-chain claims and sweeps, independent chain tracking, application recovery for uncertain funding/close outcomes, and externally fenced signer state without native fallback.
+- **Progress (lane vls-onchain, NL-1320):** on-chain resolution of static_remotekey channels goes through VLS's semantic signers (HTLC transactions, delayed sweeps, claims on the peer's commitment, penalties, `to_remote`) and is proven live against LND for both force closes with an HTLC each way and an LND `channel.db` rollback penalty; anchors stay refused, and the sweep signatures are not node-owned workflows (NL-1321) nor checked against a tracked chain (NL-1322).
+- **Fix sketch:** FAFO owner decision (2026-10-07): only user, no prior-version compatibility requirement; use stock VLS derivation with fresh identities/wallets/channels and exclude legacy key/state migration. Extend the fresh-node ECDSA adapter beyond its bounded regtest proof: add complete on-chain claims and sweeps for anchors channels, independent chain tracking, application recovery for uncertain funding/close outcomes, and externally fenced signer state without native fallback.
 - **Blocks/Blocked-by:** NL-1304; scope and acceptance gates in the VLS assessment
 
 ### NL-1308 Nitro signer deployment needs attested provisioning and trustworthy external state
@@ -10818,3 +10819,32 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** durable sessions expire during explicit operations; background callbacks do not mutate their journal. Shutdown closes the store under the session gate and queued callbacks reject disposed state.
 - **Validation:** all three lifecycle cases pass in the 219-case sequential native RPC regression: idle expiry preserves committed history, shutdown serializes with an active session creation/write, and queued callbacks cannot touch a disposed journal.
 - **Blocks/Blocked-by:** NL-1311; native signer lifecycle recovery.
+
+
+### NL-1320 VLS node could not resolve any output on chain after a force close
+- **Status:** fixed (branch `wip/vls-onchain`)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.VlsSigning/VlsLightningSigner.Onchain.cs`, `tools/vls-gateway/main.rs` (the BOLT 5 block), `docs/agents/VLS_NODE_MVP.md`
+- **Evidence:** `VlsLightningSigner.SignLocalHtlcTransaction` and `SignSweepInput` threw `NotSupportedException`, so after a force close (ours or the peer's) a VLS node broadcast its commitment but left every HTLC, delayed, `to_remote` and penalty output unclaimed.
+- **Fix:** five gateway commands over VLS's semantic API at the pinned revision `cb8a64c7`: `sign_holder_htlc` (`Channel::sign_holder_htlc_tx`, phase 1: VLS rebuilds the HTLC transaction from its own keys and checks the sighash and feerate), `sign_delayed_sweep` (`sign_delayed_sweep`), `sign_counterparty_htlc_sweep`, `sign_justice_sweep` and `sign_to_remote_sweep` (the channel's `get_unilateral_close_key` with VLS's `check_onchain_tx` + `unchecked_sign_onchain_tx`; a one-input sweep passes VLS's on-chain fee and velocity policy, in a penalty batch the gateway checks version 2 and that every output is VLS-wallet spendable). HTLC transactions and delayed sweeps are signed only for the commitment the gateway signed for broadcast (its broadcast mark, the point checked against VLS's own); every sweep pays one VLS wallet child path that VLS's `validate_*_sweep` checks (version, sequence, locktime, fee range). Anchors channels are refused by the gateway, taproot contexts by the adapter; no local-key fallback.
+- **Validation:** `RemoteSigning.Tests/VlsOnchainSigningProcessTests` 6/6 against the real gateway (signatures verified against the BOLT 3 keys derived from the channel's VLS basepoints, foreign destinations refused by VLS, missing broadcast mark and anchors refused); live `Docker/Onchain/VlsOnchainResolutionTests` against LND 0.21.4 on the cluster (both force closes with an HTLC each way, and a penalty after an LND `channel.db` rollback), every output Irrevocable and the channel Closed; runs in `docs/agents/VLS_NODE_MVP.md` "On-chain resolution".
+- **Blocks/Blocked-by:** part of NL-1307; follow-ups NL-1321, NL-1322.
+
+### NL-1321 VLS on-chain resolution signatures are not node-owned workflows
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `VlsLightningSigner.Onchain.cs`, `VlsSigningWorkflowCoordinator`, `SweepScheduler`/`InitialDelayedSweepWorkflow` (native `INativeSweepSigningRecovery` only)
+- **Evidence:** the gateway keeps a receipt per request, but the node sends each sweep, claim, penalty and HTLC-transaction signature with a fresh request ID and saves none: the application's sweep workflows are keyed on `INativeSweepSigningRecovery`, which only the native coordinator implements. VLS's HTLC and sweep signers change no policy state and are deterministic (RFC 6979), so a crash before the broadcast row is saved re-signs the same transaction; the one stateful exception is a one-input `to_remote` sweep, whose `check_onchain_tx` adds its fee to VLS's daily fee velocity again when it is re-signed. Each re-sign also consumes gateway receipt capacity (65,536).
+- **Fix sketch:** have `VlsSigningWorkflowCoordinator` implement the sweep recovery interfaces (OnchainSweep/OnchainInitialSweep kinds, publication intents, the 2100-2104 operations), or exempt stateless BOLT 5 commands from receipts.
+- **Blocks/Blocked-by:** NL-1307, NL-1320
+
+### NL-1322 The VLS gateway feeds no blocks to VLS, so its sweep locktime checks use a stale height
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `tools/vls-gateway/main.rs`; VLS `SimpleValidator::validate_{delayed,counterparty_htlc,justice}_sweep` (`policy-sweep-locktime`, `MAX_CHAIN_LAG` 2)
+- **Evidence:** VLS checks a sweep's `nLockTime` against the channel monitor's height + 2, and the gateway never adds blocks to VLS's chain tracker. Our sweeps use `nLockTime` 0 (timeout claims their `cltv_expiry`, checked against the script instead), so they pass; a sweep with an anti-fee-sniping locktime at the current height would be refused, and VLS's chain-state policies (funding depth, closing depth) see no chain.
+- **Fix sketch:** independent chain tracking for VLS (headers and TXOO proofs through `ChainTracker::add_block`), part of NL-1307's chain-tracking gate; until then keep sweep locktimes at 0 or `cltv_expiry`.
+- **Blocks/Blocked-by:** NL-1307

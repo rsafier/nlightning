@@ -113,14 +113,66 @@ other duplicate adds retain normal protocol rejection.
 The local Redb transaction commits VLS policy state and immutable receipts before
 replying. This does not establish external rollback protection or cloned-writer
 fencing. The regtest policy does not independently track/validate the chain.
-Force-close broadcast acceptance is distinct from complete output recovery:
-HTLC claims, penalties, delayed sweeps and anchors need a separate adapter proof.
+On-chain resolution of static_remotekey channels is proven (see "On-chain
+resolution" below); anchors channels remain refused by the gateway.
 Wallet funding and close calls have gateway receipts, but their original request
 IDs are not yet persisted as complete node application workflows. Unknown
 funding/close outcomes therefore remain a deployment gate. Mutual-close and
 force-close application recovery beyond the tested cases,
 receipt compaction, deadline monitoring, transport performance, vsock and attested
 seed provisioning remain deployment work. Keep `NL-1307` open for these gates.
+
+## On-chain resolution (lane vls-onchain, NL-1320)
+
+Every output our node resolves after a force close, ours or the peer's, is signed
+by VLS's semantic API at the pinned revision; there is no generic transaction
+signer and no local-key fallback:
+
+| Output | ILightningSigner call | Gateway command | VLS API and policy |
+|---|---|---|---|
+| Our HTLC-success/-timeout on our commitment | `SignLocalHtlcTransaction` | `sign_holder_htlc` | `Channel::sign_holder_htlc_tx` (phase 1): rebuilds the HTLC tx from VLS's keys, checks sighash, locktime and feerate |
+| Our `to_local` and the second-level outputs | `SignSweepInput` `DelayedPayment` | `sign_delayed_sweep` | `sign_delayed_sweep`: wallet destination, sequence = contest delay, locktime, fee range |
+| HTLC claims on the peer's commitment | `SignSweepInput` `HtlcRemotePoint` | `sign_counterparty_htlc_sweep` | `sign_counterparty_htlc_sweep`: script parsed, locktime against the expiry |
+| Penalties (to_local, HTLC, second-level) | `SignSweepInput` `Revocation` | `sign_justice_sweep` | `sign_justice_sweep` with the peer's revealed secret |
+| Our static `to_remote` | `SignSweepInput` `Payment` | `sign_to_remote_sweep` | `get_unilateral_close_key` + `check_onchain_tx` (one input) + `unchecked_sign_onchain_tx` |
+
+HTLC transactions and delayed sweeps are signed only for the commitment the
+gateway signed for broadcast: the per-commitment point must be VLS's own point
+of the number in its broadcast mark. Every sweep pays exactly one VLS wallet
+child path, which VLS's sweep policy checks; in a penalty batch the `to_remote`
+input has no amounts for the other inputs, so the gateway checks version 2 and
+the wallet destination itself and the justice inputs carry VLS's checks. The
+adapter refuses taproot contexts, the gateway refuses anchors channels.
+
+Known limits: the gateway feeds VLS no blocks, so VLS checks sweep locktimes
+against a stale height; our sweeps use locktime 0 (timeout claims their
+`cltv_expiry`) and pass (NL-1322). These signatures are stateless and
+deterministic in VLS and are not node-owned workflows: a crash before the
+broadcast row is saved re-signs with a new request ID (NL-1321).
+
+Proofs (explicit, need `NLTG_VLS_GATEWAY_BINARY`):
+`RemoteSigning.Tests/VlsOnchainSigningProcessTests` (the commands against the
+real gateway, signatures checked against the BOLT 3 keys derived from VLS's
+basepoints, refusals) and the live
+`Integration.Tests/Docker/Onchain/VlsOnchainResolutionTests` against LND 0.21.4
+on the cluster (`scripts/run-cluster.sh -n 1 --suite onchain --class
+NLightning.Integration.Tests.Docker.Onchain.VlsOnchainResolutionTests
+--explicit only`): (1) our force close with an HTLC each way: HTLC-success with
+the preimage, HTLC-timeout at the expiry, both second-level outputs and
+`to_local` after the CSV; (2) LND's force close: preimage claim, timeout claim,
+`to_remote`; (3) LND restarted on an old `channel.db` with an HTLC and
+force-closing with the revoked commitment: one penalty takes its `to_local`, the
+HTLC and our `to_remote`. Each ends with every output Irrevocable, the channel
+Closed and Bitcoin Core holding every transaction.
+
+Runs (2026-10-08, OrbStack, from the host): process tests 6/6; live batch
+`rc-20261008173617` 3/3 green (218 s; gateway binary SHA256 `fbe320186399422d3f36c1794c0a91c62e69fbfd68acb77acd0abeeb7f9337c4`).
+The penalty took 991,040 sat of the revoked commitment (capacity less its
+8,960 sat fee) and the wallet gained 987,383 sat. The first live batch
+(`rc-20261008173117`) passed both force closes and failed the penalty case's
+setup: its 5,000 sat payments were trimmed at 10,000 sat/kw and refused by the
+zero-dust restriction (VLS requires non-dust HTLCs), so the case now pays
+20,000 sat.
 
 ## Millisatoshi accounting (resolved 2026-10-08)
 
@@ -166,7 +218,8 @@ listener's `O_NONBLOCK`, which dropped requests still in flight.
   blocks and the exact original funding input. LND → VLS → LND forwards a
   200,000,000-msat payment; the persisted fulfilled circuit binds distinct input
   and output channels and the actual forwarded amounts. Together with local
-  proofs, 17 actual C# VLS cases pass. Force-close output sweeps remain unproved.
+  proofs, 17 actual C# VLS cases pass. Force-close output sweeps were proven later
+  (On-chain resolution above).
 
 Final live runner: `nltg-spike-runner:vls-signer-20261008-d`, config SHA
 `f3f621252ff3cf7af5d98e6700360ea10383fc845dde109d6221a90536adee70`.

@@ -160,6 +160,54 @@ enum Command {
         hash: String,
         amount_msat: u64,
     },
+    // --- BOLT 5 on-chain resolution (lane vls-onchain): VLS's semantic HTLC, sweep and justice signers ---
+    /// Our HTLC-success/timeout transaction on the commitment signed for broadcast (`sign_holder_htlc_tx`).
+    SignHolderHtlc {
+        channel: String,
+        transaction: String,
+        point: String,
+        redeemscript: String,
+        amount_sat: u64,
+    },
+    /// Our to_local or a second-level HTLC output of the commitment signed for broadcast (`sign_delayed_sweep`).
+    SignDelayedSweep {
+        channel: String,
+        transaction: String,
+        input: u32,
+        point: String,
+        redeemscript: String,
+        amount_sat: u64,
+        wallet_path: String,
+    },
+    /// An HTLC output of the peer's commitment, by preimage or after its expiry (`sign_counterparty_htlc_sweep`).
+    SignCounterpartyHtlcSweep {
+        channel: String,
+        transaction: String,
+        input: u32,
+        point: String,
+        redeemscript: String,
+        amount_sat: u64,
+        wallet_path: String,
+    },
+    /// A revoked commitment's or second-level output by the revocation key (`sign_justice_sweep`).
+    SignJusticeSweep {
+        channel: String,
+        transaction: String,
+        input: u32,
+        secret: String,
+        redeemscript: String,
+        amount_sat: u64,
+        wallet_path: String,
+    },
+    /// Our static_remotekey to_remote on a peer commitment (`get_unilateral_close_key` + VLS's on-chain signer).
+    SignToRemoteSweep {
+        channel: String,
+        transaction: String,
+        input: u32,
+        amount_sat: u64,
+        wallet_path: String,
+    },
+    // --- end of the on-chain resolution commands ---
     Reconcile {
         id: String,
         command: Box<Command>,
@@ -612,10 +660,277 @@ impl Gateway {
                 let bytes:[u8;32]=hex::decode(hash).map_err(|_|"invalid payment hash")?.try_into().map_err(|_|"invalid payment hash")?;
                 let added=self.node.add_keysend(key(&payee)?,PaymentHash(bytes),amount_msat).map_err(|e|e.to_string())?;Ok(json!({"added":added}))
             },
+            // BOLT 5 on-chain resolution (lane vls-onchain)
+            command @ (Command::SignHolderHtlc { .. }
+            | Command::SignDelayedSweep { .. }
+            | Command::SignCounterpartyHtlcSweep { .. }
+            | Command::SignJusticeSweep { .. }
+            | Command::SignToRemoteSweep { .. }) => self.dispatch_onchain(command),
             Command::Reconcile {..} => unreachable!()
         }
     }
 }
+// --- BOLT 5 on-chain resolution (lane vls-onchain) ---
+// Every output our node resolves after a force close is signed by VLS's semantic API and its policy, never by a generic
+// transaction signer: HTLC transactions and delayed sweeps only for the commitment this gateway signed for broadcast,
+// sweeps only to this node's VLS wallet (VLS's validate_*_sweep: destination, version, sequence, locktime, fee range).
+// Anchors channels are refused here (their HTLC transactions and to_remote differ; another lane).
+impl Gateway {
+    /// The number of the holder commitment signed for broadcast (`force_close`), which `point` must belong to.
+    fn broadcast_commitment(&self, ch: &str, point: &PublicKey) -> Result<u64, String> {
+        let (_, bytes) = self
+            .store
+            .get(&format!(
+                "nltg-gateway/broadcast/{}",
+                canonical_channel(ch)?
+            ))
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or("no commitment of this channel was signed for broadcast")?;
+        let number = serde_json::from_slice::<u64>(&bytes).map_err(|_| "corrupt broadcast mark")?;
+        let expected = self
+            .node
+            .with_channel_base(&channel(ch)?, |c| c.get_per_commitment_point(number))
+            .map_err(|e| e.to_string())?;
+        if expected != *point {
+            return Err(
+                "per-commitment point is not the one of the commitment signed for broadcast".into(),
+            );
+        }
+        Ok(number)
+    }
+    fn refuse_anchors(&self, ch: &str) -> Result<(), String> {
+        if self
+            .node
+            .with_channel(&channel(ch)?, |c| Ok(c.setup.is_anchors()))
+            .map_err(|e| e.to_string())?
+        {
+            return Err("on-chain resolution of anchors channels is outside this gateway".into());
+        }
+        Ok(())
+    }
+    fn dispatch_onchain(&self, command: Command) -> Result<Value, String> {
+        use lightning_signer::bitcoin::{
+            transaction::Version, Address, Amount, CompressedPublicKey, EcdsaSighashType,
+        };
+        use lightning_signer::wallet::Wallet;
+        let parse_tx = |hex_tx: &str, input: u32| -> Result<Transaction, String> {
+            let tx: Transaction =
+                deserialize(&hex::decode(hex_tx).map_err(|_| "invalid transaction hex")?)
+                    .map_err(|_| "invalid transaction")?;
+            if input as usize >= tx.input.len() || tx.output.is_empty() {
+                return Err("input index or outputs out of range".into());
+            }
+            Ok(tx)
+        };
+        let script = |s: &str| -> Result<ScriptBuf, String> {
+            hex::decode(s)
+                .map(ScriptBuf::from_bytes)
+                .map_err(|_| "invalid script".into())
+        };
+        let wallet = |p: &str| -> Result<DerivationPath, String> {
+            let path = DerivationPath::from_str(p).map_err(|_| "invalid wallet path")?;
+            if path.len() != 1 {
+                return Err("a sweep pays one VLS wallet child path".into());
+            }
+            Ok(path)
+        };
+        let signed = |s: Signature| Ok(json!({"signature":hex::encode(s.serialize_compact())}));
+        match command {
+            Command::SignHolderHtlc {
+                channel: ch,
+                transaction,
+                point,
+                redeemscript,
+                amount_sat,
+            } => {
+                self.refuse_anchors(&ch)?;
+                let tx = parse_tx(&transaction, 0)?;
+                if tx.input.len() != 1 || tx.output.len() != 1 {
+                    return Err("an HTLC transaction has one input and one output".into());
+                }
+                let number = self.broadcast_commitment(&ch, &key(&point)?)?;
+                let redeemscript = script(&redeemscript)?;
+                // VLS rebuilds the transaction from its own keys; the output script is only used in its failure log
+                let typed = self
+                    .node
+                    .with_channel(&channel(&ch)?, |c| {
+                        c.sign_holder_htlc_tx(
+                            &tx,
+                            number,
+                            None,
+                            &redeemscript,
+                            amount_sat,
+                            &ScriptBuf::new(),
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+                if typed.typ != EcdsaSighashType::All {
+                    return Err("unexpected HTLC transaction sighash type".into());
+                }
+                signed(typed.sig)
+            }
+            Command::SignDelayedSweep {
+                channel: ch,
+                transaction,
+                input,
+                point,
+                redeemscript,
+                amount_sat,
+                wallet_path,
+            } => {
+                self.refuse_anchors(&ch)?;
+                let tx = parse_tx(&transaction, input)?;
+                let number = self.broadcast_commitment(&ch, &key(&point)?)?;
+                let (redeemscript, path) = (script(&redeemscript)?, wallet(&wallet_path)?);
+                let sig = self
+                    .node
+                    .with_channel(&channel(&ch)?, |c| {
+                        c.sign_delayed_sweep(
+                            &tx,
+                            input as usize,
+                            number,
+                            &redeemscript,
+                            amount_sat,
+                            &path,
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+                signed(sig)
+            }
+            Command::SignCounterpartyHtlcSweep {
+                channel: ch,
+                transaction,
+                input,
+                point,
+                redeemscript,
+                amount_sat,
+                wallet_path,
+            } => {
+                self.refuse_anchors(&ch)?;
+                let tx = parse_tx(&transaction, input)?;
+                let (point, redeemscript, path) =
+                    (key(&point)?, script(&redeemscript)?, wallet(&wallet_path)?);
+                let sig = self
+                    .node
+                    .with_channel(&channel(&ch)?, |c| {
+                        c.sign_counterparty_htlc_sweep(
+                            &tx,
+                            input as usize,
+                            &point,
+                            &redeemscript,
+                            amount_sat,
+                            &path,
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+                signed(sig)
+            }
+            Command::SignJusticeSweep {
+                channel: ch,
+                transaction,
+                input,
+                secret,
+                redeemscript,
+                amount_sat,
+                wallet_path,
+            } => {
+                self.refuse_anchors(&ch)?;
+                let tx = parse_tx(&transaction, input)?;
+                let secret = SecretKey::from_str(&secret).map_err(|_| "invalid secret")?;
+                let (redeemscript, path) = (script(&redeemscript)?, wallet(&wallet_path)?);
+                let sig = self
+                    .node
+                    .with_channel(&channel(&ch)?, |c| {
+                        c.sign_justice_sweep(
+                            &tx,
+                            input as usize,
+                            &secret,
+                            &redeemscript,
+                            amount_sat,
+                            &path,
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+                signed(sig)
+            }
+            Command::SignToRemoteSweep {
+                channel: ch,
+                transaction,
+                input,
+                amount_sat,
+                wallet_path,
+            } => {
+                self.refuse_anchors(&ch)?;
+                let tx = parse_tx(&transaction, input)?;
+                let path = wallet(&wallet_path)?;
+                // VLS's sweep rules (validate_sweep): version 2 and every output to the VLS wallet
+                if tx.version != Version::TWO {
+                    return Err("a sweep is a version 2 transaction".into());
+                }
+                for output in &tx.output {
+                    if !self
+                        .node
+                        .can_spend(&path, &output.script_pubkey)
+                        .map_err(|e| e.to_string())?
+                    {
+                        return Err("to_remote sweep destination is not in the VLS wallet".into());
+                    }
+                }
+                let (secret, stack) = self
+                    .node
+                    .with_channel(&channel(&ch)?, |c| c.get_unilateral_close_key(&None, &None))
+                    .map_err(|e| e.to_string())?;
+                let public = PublicKey::from_secret_key(&Secp256k1::new(), &secret);
+                let spent =
+                    Address::p2wpkh(&CompressedPublicKey(public), Network::Regtest).script_pubkey();
+                let n = tx.input.len();
+                let mut prev = vec![
+                    TxOut {
+                        value: Amount::ZERO,
+                        script_pubkey: ScriptBuf::new()
+                    };
+                    n
+                ];
+                prev[input as usize] = TxOut {
+                    value: Amount::from_sat(amount_sat),
+                    script_pubkey: spent,
+                };
+                let mut keys = vec![None; n];
+                keys[input as usize] = Some((secret, stack));
+                // A one-input sweep also passes VLS's on-chain policy (fee range, fee velocity); in a penalty batch
+                // the other inputs' amounts are unknown here and their justice signatures carry VLS's sweep checks
+                if n == 1 {
+                    self.node
+                        .check_onchain_tx(
+                            &tx,
+                            &[true],
+                            &prev,
+                            &keys,
+                            &vec![path.clone(); tx.output.len()],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+                let witnesses = self
+                    .node
+                    .unchecked_sign_onchain_tx(&tx, &vec![DerivationPath::master(); n], &prev, keys)
+                    .map_err(|e| e.to_string())?;
+                let der = witnesses
+                    .get(input as usize)
+                    .and_then(|w| w.first())
+                    .ok_or("VLS returned no to_remote signature")?;
+                if der.last() != Some(&(EcdsaSighashType::All as u8)) {
+                    return Err("unexpected to_remote sighash type".into());
+                }
+                signed(
+                    Signature::from_der(&der[..der.len() - 1])
+                        .map_err(|_| "invalid VLS to_remote signature")?,
+                )
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+// --- end of BOLT 5 on-chain resolution ---
 fn handle(stream: UnixStream, gateway: &Gateway, admin: bool) -> std::io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
