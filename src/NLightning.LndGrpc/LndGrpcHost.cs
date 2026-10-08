@@ -67,7 +67,7 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         foreach (var error in _options.GetValidationErrors())
             throw new InvalidOperationException(error);
 
-        var context = _serviceProvider.GetService<NLightning.Domain.Signing.NodeSigningContext>();
+        var context = Macaroons.LndCredentialContext.Resolve(_serviceProvider);
         if (context is not null) LndCredentialEnrollment.Bind(DataDirectory, context);
         _certificate = LndTlsFiles.EnsureCreated(DataDirectory, _options, _timeProvider, _logger);
         MacaroonVerifier? verifier = null;

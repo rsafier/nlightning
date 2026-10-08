@@ -1,4 +1,5 @@
 using Grpc.Core;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -73,6 +74,60 @@ public sealed class EnrolledLndGrpcHostTests
         Assert.Null(host.BoundPort);
         Assert.False(File.Exists(Path.Combine(directories.A, LndTlsFiles.CertificateFileName)));
         Assert.Equal(root, File.ReadAllBytes(Path.Combine(directories.A, LndMacaroonFiles.RootKeyFileName)));
+    }
+
+    [Fact]
+    public async Task Given_AStandardNodesExistingCredentials_When_TheEnrollingBuildStarts_Then_ItsMacaroonsKeepWorkingUnbound()
+    {
+        // Arrange: credentials baked before signing enrollment existed (no context), as on an upgraded standard node
+        using var directories = new Directories();
+        LndMacaroonFiles.EnsureCreated(directories.A);
+        var legacyAdmin = File.ReadAllBytes(Path.Combine(directories.A, LndMacaroonFiles.AdminFileName));
+        var standard = LndCredentialEnrollmentTests.Context() with
+        {
+            NodeId = NodeSigningContext.DefaultNodeId,
+            OwnerId = NodeSigningContext.DefaultOwnerId,
+            SignerId = NodeSigningContext.DefaultSignerId
+        };
+
+        // Act: local signing (no Signing:Mode) with the default context
+        await using var host = await RunningHost.StartAsync(directories.A, standard);
+
+        // Assert: the old admin macaroon verifies and nothing was enrolled (NL-1340)
+        await host.GetInfoAsync(legacyAdmin);
+        Assert.False(File.Exists(Path.Combine(directories.A, LndCredentialEnrollment.FileName)));
+    }
+
+    [Theory]
+    [InlineData(null, true, false)]
+    [InlineData("Local", true, false)]
+    [InlineData("RemoteNative", true, true)]
+    [InlineData("Vls", true, true)]
+    [InlineData("Local", false, true)]
+    public void Given_SigningModeAndContext_When_Resolved_Then_OnlyAStandardNodeIsUnbound(string? mode,
+                                                                                        bool defaultContext, bool bound)
+    {
+        // Arrange
+        var context = LndCredentialEnrollmentTests.Context();
+        if (defaultContext)
+            context = context with
+            {
+                NodeId = NodeSigningContext.DefaultNodeId,
+                OwnerId = NodeSigningContext.DefaultOwnerId,
+                SignerId = NodeSigningContext.DefaultSignerId
+            };
+        var services = new ServiceCollection();
+        services.AddSingleton(context);
+        services.AddSingleton<IConfiguration>(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["Signing:Mode"] = mode }).Build());
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var resolved = LndCredentialContext.Resolve(provider);
+
+        // Assert
+        Assert.Equal(bound, resolved is not null);
     }
 
     private sealed class RunningHost(ServiceProvider provider, LndGrpcHost host, string directory) : IAsyncDisposable
