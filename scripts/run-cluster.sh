@@ -259,6 +259,9 @@ results="$repo_root/TestResults/cluster/$batch"
 mkdir -p "$results"
 
 export NLTG_KUBE_CONTEXT="$context"
+# Test processes get the symlink-resolved temp directory: macOS's /var and /tmp are symlinks to /private/..., and the
+# hosted-isolation and LND credential checks refuse any path that passes through a symbolic link
+export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)/"
 cli() { if [[ -n "$fake_tests" ]]; then return 0; fi; dotnet "$cli_dll" "$@" --context "$context"; }
 matrix_cli() { dotnet "$cli_dll" matrix "$@"; }
 

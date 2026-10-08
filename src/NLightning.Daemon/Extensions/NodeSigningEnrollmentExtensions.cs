@@ -16,14 +16,22 @@ public static class NodeSigningEnrollmentExtensions
     public static async Task ValidateNodeSigningEnrollmentAsync(this IHost host)
     {
         using var scope = host.Services.CreateScope();
-        var services = scope.ServiceProvider;
-        // Standard (local key file) nodes upgrade in place: their pre-enrollment database is adopted when its channels
-        // belong to this key file. Remote signers (native, VLS) never adopt existing state
+        await ValidateNodeSigningEnrollmentAsync(scope.ServiceProvider);
+    }
+
+    /// <summary>
+    /// Validates (or makes) the database's signing enrollment for a scoped node service provider. Standard (local key
+    /// file) nodes upgrade in place: their pre-enrollment database is adopted when its channels belong to this key file
+    /// (NL-1340). Remote signers (native, VLS) never adopt existing state.
+    /// </summary>
+    public static async Task ValidateNodeSigningEnrollmentAsync(IServiceProvider services,
+                                                                CancellationToken cancellationToken = default)
+    {
         var local = !SigningOptions.Read(services.GetRequiredService<IConfiguration>()).IsRemote;
         var signer = local ? services.GetRequiredService<ILightningSigner>() : null;
         await services.GetRequiredService<NodeSigningEnrollmentStore>().ValidateAsync(
             services.GetRequiredService<NodeSigningContext>(),
-            signer is null ? null : signer.GetChannelBasepoints);
+            signer is null ? null : signer.GetChannelBasepoints, cancellationToken);
     }
 
     public static Task ValidateNodeSigningEnrollmentAsync(NLightningDbContext database, NodeSigningContext context,
