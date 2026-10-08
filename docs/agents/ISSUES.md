@@ -10852,7 +10852,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** NL-1307, NL-1335
 
 ### NL-1340 Signing enrollment refused to start existing standard (local key) nodes
-- **Status:** fixed (see commit)
+- **Status:** fixed (ec7f4c9b)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Node/NodeSigningEnrollmentStore.cs`, `src/NLightning.Daemon/Extensions/NodeSigningEnrollmentExtensions.cs`
