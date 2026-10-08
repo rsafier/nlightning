@@ -1,0 +1,17 @@
+# Native P1 proves the shipped Python launcher against actual .NET daemon/signer processes.
+# Select explicitly with NLTG_RUNNER_DOCKERFILE; ordinary runner images keep their existing base.
+FROM mcr.microsoft.com/dotnet/sdk:10.0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+
+WORKDIR /runner
+COPY . /runner/
+
+ENTRYPOINT ["dotnet", "/runner/NLightning.Integration.Tests.dll"]
+CMD ["-list", "classes"]

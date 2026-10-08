@@ -221,7 +221,10 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
             ForceV1 = true
         };
         var factory = Alice.Services.GetRequiredService<IChannelFactory>();
-        var channel = await factory.CreateChannelV1AsInitiatorAsync(request, NegotiatedFeatures, Bob.NodeId);
+        var nativeOpening = Alice.Services.GetService<NativeV1ChannelOpening>();
+        var channel = nativeOpening is { Enabled: true }
+            ? await nativeOpening.CreateOutboundAsync(request, NegotiatedFeatures, Bob.NodeId)
+            : await factory.CreateChannelV1AsInitiatorAsync(request, NegotiatedFeatures, Bob.NodeId);
         Alice.Services.GetRequiredService<IUtxoMemoryRepository>()
              .LockUtxosToSpendOnChannel(fundingAmount, channel.ChannelId);
 

@@ -82,6 +82,7 @@ public sealed class ChannelStateTransitionService
     private readonly IBlockchainMonitor? _fundingRecoveryChain;
     private readonly IUtxoMemoryRepository? _fundingRecoveryWallet;
     private readonly NativeV1FundedInboundOpening? _nativeFundedOpening;
+    private readonly NativeV1FundedOutboundOpening? _nativeFundedOutbound;
     private readonly VlsCloseSigningWorkflows? _vlsCloses;
 
     public ChannelStateTransitionService(IChannelMemoryRepository channelMemoryRepository,
@@ -99,10 +100,12 @@ public sealed class ChannelStateTransitionService
                                          IBlockchainMonitor? fundingRecoveryChain = null,
                                          IUtxoMemoryRepository? fundingRecoveryWallet = null,
                                          NativeV1FundedInboundOpening? nativeFundedOpening = null,
-                                         VlsCloseSigningWorkflows? vlsCloses = null)
+                                         VlsCloseSigningWorkflows? vlsCloses = null,
+                                         NativeV1FundedOutboundOpening? nativeFundedOutbound = null)
     {
         _vlsCloses = vlsCloses;
         _nativeFundedOpening = nativeFundedOpening;
+        _nativeFundedOutbound = nativeFundedOutbound;
         _fundingRecoveryWallet = fundingRecoveryWallet;
         _fundingRecoveryChain = fundingRecoveryChain;
         _signingWorkflows = signingWorkflows;
@@ -485,8 +488,15 @@ public sealed class ChannelStateTransitionService
     {
         if (_signingWorkflows is not INativeFundingSigningRecovery || _fundingRecoveryWallet is null)
             throw new InvalidOperationException("Native funding recovery requires its durable input reservation.");
-        var existing = await _unitOfWork.FeeInputReservationDbRepository.GetByIdAsync(workflow.WorkflowId);
-        if (existing is not null) return;
+        var existing = (await _unitOfWork.FeeInputReservationDbRepository.GetAllAsync())
+            .SingleOrDefault(x => x.Purpose == $"native-funding:{channel.ChannelId}");
+        if (existing is not null)
+        {
+            if (existing.Fee != fee || existing.Inputs.Count != utxos.Count
+             || existing.Inputs.Any(input => !utxos.Any(utxo => utxo.TxId == input.TxId && utxo.Index == input.Index && utxo.Amount == input.Amount)))
+                throw new InvalidOperationException("Funding no longer matches its original input reservation.");
+            return;
+        }
         var network = _nodeOptions.BitcoinNetwork.ToNBitcoinNetwork();
         var inputs = utxos.Select(utxo => new WalletInput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
             utxo.SilentPayment is { } silent
@@ -521,6 +531,18 @@ public sealed class ChannelStateTransitionService
     public void ReleaseNativeFundingInputs(ISigningWorkflowScope workflow)
         => _fundingRecoveryWallet?.ReleaseFeeReservation(workflow.WorkflowId);
 
+    public async Task<Guid> StageReleaseNativeFundingInputsAsync(ChannelModel channel, ISigningWorkflowScope workflow, IUnitOfWork unit)
+    {
+        var reservation = (await unit.FeeInputReservationDbRepository.GetAllAsync())
+            .SingleOrDefault(x => x.Purpose == $"native-funding:{channel.ChannelId}");
+        var id = reservation?.Id ?? workflow.WorkflowId;
+        await unit.FeeInputReservationDbRepository.DeleteAsync(id);
+        return id;
+    }
+
+    public void ReleaseNativeFundingInputs(Guid reservationId)
+        => _fundingRecoveryWallet?.ReleaseFeeReservation(reservationId);
+
     /// <summary>Recover the original native funding signing result and save publication intent before startup proceeds.</summary>
     private async Task ResumeNativeFundingAsync(ChannelModel channel)
     {
@@ -531,7 +553,19 @@ public sealed class ChannelStateTransitionService
         using var workflow = await _signingWorkflows.BeginAsync(
             SigningWorkflowSnapshot.CreateOpening(channel, SigningWorkflowKind.Funding));
         workflow.Activate();
-        var transaction = native.ReplayFunding(workflow);
+        SignedTransaction? retainedUnsigned = null;
+        if (_nativeFundedOutbound is { Enabled: true })
+            retainedUnsigned = await _nativeFundedOutbound.RestoreUnsignedFundingAsync(channel, _unitOfWork);
+        var heldReservation = (await _unitOfWork.FeeInputReservationDbRepository.GetAllAsync())
+            .SingleOrDefault(x => x.Purpose == $"native-funding:{channel.ChannelId}")
+            ?? throw new InvalidOperationException("Funding recovery lost its original durable wallet inputs.");
+        var transaction = native.ReplayFundingOrPrepare(workflow);
+        if (transaction is null)
+        {
+            transaction = retainedUnsigned ?? throw new InvalidOperationException("Funding intent requires its retained outbound opening.");
+            if (!_lightningSigner.SignFundingTransaction(channel.ChannelId, transaction))
+                throw new InvalidOperationException("Funding recovery did not sign every original input.");
+        }
         if (channel.FundingOutput?.TransactionId != transaction.TxId || channel.FundingOutput.Index is not { } index)
             throw new InvalidOperationException("Recovered funding does not match the saved channel outpoint.");
         var watch = new Domain.Bitcoin.Transactions.Models.WatchedTransactionModel(channel.ChannelId, transaction.TxId,
@@ -540,7 +574,7 @@ public sealed class ChannelStateTransitionService
             Domain.Onchain.Enums.WatchedOutpointPurpose.FundingOutput);
         var broadcast = new Domain.Onchain.Models.BroadcastTransactionModel(transaction,
             Domain.Onchain.Enums.BroadcastPurpose.Funding, channel.ChannelId,
-            _fundingRecoveryChain?.LastProcessedBlockHeight ?? 0);
+            _fundingRecoveryChain?.LastProcessedBlockHeight ?? 0, fee: heldReservation.Fee);
         channel.UpdateState(ChannelState.V1FundingSigned);
         await _unitOfWork.ChannelDbRepository.UpdateAsync(channel);
         _unitOfWork.WatchedTransactionDbRepository.Add(watch);
@@ -548,10 +582,10 @@ public sealed class ChannelStateTransitionService
         _unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
         await Accounting.ChannelAccountingEvents.StagePushAmountAsync(_unitOfWork, channel.ChannelId,
             channel.RemoteBalance, _logger);
-        await _unitOfWork.FeeInputReservationDbRepository.DeleteAsync(workflow.WorkflowId);
+        var reservationId = await StageReleaseNativeFundingInputsAsync(channel, workflow, _unitOfWork);
         await workflow.StageConsumeAsync(_unitOfWork);
         await _unitOfWork.SaveChangesAsync();
-        ReleaseNativeFundingInputs(workflow);
+        ReleaseNativeFundingInputs(reservationId);
         if (_fundingRecoveryChain is not null)
         {
             _fundingRecoveryChain.TrackWatchedTransaction(watch);
@@ -715,6 +749,9 @@ public sealed class ChannelStateTransitionService
         }
         if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.Opening)
         {
+            if (_nativeFundedOutbound is { Enabled: true }
+             && await _nativeFundedOutbound.ResumeAsync(channel, _unitOfWork))
+                return;
             if (_nativeFundedOpening is { Enabled: true }
              && await _nativeFundedOpening.ResumeAsync(channel, _unitOfWork))
                 return;

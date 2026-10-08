@@ -66,6 +66,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="../../tools/native-remote-demo/demo.py" Link="native-remote-demo/demo.py" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Include="..\NLightning.RemoteSigning.Tests\HostedNativeSignerSupervisor.cs" Link="Cluster\HostedNativeSignerSupervisor.cs"/>
     <Compile Include="..\NLightning.RemoteSigning.Tests\SignerDaemonFixture.cs" Link="Cluster\SignerDaemonFixture.cs"/>
     <Compile Include="..\NLightning.RemoteSigning.Tests\VlsGatewayFixture.cs" Link="Cluster\VlsGatewayFixture.cs"/>

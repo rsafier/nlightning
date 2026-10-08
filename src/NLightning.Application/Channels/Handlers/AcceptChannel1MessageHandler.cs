@@ -51,6 +51,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
     private readonly ILightningSigner _lightningSigner;
     private readonly ChannelStateTransitionService? _transitions;
     private readonly NativeV1ChannelOpening? _nativeOpening;
+    private readonly NativeV1FundedOutboundOpening? _nativeFundedOutbound;
     private readonly ILogger<OpenChannel1MessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
     private readonly IMusig2Service? _musig2;
@@ -69,9 +70,11 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                                         IMessageFactory messageFactory, ISha256 sha256, IUnitOfWork unitOfWork,
                                         IUtxoMemoryRepository utxoMemoryRepository, IMusig2Service? musig2 = null,
                                         ChannelStateTransitionService? transitions = null,
-                                        NativeV1ChannelOpening? nativeOpening = null)
+                                        NativeV1ChannelOpening? nativeOpening = null,
+                                        NativeV1FundedOutboundOpening? nativeFundedOutbound = null)
     {
         _nativeOpening = nativeOpening;
+        _nativeFundedOutbound = nativeFundedOutbound;
         _musig2 = musig2;
         _bitcoinWalletService = bitcoinWalletService;
         _channelIdFactory = channelIdFactory;
@@ -99,6 +102,9 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                              message.Payload.ChannelId, peerPubKey);
 
         var payload = message.Payload;
+        if (_nativeFundedOutbound is { Enabled: true }
+         && await _nativeFundedOutbound.TryHandleRetainedAsync(message, peerPubKey, _unitOfWork) is { } retained)
+            return [retained];
 
         if (currentState != ChannelState.None)
             throw new ChannelErrorException("A channel with this id already exists", payload.ChannelId);
@@ -200,6 +206,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
         var oldChannelId = tempChannel.ChannelId;
 
         var registeredWithSigner = false;
+        var capturedNativeOpening = false;
         try
         {
             var fundingAmount = tempChannel.LocalBalance + tempChannel.RemoteBalance;
@@ -238,6 +245,17 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
             if (existingChannel is not null)
                 throw new ChannelErrorException("Channel already exists in the database", tempChannel.ChannelId,
                                                 "Sorry, we had an internal error");
+
+            if (_nativeFundedOutbound is { Enabled: true })
+            {
+                // Set before the save: its outcome can be uncertain and must never release these inputs.
+                capturedNativeOpening = true;
+                var created = await _nativeFundedOutbound.StartAsync(tempChannel, oldChannelId, message,
+                    negotiatedFeatures, fundingTransaction.Transaction, utxos, fundingTransactionModel.Fee, _unitOfWork);
+                _utxoMemoryRepository.UpgradeChannelIdOnLockedUtxos(oldChannelId, tempChannel.ChannelId);
+                _channelMemoryRepository.UpgradeChannel(oldChannelId, tempChannel);
+                return [created];
+            }
 
             using var nativeInitial = _nativeOpening is { Enabled: true }
                 ? await _nativeOpening.BeginInitialCommitAsync(tempChannel, oldChannelId) : null;
@@ -319,6 +337,12 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
         }
         catch (Exception e)
         {
+            if (capturedNativeOpening)
+            {
+                _logger.LogWarning(e, "Retaining native opening {ChannelId} for original-request recovery", tempChannel.ChannelId);
+                throw;
+            }
+
             if (_logger.IsEnabled(LogLevel.Information))
                 _logger.LogInformation("Forgetting channel {channelId}", tempChannel.ChannelId);
 

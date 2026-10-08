@@ -33,7 +33,12 @@ trap 'rm -rf "$stage"' EXIT
 cp -R "$out"/. "$stage"/
 # The host's apphost (a macOS or Windows executable) is useless in the Linux image; the Job runs `dotnet <dll>`.
 rm -f "$stage/$assembly" "$stage/$assembly.exe"
-cp "$here/Dockerfile" "$stage/Dockerfile"
+runner_dockerfile="${NLTG_RUNNER_DOCKERFILE:-$here/Dockerfile}"
+if [[ ! -f "$runner_dockerfile" ]]; then
+  echo 'NLTG_RUNNER_DOCKERFILE must name an existing Dockerfile' >&2
+  exit 2
+fi
+cp "$runner_dockerfile" "$stage/Dockerfile"
 # Optional, already built pinned VLS gateway for actual process interoperability proofs.
 # No Rust build or downloads occur inside the runner image.
 if [[ -n "${NLTG_VLS_GATEWAY_BINARY:-}" ]]; then

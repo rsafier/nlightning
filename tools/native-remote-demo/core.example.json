@@ -1,0 +1,5 @@
+{
+  "RpcEndpoint": "http://127.0.0.1:18443",
+  "RpcUser": "replace-with-your-regtest-rpc-user",
+  "RpcPassword": "replace-with-your-regtest-rpc-password"
+}

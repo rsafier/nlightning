@@ -254,7 +254,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// <remarks>
     /// <list type="bullet">
     /// <item>Closed and Stale channels, and states before funding_created (never persisted), are not registered.</item>
-    /// <item>V1FundingCreated is the funder's crash window in <c>FundingSignedMessageHandler</c>: the channel is
+    /// <item>Native V1FundingCreated retains its exact opening history and original wallet reservations. It
+    /// retransmits funding_created while awaiting the peer's acknowledgment, before normal reestablishment.</item>
+    /// <item>Other V1FundingCreated channels use the funder's crash window in <c>FundingSignedMessageHandler</c>: the channel is
     /// persisted, then the funding transaction is watched (persisted) and published, then V1FundingSigned is persisted.
     /// A persisted watch means the transaction may be out, so the channel moves on to V1FundingSigned and waits for
     /// the confirmation. Without one the transaction was never published, and BOLT 2 says a funder that has not
@@ -276,6 +278,13 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                                    channel.ChannelId, Enum.GetName(channel.State));
                 return false;
             case ChannelState.V1FundingCreated:
+                if (_serviceProvider.GetService<NativeV1FundedOutboundOpening>() is { Enabled: true } outbound)
+                {
+                    if (await outbound.TryGetFundingCreatedAsync(channel,
+                            scope.ServiceProvider.GetRequiredService<IUnitOfWork>()) is null)
+                        throw new InvalidOperationException("Native outbound opening history is unavailable; funding recovery is blocked.");
+                    return true;
+                }
                 return await ResumeInterruptedFundingAsync(scope, channel);
             default:
                 return true;
@@ -628,10 +637,19 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 // BOLT 2: the closing negotiation restarts on every reconnection (B2-RE-29)
                 _serviceProvider.GetService<ClosingNegotiationRegistry>()?.ResetConnection(channel.ChannelId);
                 // Simple taproot closee nonces are bound to the connection (memory only): the old secrets go
-                if (channel.ChannelParams.OptionSimpleTaproot)
+                if (channel.ChannelParams.OptionSimpleTaproot && channel.State >= ChannelState.V1FundingSigned)
                     _lightningSigner.ForgetClosingNonces(channel.ChannelId);
                 switch (channel.State)
                 {
+                    case ChannelState.V1FundingCreated:
+                        if (_serviceProvider.GetService<NativeV1FundedOutboundOpening>() is { Enabled: true } outbound)
+                        {
+                            var fundingCreated = await outbound.TryGetFundingCreatedAsync(channel,
+                                scope.ServiceProvider.GetRequiredService<IUnitOfWork>())
+                                ?? throw new InvalidOperationException("Native outbound opening history is unavailable; retransmission is blocked.");
+                            RaiseResponseMessages(peerPubKey, [fundingCreated]);
+                        }
+                        break;
                     case ChannelState.Failed or ChannelState.OnchainResolving:
                         // A channel restored from a static backup first asks the peer to force close with the BOLT 2
                         // "we lost data" channel_reestablish (B2-RE-14), then gets its error like any failed channel
@@ -1593,6 +1611,17 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     {
         // Check if the channel exists on the state dictionary
         _channelMemoryRepository.TryGetChannelState(channelId, out var currentState);
+
+        if (currentState == ChannelState.V1FundingCreated && message.Type == MessageTypes.ChannelReestablish
+         && _serviceProvider.GetService<NativeV1FundedOutboundOpening>() is { Enabled: true } outbound)
+        {
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var opening) || opening.RemoteNodeId != peerPubKey)
+                throw new InvalidOperationException("Funding recovery belongs to another peer.");
+            var fundingCreated = await outbound.TryGetFundingCreatedAsync(opening,
+                scope.ServiceProvider.GetRequiredService<IUnitOfWork>())
+                ?? throw new InvalidOperationException("Native outbound opening history is unavailable; retransmission is blocked.");
+            return [fundingCreated];
+        }
 
         // BOLT 2: a failed channel re-sends its error and ignores everything else (B2-RE-05); so does a channel
         // resolving on chain (BOLT 5 B5-GEN-04)

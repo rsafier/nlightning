@@ -201,11 +201,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 95 | 97 |
-| in-progress | 0 | 1 | 8 | 0 | 9 |
+| in-progress | 0 | 1 | 9 | 0 | 10 |
 | fixed | 15 | 73 | 264 | 535 | 887 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **74** | **283** | **652** | **1024** |
+| **Total** | **15** | **74** | **284** | **652** | **1025** |
 
 ### Epics
 
@@ -10796,7 +10796,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Kind:** gap
 - **Location:** `ISecureKeyManager`, `KeyRingService`, `SwapSigner`, silent-payment receiving; `docs/agents/NATIVE_SIGNER_COVERAGE.md`
 - **Initial evidence:** keyring metadata allocation called the private `GetKeyRingKeyAtIndex` API, swap signing opened private ring keys locally, and remote silent-payment receiving was refused. Forwarding the Lightning signer interface did not cover these consumers.
-- **Progress:** typed public keyring, remote swap and silent-payment receiver operations have passing prior actual RPC/process-restart checks. The prior verified increment passed 325 native RPC cases, 71 wallet checks and seven live withdrawal killpoint/rejection cases. The current increment implements captured send-outputs PSBT publication recovery and funded inbound opening capture/startup/exact-reply recovery, including retained taproot nonce material. The current increment passes 361 native RPC, 150 wallet, 21 node-workflow, 13 PSBT recovery and ten funded-inbound checks without skips; 12 real PSBT killpoint/receipt-rejection cases also pass. The existing seven live withdrawal killpoint/receipt-rejection cases also pass. Hosted channel/payment/cooperative-close, separate-daemon isolation and confirmed force-close/sweep reruns pass. The owner requested a transfer checkpoint; final forwarding and full formatting remain pending in NATIVE_SIGNER_HANDOFF_2026_10_08.md. Funded outbound reservations/retransmission, standalone PSBT surfaces and remaining subsystem lifecycles stay open in the coverage inventory.
+- **Progress:** typed public keyring, remote swap and silent-payment receiver operations have passing prior actual RPC/process-restart checks. The prior verified increment passed 325 native RPC cases, 71 wallet checks and seven live withdrawal killpoint/rejection cases. The current increment implements captured send-outputs PSBT publication recovery and funded inbound opening capture/startup/exact-reply recovery, including retained taproot nonce material. The current increment passes 361 native RPC, 150 wallet, 21 node-workflow, 13 PSBT recovery and ten funded-inbound checks without skips; 12 real PSBT killpoint/receipt-rejection cases also pass. The existing seven live withdrawal killpoint/receipt-rejection cases also pass. Hosted channel/payment/cooperative-close, separate-daemon isolation and confirmed force-close/sweep reruns pass. The owner requested a transfer checkpoint; final forwarding and full formatting remain pending in NATIVE_SIGNER_HANDOFF_2026_10_08.md. The P1 implementation on `wip/native-remote-p1` adds captured funded-outbound reservations and exact retransmission/startup recovery; its larger-machine kill matrix and standalone demo acceptance remain pending in `NATIVE_REMOTE_P1.md`. Standalone PSBT surfaces and remaining subsystem lifecycles stay open in the coverage inventory.
 - **Fix sketch:** public-only keyring derivation and persistence are the first increment. Complete typed remote swap/nonce and silent-payment scan/receive operations without exporting private material, then prove lifecycle recovery and independent authorization for the full inventory.
 - **Blocks/Blocked-by:** NL-1304; milestone 1 of `NATIVE_SIGNER_HOSTED_NODES_GOAL.md`
 
@@ -10922,3 +10922,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** the gateway signs anchors HTLC transactions with phase 1 (it rebuilds the zero-fee HTLC pair at input/output 0 from its own keys and checks the sighash) and returns the sighash type; the signer port says so (`SignsAnchorHtlcWithSingleAnyoneCanPay`, default false) and `AddWitness` puts `0x83` on our signature (both forms are valid BOLT 3 witnesses). The fee inputs go through a new `sign_holder_htlc_fee_inputs` (op 2105): it validates the HTLC pair again with `sign_holder_htlc_tx` for the commitment signed for broadcast, checks it is zero-fee (same value in and out), runs VLS's `check_onchain_tx` over the wallet part alone (fee inputs and change: every output ours, fee range, fee velocity) and signs only the P2WPKH wallet inputs; the adapter routes an HTLC transaction it signed there by txid. Delayed sweeps, counterparty HTLC claims (nSequence 1, VLS's anchors sequence rule) and penalties needed no change; the anchors `to_remote` is the 1-CSV P2WSH from VLS's unilateral-close key (a given witness script must equal VLS's).
 - **Validation:** `VlsOnchainSigningProcessTests` 8/8 (anchors `to_remote` with VLS's script and a foreign script refused, an anchors HTLC claim at nSequence 1 and a refused RBF sequence, fee inputs refused without a broadcast mark or on a static_remotekey channel); `AnchorHtlcTransactionBuilderTests` (our `SIGHASH_SINGLE|ANYONECANPAY` signature on an Appendix F HTLC transaction with a fee input verifies); live `VlsOnchainResolutionTests` 6/6 (both force closes and the penalty, each on static_remotekey and anchors) in batch `rc-20261008175645`.
 - **Blocks/Blocked-by:** NL-1307, NL-1320, NL-1325
+
+
+### NL-1328 Native remote signing lacks a repeatable standalone channel demo
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `tools/native-remote-demo`, native outbound opening recovery, standalone daemon acceptance
+- **Evidence:** prior native channel proofs use real service compositions inside the integration harness; the separate-daemon proof covers wallet/IPC isolation. A shipped launcher and channel/payment/outage/restart/close proof using actual daemon processes are needed.
+- **Progress:** `wip/native-remote-p1` branches from `834a96a2`. Implements a prototype node-trusted launcher with separate contexts, credentials and durable signer histories, exact outbound funding recovery, focused executable lifecycle cases, and a two-case live product-launcher acceptance suite. The Release/net10 solution builds with zero warnings/errors; 14 focused actual signer/outbound recovery cases and 12 lightweight launcher cases pass without skips. The explicit live proof compiles and is discovered. Heavy final tests, process-kill matrices, formatting and integration are delegated to a larger machine at the owner's request; no live acceptance is claimed.
+- **Fix sketch:** compile and run focused checks here, then execute the committed acceptance instructions in `NATIVE_REMOTE_P1.md` against the final source on the larger host. Preserve exact signing history and fail closed on unknown outcomes; owner authorization remains a later gate.
+- **Blocks/Blocked-by:** NL-1310; native lifecycle recovery.

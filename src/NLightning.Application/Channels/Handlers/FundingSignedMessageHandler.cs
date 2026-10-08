@@ -37,6 +37,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
     private readonly IFundingTransactionModelFactory _fundingTransactionModelFactory;
     private readonly ILightningSigner _lightningSigner;
     private readonly ChannelStateTransitionService? _transitions;
+    private readonly NativeV1FundedOutboundOpening? _nativeFundedOutbound;
     private readonly ILogger<FundingSignedMessageHandler> _logger;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
@@ -49,7 +50,8 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
                                        IFundingTransactionModelFactory fundingTransactionModelFactory,
                                        ILightningSigner lightningSigner, ILogger<FundingSignedMessageHandler> logger,
                                        IUnitOfWork unitOfWork, IUtxoMemoryRepository utxoMemoryRepository,
-                                       ChannelStateTransitionService? transitions = null)
+                                       ChannelStateTransitionService? transitions = null,
+                                       NativeV1FundedOutboundOpening? nativeFundedOutbound = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _channelMemoryRepository = channelMemoryRepository;
@@ -59,6 +61,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         _fundingTransactionModelFactory = fundingTransactionModelFactory;
         _lightningSigner = lightningSigner;
         _transitions = transitions;
+        _nativeFundedOutbound = nativeFundedOutbound;
         _logger = logger;
         _unitOfWork = unitOfWork;
         _utxoMemoryRepository = utxoMemoryRepository;
@@ -88,6 +91,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
             : null;
         openingWorkflow?.Activate();
         ISigningWorkflowScope? fundingWorkflow = null;
+        Guid? originalReservationId = null;
         try
         {
             SignedTransaction unsignedFundingTransaction;
@@ -143,8 +147,15 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
                 // The rebuilt funding transaction must be the one the peer signed a commitment for
                 if (channel.FundingOutput?.TransactionId != unsignedFundingTransaction.TxId
                  || channel.FundingOutput?.Index != fundingTransaction.FundingOutputIndex)
+                {
+                    if (_nativeFundedOutbound is { Enabled: true })
+                        throw new InvalidOperationException("Rebuilt funding transaction changed the retained native funding outpoint.");
                     throw new ChannelErrorException("Rebuilt funding transaction does not match the channel funding outpoint",
                                                     channel.ChannelId, "Sorry, we had an internal error");
+                }
+
+                if (_nativeFundedOutbound is { Enabled: true })
+                    await _nativeFundedOutbound.ValidateFundingAsync(channel, unsignedFundingTransaction, fundingFee, _unitOfWork);
 
                 if (openingWorkflow is not null)
                 {
@@ -168,12 +179,16 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
                 // Sign the transaction
                 var allSigned = _lightningSigner.SignFundingTransaction(channel.ChannelId, unsignedFundingTransaction);
                 if (!allSigned)
+                {
+                    if (_nativeFundedOutbound is { Enabled: true })
+                        throw new InvalidOperationException("Unable to sign every retained native funding input.");
                     throw new ChannelErrorException("Unable to sign all inputs for the funding transaction");
+                }
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
                 // An uncertain remote signing result retains its channel inputs for original-request recovery.
-                var releasedCount = fundingWorkflow is null
+                var releasedCount = fundingWorkflow is null && _nativeFundedOutbound is not { Enabled: true }
                     ? _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(channel.ChannelId).Count
                     : 0;
                 _logger.LogWarning("funding_signed of channel {ChannelId} failed; released {Count} wallet output(s) locked "
@@ -205,12 +220,12 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
                 await ChannelAccountingEvents.StagePushAmountAsync(uow, channel.ChannelId, push, _logger);
                 if (fundingWorkflow is not null)
                 {
-                    await uow.FeeInputReservationDbRepository.DeleteAsync(fundingWorkflow.WorkflowId);
+                    originalReservationId = await _transitions!.StageReleaseNativeFundingInputsAsync(channel, fundingWorkflow, uow);
                     await fundingWorkflow.StageConsumeAsync(uow);
                 }
             });
 
-            if (fundingWorkflow is not null) _transitions!.ReleaseNativeFundingInputs(fundingWorkflow);
+            if (originalReservationId is { } reservationId) _transitions!.ReleaseNativeFundingInputs(reservationId);
             _blockchainMonitor.TrackWatchedTransaction(fundingWatch);
             _blockchainMonitor.TrackWatchedOutpoint(fundingOutputWatch);
 

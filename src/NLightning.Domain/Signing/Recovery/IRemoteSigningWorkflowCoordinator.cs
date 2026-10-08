@@ -33,6 +33,7 @@ public interface IRemoteSigningRequestCapture
 public interface INativeFundingSigningRecovery
 {
     SignedTransaction ReplayFunding(ISigningWorkflowScope workflow);
+    SignedTransaction? ReplayFundingOrPrepare(ISigningWorkflowScope workflow) => ReplayFunding(workflow);
 }
 
 /// <summary>Replays the original reserved-input wallet signing envelope and exact receipt.</summary>

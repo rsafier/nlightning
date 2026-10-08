@@ -4,6 +4,8 @@
 
 Current delivery goal: [native signer coverage, independent authorization and fenced recovery, explicit contexts, and two isolated hosted nodes](docs/agents/NATIVE_SIGNER_HOSTED_NODES_GOAL.md). Public documentation and PR descriptions/comments for this work must stay within that goal's four milestones.
 
+Current first-pass work: [standalone native remote signer P1](docs/agents/NATIVE_REMOTE_P1.md) on `wip/native-remote-p1`. The owner accepts node-trusted prototype signing for the demo. Compile and run focused tests here; heavy final testing/integration belongs on the larger machine. Independent authority work remains in the broader goal.
+
 FAFO compatibility policy (owner decision, 2026-10-07): the owner is currently the only user; backward compatibility with prior versions is not required. Breaking changes and fresh backend identities/wallets/channels are acceptable. Do not plan legacy key/channel/state migration unless explicitly requested. Recovery and safety for active channels remain requirements.
 
 NLightning works as a fully functioning, spec-compliant BOLT Lightning node: interoperates with LND/CLN/Eclair/LDK, and can open, operate, route through and close channels safely with real funds. The BOLT specs are authoritative; every protocol piece is validated with official test vectors.
