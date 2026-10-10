@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 95 | 97 |
-| in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 74 | 264 | 535 | 888 |
+| open | 0 | 0 | 2 | 97 | 99 |
+| in-progress | 0 | 1 | 8 | 1 | 10 |
+| fixed | 15 | 74 | 265 | 535 | 889 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **283** | **652** | **1025** |
+| **Total** | **15** | **75** | **284** | **655** | **1029** |
 
 ### Epics
 
@@ -10930,3 +10930,40 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** the gateway signs anchors HTLC transactions with phase 1 (it rebuilds the zero-fee HTLC pair at input/output 0 from its own keys and checks the sighash) and returns the sighash type; the signer port says so (`SignsAnchorHtlcWithSingleAnyoneCanPay`, default false) and `AddWitness` puts `0x83` on our signature (both forms are valid BOLT 3 witnesses). The fee inputs go through a new `sign_holder_htlc_fee_inputs` (op 2105): it validates the HTLC pair again with `sign_holder_htlc_tx` for the commitment signed for broadcast, checks it is zero-fee (same value in and out), runs VLS's `check_onchain_tx` over the wallet part alone (fee inputs and change: every output ours, fee range, fee velocity) and signs only the P2WPKH wallet inputs; the adapter routes an HTLC transaction it signed there by txid. Delayed sweeps, counterparty HTLC claims (nSequence 1, VLS's anchors sequence rule) and penalties needed no change; the anchors `to_remote` is the 1-CSV P2WSH from VLS's unilateral-close key (a given witness script must equal VLS's).
 - **Validation:** `VlsOnchainSigningProcessTests` 8/8 (anchors `to_remote` with VLS's script and a foreign script refused, an anchors HTLC claim at nSequence 1 and a refused RBF sequence, fee inputs refused without a broadcast mark or on a static_remotekey channel); `AnchorHtlcTransactionBuilderTests` (our `SIGHASH_SINGLE|ANYONECANPAY` signature on an Appendix F HTLC transaction with a fee input verifies); live `VlsOnchainResolutionTests` 6/6 (both force closes and the penalty, each on static_remotekey and anchors) in batch `rc-20261008175645`.
 - **Blocks/Blocked-by:** NL-1307, NL-1320, NL-1325
+
+### NL-1349 Locked start: no key material in the node's image, the key delivered at run time
+- **Status:** fixed (branch `wip/locked-start`)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.Daemon/Provisioning/`, `src/NLightning.Daemon/Configuration/StartupOptions.cs`, `src/NLightning.Daemon.Contracts/Provisioning/KeyProvisioningProtocol.cs`, `src/NLightning.Client/Handlers/UnlockCommands.cs`, `SecureKeyManager.FromKeyFileContent`, `KeyIndexFile`, `NodeSigningEnrollmentStore.IsEnrolledToAnotherAsync`
+- **Evidence:** the daemon could only start from a key file on disk unlocked by a password given at start, so an image or enclave that must not hold key material at rest could not run a node.
+- **Fix:** `--locked` / `Node:Startup:Locked` starts with no key: only the provisioning endpoint is open (owner-only Unix socket `<configPath>/provisioning/key.sock` in a 0700 directory, or stdin), nothing else runs. An `IKeyProvisioner` (development provider: an encrypted key file plus its password, framed `NLKP` v1 JSON) delivers the key; it is opened in memory only (`FromKeyFileContent`: the file version decides the node id, a v1 file is not upgraded, the channel key index goes to the public `nltg.key-index`), checked read-only against the key index file and the database's signing enrollment, then the configured migrations and the enrollment validation of a normal start run on a throwaway node graph, and the node starts as a normal start does. A refused key keeps the node locked and is answered with the reason; nothing is written. Client verb `unlock` (and `unlock --status`, `--frame` for the stdin provider). Doc `docs/agents/LOCKED_START.md`.
+- **Validation:** `Daemon.Tests/Provisioning/` (`LockedStartupTests`, `KeyProvisioningSocketTests`, `LockedStartOptionsTests`), `Infrastructure.Bitcoin.Tests/Managers/SecureKeyManagerKeyFileContentTests`; daemon smoke on regtest (locked, wrong password refused, unlock, migrations, enrollment, node start, SIGTERM while locked).
+- **Blocks/Blocked-by:** NL-1340
+
+### NL-1350 Locked start: vsock transport and attested key providers
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Provisioning/IProvisioningEndpoint.cs`, `IKeyProvisioner.cs`
+- **Evidence:** the locked start has a Unix socket and a stdin endpoint and one provider (encrypted key file plus password). A vsock listener, an attested KMS unwrap and an operator import encrypted to an attested ephemeral key are not implemented.
+- **Fix sketch:** a `VsockProvisioningEndpoint : IProvisioningEndpoint` under the same `EndpointKeyProvisioner`; new providers as `IKeyProvisioner`s yielding their own `ProvisionedKeyMaterial` subtypes, opened in `LockedStartup.OpenMaterial`.
+- **Blocks/Blocked-by:** NL-1349
+
+### NL-1351 Locked start: a database from before signing enrollment is migrated before the adoption check
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Provisioning/LockedStartup.cs` (`CheckIdentityAsync`)
+- **Evidence:** the read-only identity check runs only once the schema has `NodeSigningEnrollments`. A database from before enrollment (NL-1340) is adopted only after the configured migrations ran, so a key whose channels do not match is refused (nothing key-bound is written) but leaves the schema migrated.
+- **Fix sketch:** run the NL-1340 basepoint comparison read-only before the migrations when the database predates enrollment, or refuse locked starts on such databases until a normal start enrolled them.
+- **Blocks/Blocked-by:** NL-1349
+
+### NL-1352 Locked start: at-rest secrets delivered with the key
+- **Status:** in-progress
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `KeyProvisioningSecrets` (`src/NLightning.Daemon.Contracts/Provisioning/KeyProvisioningProtocol.cs`), `LockedStartup.ApplySecrets`
+- **Evidence:** a locked node still read its other secrets from files or its configuration.
+- **Fix:** the unlock request may carry `databaseConnectionString`, `bitcoinRpcUser` and `bitcoinRpcPassword`, laid over the configuration in memory before the identity check (client `unlock --secrets-file`); without them the configuration is used as today. Remaining: the LND gRPC macaroon root key and TLS key, the Tor onion service key and the CDK processor's TLS keys are still files.
+- **Blocks/Blocked-by:** NL-1349

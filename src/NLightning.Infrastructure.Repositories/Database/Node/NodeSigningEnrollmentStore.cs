@@ -31,13 +31,7 @@ public sealed class NodeSigningEnrollmentStore(NLightningDbContext database)
         var network = BitcoinNetwork.Resolve(context.Network).Name;
         if (enrollments.Count != 0)
         {
-            var enrolled = enrollments.Count == 1 ? enrollments[0] : null;
-            if (enrolled is null || enrolled.Id != 1 || enrolled.SchemaVersion != 1
-             || !string.Equals(enrolled.NodeId, context.NodeId, StringComparison.Ordinal)
-             || !string.Equals(enrolled.OwnerId, context.OwnerId, StringComparison.Ordinal)
-             || !string.Equals(enrolled.SignerId, context.SignerId, StringComparison.Ordinal)
-             || !string.Equals(enrolled.Network, network, StringComparison.Ordinal)
-             || !enrolled.NodePublicKey.AsSpan().SequenceEqual((byte[])context.NodePublicKey))
+            if (!Matches(enrollments, context, network))
                 throw new InvalidOperationException("The node database is enrolled to another signing context or identity.");
         }
         else
@@ -62,6 +56,31 @@ public sealed class NodeSigningEnrollmentStore(NLightningDbContext database)
             await database.SaveChangesAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Read-only check for a locked start (NL-1349): true when the database already holds an enrollment that is not
+    /// <paramref name="context"/>. A database without enrollment (or without the table yet) gives false; nothing is
+    /// written either way.
+    /// </summary>
+    public async Task<bool> IsEnrolledToAnotherAsync(NodeSigningContext context,
+                                                     CancellationToken cancellationToken = default)
+    {
+        context.Validate();
+        var enrollments = await database.Set<NodeSigningEnrollmentEntity>().AsNoTracking().ToListAsync(cancellationToken);
+        return enrollments.Count != 0 && !Matches(enrollments, context, BitcoinNetwork.Resolve(context.Network).Name);
+    }
+
+    private static bool Matches(List<NodeSigningEnrollmentEntity> enrollments, NodeSigningContext context,
+                                string network)
+    {
+        var enrolled = enrollments.Count == 1 ? enrollments[0] : null;
+        return enrolled is not null && enrolled.Id == 1 && enrolled.SchemaVersion == 1
+            && string.Equals(enrolled.NodeId, context.NodeId, StringComparison.Ordinal)
+            && string.Equals(enrolled.OwnerId, context.OwnerId, StringComparison.Ordinal)
+            && string.Equals(enrolled.SignerId, context.SignerId, StringComparison.Ordinal)
+            && string.Equals(enrolled.Network, network, StringComparison.Ordinal)
+            && enrolled.NodePublicKey.AsSpan().SequenceEqual((byte[])context.NodePublicKey);
     }
 
     private static async Task EnsureLocalKeyOwnsChannelsAsync(NLightningDbContext database,

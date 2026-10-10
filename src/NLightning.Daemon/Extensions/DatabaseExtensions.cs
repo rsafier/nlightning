@@ -14,9 +14,16 @@ public static class DatabaseExtensions
     /// <summary>
     /// Runs database migrations if configured to do so
     /// </summary>
-    public static async Task MigrateDatabaseIfConfiguredAsync(this IHost host)
+    public static Task MigrateDatabaseIfConfiguredAsync(this IHost host) =>
+        MigrateDatabaseIfConfiguredAsync(host.Services);
+
+    /// <summary>
+    /// Runs database migrations if configured to do so, on a node service provider (the host's, or the throwaway one
+    /// a locked start checks the delivered key with, NL-1349)
+    /// </summary>
+    public static async Task MigrateDatabaseIfConfiguredAsync(IServiceProvider services)
     {
-        using var scope = host.Services.CreateScope();
+        using var scope = services.CreateScope();
         var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
 

@@ -7,4 +7,9 @@ public static class NodeConstants
     public const string PidFile = "nltg.pid";
     public const string NamedPipeFile = "nltg.ipc";
     public const string CookieFile = "nltg.cookie";
+
+    /// <summary>The locked start's provisioning socket, <c>&lt;configPath&gt;/provisioning/key.sock</c> (NL-1349).</summary>
+    public const string ProvisioningSocketDirectory = "provisioning";
+
+    public const string ProvisioningSocketFile = "key.sock";
 }

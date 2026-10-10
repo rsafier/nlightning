@@ -521,39 +521,8 @@ public partial class SecureKeyManager : ISecureKeyManager, IDisposable
                                                   Func<string, byte[]?>? legacyAnsiPasswordEncoder)
     {
         var jsonString = File.ReadAllText(filePath);
-        var data = JsonSerializer.Deserialize(jsonString, KeyFileDataJsonContext.Default.KeyFileData)
-                ?? throw new SerializationException("Invalid key file");
-
-        var network = expectedNetwork.ToNBitcoinNetwork();
-
-        // The file stores NBitcoin's name of the network (SaveToFile writes Network.ToString()): "RegTest",
-        // "TestNet", "signet", but "Main" for mainnet, which is not "mainnet" in lower case (NL-403)
-        if (expectedNetwork != data.Network.ToLowerInvariant() && Network.GetNetwork(data.Network) != network)
-            throw new Exception($"Invalid network. Expected {expectedNetwork}, but got {data.Network}");
-
-        if (data.Version == KeyFileData.Bip32Version && data.NodeKeyPath != NodeKeyPathString)
-            throw new SerializationException($"Invalid key file: unsupported node key path '{data.NodeKeyPath}'");
-
-        var extKeyBytes = DecryptExtKey(data, password, legacyAnsiPasswordEncoder, out var usedLegacyPasswordEncoding);
-        ExtKey extKey;
-        try
-        {
-            extKey = ExtKey.Parse(Encoding.UTF8.GetString(extKeyBytes), network);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(extKeyBytes);
-        }
-
-        // Versions 1 and 2 keep the legacy derivation (the stored chain code is the genesis hash and is ignored), so
-        // the node id of an existing key file never changes
-        var chainCode = data.Version == KeyFileData.Bip32Version ? extKey.ChainCode.ToArray() : null;
-        var keyManager =
-            new SecureKeyManager(extKey.PrivateKey.ToBytes(), chainCode, expectedNetwork, filePath, data.HeightOfBirth)
-            {
-                // The descriptor is recomputed from the key, not read back: files written before SR-13 hold a wrong one
-                _lastUsedIndex = data.LastUsedIndex
-            };
+        var keyManager = OpenKeyFile(jsonString, expectedNetwork, password, legacyAnsiPasswordEncoder, filePath, null, 0,
+                                     out var data, out var usedLegacyPasswordEncoding);
 
         if (data.Version < KeyFileData.GenesisChainCodeVersion || usedLegacyPasswordEncoding)
         {
@@ -579,6 +548,65 @@ public partial class SecureKeyManager : ISecureKeyManager, IDisposable
             Console.Error.WriteLine(warning);
 
         return keyManager;
+    }
+
+    /// <summary>
+    /// Opens a key file held in memory (locked start, NL-1349): the file's version decides the derivation exactly as
+    /// <see cref="FromFilePath(string, BitcoinNetwork, string)"/> does, but nothing is ever written: a version 1 file
+    /// is not upgraded, and the last used channel key index goes to <paramref name="persistIndex"/>, never to a key
+    /// file.
+    /// </summary>
+    /// <param name="keyFileJson">The key file's content.</param>
+    /// <param name="expectedNetwork">The network the file must be for.</param>
+    /// <param name="password">The key file password.</param>
+    /// <param name="persistIndex">Durably writes the last used channel key index (public data only) or throws.</param>
+    /// <param name="lastUsedIndex">The last used channel key index known outside the file; the larger one wins.</param>
+    public static SecureKeyManager FromKeyFileContent(string keyFileJson, BitcoinNetwork expectedNetwork,
+                                                      string password, Action<uint> persistIndex,
+                                                      uint lastUsedIndex = 0)
+    {
+        ArgumentNullException.ThrowIfNull(keyFileJson);
+        ArgumentNullException.ThrowIfNull(persistIndex);
+        return OpenKeyFile(keyFileJson, expectedNetwork, password,
+                           OperatingSystem.IsWindows() ? GetSystemAnsiPasswordBytes : null, null, persistIndex,
+                           lastUsedIndex, out _, out _);
+    }
+
+    private static SecureKeyManager OpenKeyFile(string jsonString, BitcoinNetwork expectedNetwork, string password,
+                                                Func<string, byte[]?>? legacyAnsiPasswordEncoder, string? filePath,
+                                                Action<uint>? persistIndex, uint lastUsedIndex, out KeyFileData data,
+                                                out bool usedLegacyPasswordEncoding)
+    {
+        data = JsonSerializer.Deserialize(jsonString, KeyFileDataJsonContext.Default.KeyFileData)
+            ?? throw new SerializationException("Invalid key file");
+
+        var network = expectedNetwork.ToNBitcoinNetwork();
+
+        // The file stores NBitcoin's name of the network (SaveToFile writes Network.ToString()): "RegTest",
+        // "TestNet", "signet", but "Main" for mainnet, which is not "mainnet" in lower case (NL-403)
+        if (expectedNetwork != data.Network.ToLowerInvariant() && Network.GetNetwork(data.Network) != network)
+            throw new Exception($"Invalid network. Expected {expectedNetwork}, but got {data.Network}");
+
+        if (data.Version == KeyFileData.Bip32Version && data.NodeKeyPath != NodeKeyPathString)
+            throw new SerializationException($"Invalid key file: unsupported node key path '{data.NodeKeyPath}'");
+
+        var extKeyBytes = DecryptExtKey(data, password, legacyAnsiPasswordEncoder, out usedLegacyPasswordEncoding);
+        ExtKey extKey;
+        try
+        {
+            extKey = ExtKey.Parse(Encoding.UTF8.GetString(extKeyBytes), network);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(extKeyBytes);
+        }
+
+        // Versions 1 and 2 keep the legacy derivation (the stored chain code is the genesis hash and is ignored), so
+        // the node id of an existing key file never changes. The descriptor is recomputed from the key, not read
+        // back: files written before SR-13 hold a wrong one
+        var chainCode = data.Version == KeyFileData.Bip32Version ? extKey.ChainCode.ToArray() : null;
+        return new SecureKeyManager(extKey.PrivateKey.ToBytes(), chainCode, expectedNetwork, filePath,
+                                    data.HeightOfBirth, persistIndex, Math.Max(data.LastUsedIndex, lastUsedIndex));
     }
 
     /// <summary>
@@ -804,7 +832,7 @@ public partial class SecureKeyManager : ISecureKeyManager, IDisposable
         return backupPath;
     }
 
-    private static void WriteFileAtomically(string path, string contents, string? modeSourcePath = null)
+    internal static void WriteFileAtomically(string path, string contents, string? modeSourcePath = null)
     {
         var targetPath = ResolveFinalPath(path);
         var tempPath = CreateTempPath(targetPath);
