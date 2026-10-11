@@ -3,8 +3,8 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
-using Domain.Node.Fencing;
 using Bitcoin.Wallet.Models;
+using Domain.Node.Fencing;
 
 /// <summary>
 /// NL-1341: every publication of <see cref="Bitcoin.Wallet.BitcoinChainService"/> asks the node write fence first. A

@@ -2,7 +2,6 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Application.Tests.Channels.Harness;
 
-using Application.Channels.Services;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Channels.Commitments;

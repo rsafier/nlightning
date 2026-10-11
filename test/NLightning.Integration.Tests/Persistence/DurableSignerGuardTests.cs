@@ -1,7 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
-using NBitcoin.Crypto;
 using NLightning.Tests.Utils.Channels;
 
 namespace NLightning.Integration.Tests.Persistence;
