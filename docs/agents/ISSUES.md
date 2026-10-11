@@ -11024,7 +11024,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** NL-1349
 
 ### NL-1352 Locked start: at-rest secrets delivered with the key
-- **Status:** fixed
+- **Status:** fixed (271fdeb9)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `KeyProvisioningSecrets` (`src/NLightning.Daemon.Contracts/Provisioning/KeyProvisioningProtocol.cs`), `LockedStartup.ApplySecrets`
