@@ -18,13 +18,6 @@ public class BitcoinWalletService : IBitcoinWalletService
     public AddressType SupportedWalletAddressTypes => _secureKeyManager.SupportedWalletAddressTypes;
 
     /// <summary>
-    /// Serializes address lookup and batch generation across scopes (NL-283): two scopes that both find no unused
-    /// address would otherwise compute the same first index and the second save would hit the
-    /// (Index, IsChange, AddressType) key. Process-wide, so nodes sharing a process (tests) only wait on each other.
-    /// </summary>
-    private static readonly SemaphoreSlim s_addressGenerationLock = new(1, 1);
-
-    /// <summary>
     /// How many addresses past each batch are derived, stored (unreserved) and watched, BIP 32/44 discovery style
     /// (NL-463): a wallet restored from seed onto a fresh database finds deposits on this window past the highest
     /// address it knows, and every deposit on a window address extends the window with the next batch, so restored
@@ -40,11 +33,13 @@ public class BitcoinWalletService : IBitcoinWalletService
     private readonly Network _network;
     private readonly ISecureKeyManager _secureKeyManager;
     private readonly IUnitOfWork _uow;
+    private readonly WalletLocks _locks;
 
     public BitcoinWalletService(IBlockchainMonitor blockchainMonitor, ILogger<BitcoinWalletService> logger,
                                 IOptions<NodeOptions> nodeOptions, ISecureKeyManager secureKeyManager,
-                                IUnitOfWork uow)
+                                IUnitOfWork uow, WalletLocks locks)
     {
+        _locks = locks;
         _blockchainMonitor = blockchainMonitor;
         _logger = logger;
         _secureKeyManager = secureKeyManager;
@@ -57,10 +52,12 @@ public class BitcoinWalletService : IBitcoinWalletService
     }
 
     /// <inheritdoc />
-    public Task<WalletAddressModel> GetUnusedAddressAsync(AddressType addressType, bool isChange) =>
-        ReserveUnusedAddressAsync(addressType, isChange);
+    public Task<WalletAddressModel> GetUnusedAddressAsync(AddressType addressType, bool isChange,
+                                                          CancellationToken cancellationToken = default) =>
+        ReserveUnusedAddressAsync(addressType, isChange, cancellationToken);
 
-    public async Task<WalletAddressModel> ReserveUnusedAddressAsync(AddressType addressType, bool isChange)
+    public async Task<WalletAddressModel> ReserveUnusedAddressAsync(AddressType addressType, bool isChange,
+                                                                   CancellationToken cancellationToken = default)
     {
         if (addressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
             throw new InvalidOperationException(
@@ -69,9 +66,9 @@ public class BitcoinWalletService : IBitcoinWalletService
         if ((SupportedWalletAddressTypes & addressType) == 0)
             throw new NotSupportedException($"The active signing backend does not support {addressType} wallet addresses.");
 
-        // Under the same lock as the lookup: no other caller can get this address between the lookup and the save
-        await s_addressGenerationLock.WaitAsync();
-        try
+        // Under the same lock as the lookup: no other caller of this node can get this address between the lookup
+        // and the save (NL-283). The lock is this node's own (NL-1387), and the wait ends with the caller's token
+        using (await _locks.EnterAddressGenerationAsync(cancellationToken))
         {
             var address = await GetOrGenerateUnusedAddressAsync(addressType, isChange);
             await _uow.WalletAddressesDbRepository.ReserveAsync(address);
@@ -81,10 +78,6 @@ public class BitcoinWalletService : IBitcoinWalletService
             {
                 IsReserved = true
             };
-        }
-        finally
-        {
-            s_addressGenerationLock.Release();
         }
     }
 

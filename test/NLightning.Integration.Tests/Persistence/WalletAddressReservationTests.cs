@@ -45,14 +45,14 @@ public class WalletAddressReservationTests
         using (var uow = CreateUnitOfWork(database, utxos))
         {
             var wallet = CreateWallet(uow);
-            reserved = await wallet.ReserveUnusedAddressAsync(AddressType.P2Wpkh, false);
-            unused = await wallet.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
-            secondReserved = await wallet.ReserveUnusedAddressAsync(AddressType.P2Wpkh, false);
+            reserved = await wallet.ReserveUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
+            unused = await wallet.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
+            secondReserved = await wallet.ReserveUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
         }
 
         WalletAddressModel afterRestart;
         using (var uow = CreateUnitOfWork(database, utxos))
-            afterRestart = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+            afterRestart = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         // Assert: every address handed out is reserved (NL-280), by either call, and never returned again
         Assert.True(reserved.IsReserved);
@@ -85,9 +85,9 @@ public class WalletAddressReservationTests
         WalletAddressModel first;
         WalletAddressModel second;
         using (var uow = CreateUnitOfWork(database, utxos))
-            first = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, true);
+            first = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, true, TestContext.Current.CancellationToken);
         using (var uow = CreateUnitOfWork(database, utxos))
-            second = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, true);
+            second = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, true, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.NotEqual(first.Address, second.Address);
@@ -103,7 +103,7 @@ public class WalletAddressReservationTests
         var utxos = new UtxoMemoryRepository();
         WalletAddressModel deposit;
         using (var uow = CreateUnitOfWork(database, utxos))
-            deposit = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+            deposit = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         var utxo = SqliteTestDatabase.CreateUtxo(deposit);
         using (var uow = CreateUnitOfWork(database, utxos))
@@ -121,7 +121,7 @@ public class WalletAddressReservationTests
         // Act
         WalletAddressModel next;
         using (var uow = CreateUnitOfWork(database, utxos))
-            next = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+            next = await CreateWallet(uow).GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.NotEqual(deposit.Address, next.Address);
@@ -238,7 +238,7 @@ public class WalletAddressReservationTests
         return new BitcoinWalletService(new Mock<IBlockchainMonitor>().Object,
                                         NullLogger<BitcoinWalletService>.Instance,
                                         Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
-                                        keyManager.Object, uow);
+                                        keyManager.Object, uow, new WalletLocks());
     }
 
     private static UnitOfWork CreateUnitOfWork(SqliteTestDatabase database, UtxoMemoryRepository utxos) =>

@@ -202,10 +202,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 107 | 109 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 75 | 279 | 542 | 911 |
+| fixed | 15 | 75 | 280 | 542 | 912 |
 | wontfix | 0 | 0 | 6 | 14 | 20 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **76** | **298** | **670** | **1059** |
+| **Total** | **15** | **76** | **299** | **670** | **1060** |
 
 ### Epics
 
@@ -3316,7 +3316,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinWalletService.cs` (`GetUnusedAddressAsync`)
-- **Evidence:** New addresses start at `GetLastUsedAddressIndex` (the highest existing index) instead of that + 1, so the second batch of 10 re-adds index 9 and `SaveChanges` hits the (Index, IsChange, AddressType) key; after 10 used addresses, getaddress, funding change and shutdown addresses fail (found by W3-B, not reproduced in Docker). Update (ABCD wave 4, `6b5d50e`): a new batch starts one past the highest stored index of its type and chain; lookup and generation run under a process-wide semaphore, so two scopes never generate the same indexes.
+- **Evidence:** New addresses start at `GetLastUsedAddressIndex` (the highest existing index) instead of that + 1, so the second batch of 10 re-adds index 9 and `SaveChanges` hits the (Index, IsChange, AddressType) key; after 10 used addresses, getaddress, funding change and shutdown addresses fail (found by W3-B, not reproduced in Docker). Update (ABCD wave 4, `6b5d50e`): a new batch starts one past the highest stored index of its type and chain; lookup and generation run under a process-wide semaphore, so two scopes never generate the same indexes. Update (NL-1387): the lock is per node (`WalletLocks`, a singleton of the node's container), the guarantee unchanged within a node.
 - **Fix sketch:** Start at max + 1; add a test that generates two batches.
 - **Blocks/Blocked-by:** Related NL-280
 - **Plan ref:** —
@@ -11259,3 +11259,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** `UpdatePeerLastSeenAsync` read the row untracked and called `Update` on it, which writes every column; the first pong of a connection reads the row while the connect path is still saving the peer's address (outside the NL-524 save gate), so the stale row (an inbound-only row with no address) was written back over the address just saved. Found by NL-1385's two-node proof: the hub's dial saved the announced address (logged after its save), and the row read back inbound-only in six of seven runs.
 - **Fix:** the row is read tracked and only `LastSeenAt` is set, so the save updates that column alone.
 - **Validation:** `Integration.Tests/Persistence/PeerLastSeenPersistenceTests` (SQLite with the real migrations: the pong's read, a dial's address save, then the pong's save keeps the address; fails without the fix) and `InboundOnlyPeerRedialTests`.
+
+### NL-1387 Two process-wide wallet locks made nodes hosted in one process wait on each other, without cancellation
+- **Status:** fixed
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinWalletService.cs` (`s_addressGenerationLock`), `src/NLightning.Infrastructure.Bitcoin/Wallet/WalletAccountService.cs` (`s_gate`), `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`TryProcessBlockWithRetriesAsync`)
+- **Evidence:** Both locks were static `SemaphoreSlim`s, so every node built by `AddNltgNodeServices` in one process (each its own container and database; the test harnesses host several) shared them. The address lock (NL-283) was awaited with no token and holds database reads and a save, and the account gate is held by the chain monitor across its block commit. A node whose allocation hung inside either lock (a statement waiting on a row lock, an RPC without a timeout) stopped every other node in the process from handing out an address (shutdown, sweep, penalty and change destinations, `getaddress`) and stalled its block processing whenever a block paid a named account; the waiters could not give up. The indexes the locks guard live in each node's own database, so nothing needed them process-wide.
+- **Fix:** `Wallet/WalletLocks` holds both semaphores as instance state and is a singleton of the node's container (`AddBitcoinInfrastructure`); `BitcoinWalletService` and `WalletAccountService` take it by injection, and the chain monitor takes the account gate through the scope's `WalletAccountService.EnterDiscoveryAsync` (no longer static) with its stopping token. Within one node nothing changes: one address batch at a time (NL-283) and the monitor's commit excluding account allocation. `IBitcoinWalletService.GetUnusedAddressAsync`/`ReserveUnusedAddressAsync` take an optional `CancellationToken` that ends the wait, passed by the callers that have one (sweep, remote sweep and penalty destinations, splice-out destination, `getaddress`, LND `NewAddress`/`NextAddr`, the Cashu on-chain quote). Audit of the other mutable statics in `src/` (none couples nodes through a lock): `BitcoinNetwork`'s custom-signet registry (keyed by name, same answer for every node), the two log-once flags (`OffersServiceCollectionExtensions.s_marginUpgradeLogged`, `NativeCryptoProvider.s_memoryLockWarningLogged`; cosmetic: the second node does not log), MessagePack `DefaultOptions` (the same value from every node), `SphinxKeyGenerator.s_pool` (a lock-free pool of stateless hash objects), `ConsistentReadExtensions.s_sqlServerSnapshotAllowed` (keyed by connection string), `LocalLiquidityEstimator.s_unplanned` (a weak table keyed by the snapshot object), the metric tag caches (`RefusedHtlcMetrics`, `GossipMetrics`; static `Meter`s aggregate the nodes' metrics), `NativeSignerAuthority.s_executionReadScope` (thread-static, entries matched by authority instance), `IpcClientConnectionAccessor.s_current` (async-local), `WipingSha256.Tracker` (async-local), `NLightningCryptoContext` (an immutable secp256k1 context).
+- **Validation:** `Infrastructure.Bitcoin.Tests/Wallet/WalletLocksTests` (two containers from `AddBitcoinInfrastructure`: one node hangs inside its address allocation and holds its account gate while the other hands out an address and enters its gate; waiting allocations, a named-account `NextAsync` and the gate end with the caller's token; four scopes of one node allocate concurrently without a duplicate index) and `Integration.Tests/Persistence/WalletLocksTwoNodeTests` (two real chain monitors over their own SQLite databases: one node holds both its locks while the other commits a block paying its named account, with the account's discovery, and hands out an address); both fail with the locks made static again.

@@ -42,7 +42,7 @@ public sealed class WalletSweepDestinationProvider : ISweepDestinationProvider
     {
         using var scope = _serviceScopeFactory.CreateScope();
         var wallet = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-        var address = await wallet.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        var address = await wallet.GetUnusedAddressAsync(AddressType.P2Wpkh, false, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
         _blockchainMonitor?.WatchBitcoinAddress(address);

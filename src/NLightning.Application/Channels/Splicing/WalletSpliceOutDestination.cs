@@ -54,7 +54,7 @@ public sealed class WalletSpliceOutDestination : ISpliceOutDestination
         using var scope = _scopeFactory?.CreateScope();
         var walletService = scope?.ServiceProvider.GetService<IBitcoinWalletService>()
                          ?? throw new InvalidOperationException("No wallet to splice out to; give an address");
-        var walletAddress = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        var walletAddress = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false, cancellationToken);
         _blockchainMonitor?.WatchBitcoinAddress(walletAddress);
         return BitcoinAddress.Create(walletAddress.Address, _network).ScriptPubKey.ToBytes();
     }

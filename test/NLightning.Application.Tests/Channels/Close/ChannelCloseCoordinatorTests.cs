@@ -230,7 +230,7 @@ public class ChannelCloseCoordinatorTests
         var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.Main).ToString();
         var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address);
         var wallet = new Mock<IBitcoinWalletService>();
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(walletAddress);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>())).ReturnsAsync(walletAddress);
         var monitor = new Mock<IBlockchainMonitor>();
         var provider = new ShutdownScriptProvider(Options.Create(new NodeOptions()), wallet.Object, monitor.Object);
 
@@ -256,8 +256,8 @@ public class ChannelCloseCoordinatorTests
         var receive = WalletAddress(0, false, out var receiveScript);
         var change = WalletAddress(0, true, out var changeScript);
         var wallet = new Mock<IBitcoinWalletService>();
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(receive);
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true)).ReturnsAsync(change);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>())).ReturnsAsync(receive);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>())).ReturnsAsync(change);
         var other = CreateChannel(otherState, isInitiator: false, channelIdTag: 0x21);
         other.SetLocalShutdownScript(receiveScript);
         var channel = CreateChannel(ChannelState.Open);
@@ -283,8 +283,8 @@ public class ChannelCloseCoordinatorTests
         var receive = WalletAddress(0, false, out var receiveScript);
         var change = WalletAddress(0, true, out var changeScript);
         var wallet = new Mock<IBitcoinWalletService>();
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(receive);
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true)).ReturnsAsync(change);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>())).ReturnsAsync(receive);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>())).ReturnsAsync(change);
         var first = CreateChannel(ChannelState.Negotiating, isInitiator: false, channelIdTag: 0x21);
         first.SetLocalShutdownScript(receiveScript);
         var second = CreateChannel(ChannelState.ShuttingDown, isInitiator: false, channelIdTag: 0x22);
@@ -311,8 +311,8 @@ public class ChannelCloseCoordinatorTests
         var receive = WalletAddress(0, false, out var receiveScript);
         var change = WalletAddress(0, true, out var changeScript);
         var wallet = new Mock<IBitcoinWalletService>();
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(receive);
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true)).ReturnsAsync(change);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>())).ReturnsAsync(receive);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>())).ReturnsAsync(change);
         var memory = new Mock<IChannelMemoryRepository>();
         memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
         ShutdownScriptProvider Provider() =>
@@ -337,7 +337,7 @@ public class ChannelCloseCoordinatorTests
         // Arrange
         var receive = WalletAddress(0, false, out var receiveScript);
         var wallet = new Mock<IBitcoinWalletService>();
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, It.IsAny<bool>())).ReturnsAsync(receive);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, It.IsAny<bool>(), It.IsAny<CancellationToken>())).ReturnsAsync(receive);
         var provider = new ShutdownScriptProvider(Options.Create(new NodeOptions()), wallet.Object, null, null, null,
                                                   _registry);
         var closed = CreateChannel(ChannelState.Open, channelIdTag: 0x21);

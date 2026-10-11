@@ -145,7 +145,7 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         await using var scope = _scopeFactory.CreateAsyncScope();
         var wallet = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
         var address = request.Account.Length == 0 || request.Account == DefaultAccount
-            ? await wallet.GetUnusedAddressAsync(type, request.Change)
+            ? await wallet.GetUnusedAddressAsync(type, request.Change, context.CancellationToken)
             : await Run(() => scope.ServiceProvider.GetRequiredService<Infrastructure.Bitcoin.Wallet.WalletAccountService>()
                 .NextAsync(request.Account, type, request.Change, context.CancellationToken));
         return new AddrResponse { Addr = address.Address };

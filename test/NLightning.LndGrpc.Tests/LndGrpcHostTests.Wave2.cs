@@ -268,7 +268,7 @@ public sealed partial class LndGrpcHostTests
         var txId = new TxId(Enumerable.Repeat((byte)0x81, 32).ToArray());
         _dispatcher.On<WithdrawClientRequest, WithdrawClientResponse>(
             _ => new WithdrawClientResponse(txId, 20_000, 300, 0, 1_000, 500, 1, 0, true));
-        _wallet.Setup(x => x.GetUnusedAddressAsync(Domain.Bitcoin.Enums.AddressType.P2Tr, false))
+        _wallet.Setup(x => x.GetUnusedAddressAsync(Domain.Bitcoin.Enums.AddressType.P2Tr, false, It.IsAny<CancellationToken>()))
                .ReturnsAsync(new WalletAddressModel(Domain.Bitcoin.Enums.AddressType.P2Tr, 4, false, "bcrt1ptaproot"));
         using var connection = await ConnectAsync(LndMacaroonFiles.AdminFileName);
 

@@ -481,7 +481,7 @@ public class AnchorReservePersistenceTests
             var utxos = new UtxoMemoryRepository();
             var walletService = new Mock<IBitcoinWalletService>();
             var change = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest).ToString();
-            walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
+            walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>()))
                          .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, true, change));
 
             var services = new ServiceCollection();

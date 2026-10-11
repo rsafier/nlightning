@@ -40,7 +40,7 @@ public sealed class WalletRemoteSweepDestination : IRemoteSweepDestination
         cancellationToken.ThrowIfCancellationRequested();
         using var scope = _serviceScopeFactory.CreateScope();
         var walletService = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-        var address = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        var address = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false, cancellationToken);
         _blockchainMonitor?.WatchBitcoinAddress(address);
         return BitcoinAddress.Create(address.Address, _network).ScriptPubKey.ToBytes();
     }

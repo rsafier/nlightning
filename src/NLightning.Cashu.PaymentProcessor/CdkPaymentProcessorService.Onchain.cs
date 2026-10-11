@@ -43,7 +43,8 @@ public sealed partial class CdkPaymentProcessorService
 
             // It saves the scope's unit of work itself, so the quote is staged after it
             var address = await wallet.GetUnusedAddressAsync(
-                              _options.OnchainUsesTaproot ? AddressType.P2Tr : AddressType.P2Wpkh, false);
+                              _options.OnchainUsesTaproot ? AddressType.P2Tr : AddressType.P2Wpkh, false,
+                              cancellationToken);
             quote = new CashuQuoteModel(quoteId, CashuQuoteMethod.Onchain, CashuQuoteDirection.Incoming,
                                         LightningMoney.Zero, _timeProvider.GetUtcNow())
             {

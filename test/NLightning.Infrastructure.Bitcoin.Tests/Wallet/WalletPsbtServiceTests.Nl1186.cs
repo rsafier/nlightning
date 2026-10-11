@@ -186,7 +186,7 @@ public partial class WalletPsbtServiceTests
         // Arrange
         var p2trChange = GetP2TrExtKey(60, true).Neuter().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86,
                                                                            Network.RegTest);
-        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Tr, true))
+        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Tr, true, It.IsAny<CancellationToken>()))
                       .ReturnsAsync(new WalletAddressModel(AddressType.P2Tr, 60, true, p2trChange.ToString()));
         AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
         var p2wpkh = await _service.FundPsbtAsync(Request(40_000), Ct);

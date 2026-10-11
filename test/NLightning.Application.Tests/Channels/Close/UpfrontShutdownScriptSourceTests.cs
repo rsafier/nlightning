@@ -37,7 +37,7 @@ public class UpfrontShutdownScriptSourceTests
             IsReserved = true
         };
         var wallet = new Mock<IBitcoinWalletService>(MockBehavior.Strict);
-        wallet.Setup(w => w.ReserveUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(walletAddress);
+        wallet.Setup(w => w.ReserveUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>())).ReturnsAsync(walletAddress);
         var monitor = new Mock<IBlockchainMonitor>();
         var provider = new ServiceCollection().AddScoped(_ => wallet.Object).BuildServiceProvider();
         var source = new UpfrontShutdownScriptSource(
@@ -49,8 +49,8 @@ public class UpfrontShutdownScriptSourceTests
 
         // Assert
         Assert.Equal(address.ScriptPubKey.ToBytes(), (byte[])script);
-        wallet.Verify(w => w.ReserveUnusedAddressAsync(AddressType.P2Wpkh, false), Times.Once);
-        wallet.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()), Times.Never);
+        wallet.Verify(w => w.ReserveUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>()), Times.Once);
+        wallet.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
         monitor.Verify(m => m.WatchBitcoinAddress(walletAddress), Times.Once);
     }
 

@@ -78,7 +78,7 @@ public partial class WalletPsbtServiceTests : IDisposable
                      .ReturnsAsync((Guid id) => _stored.FirstOrDefault(r => r.Id == id));
         _reservations.Setup(r => r.DeleteAsync(It.IsAny<Guid>()))
                      .ReturnsAsync((Guid id) => _stored.RemoveAll(r => r.Id == id) > 0);
-        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
+        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>()))
                       .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 50, true, changeAddress.ToString()));
         _anchorReserve.Setup(a => a.GetStatusAsync(It.IsAny<CancellationToken>())).ReturnsAsync(() =>
         {

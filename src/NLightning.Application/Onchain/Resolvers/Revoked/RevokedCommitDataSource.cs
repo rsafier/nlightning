@@ -183,7 +183,7 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
             if (script is null)
             {
                 var walletService = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-                var address = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+                var address = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false, cancellationToken);
 
                 // The monitor credits the penalty output to the wallet once it confirms (idempotent)
                 _blockchainMonitor?.WatchBitcoinAddress(address);

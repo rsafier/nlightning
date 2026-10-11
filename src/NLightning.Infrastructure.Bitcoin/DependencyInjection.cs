@@ -47,6 +47,8 @@ public static class DependencyInjection
     {
         services.AddSilentPaymentBitcoinServices();
         services.AddSingleton<Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate, Wallet.WalletHistoryGate>();
+        // Per node, never static: nodes hosted in one process must not wait on each other's wallet (NL-1387)
+        services.AddSingleton<Wallet.WalletLocks>();
         services.AddOptions<KeyRing.KeyRingOptions>();
         services.AddSingleton<KeyRing.KeyRingService>();
         services.AddSingleton<KeyRing.SwapSigner>(sp => new KeyRing.SwapSigner(

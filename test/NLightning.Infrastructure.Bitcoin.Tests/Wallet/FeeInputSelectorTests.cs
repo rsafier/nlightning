@@ -52,7 +52,7 @@ public partial class FeeInputSelectorTests
                           lock (_added)
                               _added.Add(r);
                       });
-        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
+        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>()))
                       .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, true, _changeAddress.ToString()));
 
         var services = new ServiceCollection();
@@ -104,7 +104,7 @@ public partial class FeeInputSelectorTests
         Assert.Null(reservation.ChangeScript);
         Assert.Equal(0, reservation.ChangeAmount.Satoshi);
         Assert.Equal(2_000, reservation.Fee.Satoshi);
-        _walletService.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()), Times.Never);
+        _walletService.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

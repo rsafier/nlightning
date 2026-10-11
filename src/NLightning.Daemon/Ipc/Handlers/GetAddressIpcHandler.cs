@@ -55,10 +55,10 @@ internal class GetAddressIpcHandler : IIpcCommandHandler
 
             // Get unused addresses by type
             if (selected.HasFlag(AddressType.P2Tr))
-                p2Tr = (await walletAddressService.GetUnusedAddressAsync(AddressType.P2Tr, false)).Address;
+                p2Tr = (await walletAddressService.GetUnusedAddressAsync(AddressType.P2Tr, false, ct)).Address;
 
             if (selected.HasFlag(AddressType.P2Wpkh))
-                p2Wpkh = (await walletAddressService.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).Address;
+                p2Wpkh = (await walletAddressService.GetUnusedAddressAsync(AddressType.P2Wpkh, false, ct)).Address;
 
             // Create a success response
             var response = new GetAddressIpcResponse

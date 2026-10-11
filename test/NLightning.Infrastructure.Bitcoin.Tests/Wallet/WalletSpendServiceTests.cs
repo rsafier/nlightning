@@ -76,7 +76,7 @@ public partial class WalletSpendServiceTests
                      .ReturnsAsync((Guid id) => _stored.FirstOrDefault(r => r.Id == id));
         _reservations.Setup(r => r.DeleteAsync(It.IsAny<Guid>()))
                      .ReturnsAsync((Guid id) => _stored.RemoveAll(r => r.Id == id) > 0);
-        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
+        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>()))
                       .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 50, true, _changeAddress.ToString()));
 
         // The reserve is backed by the unreserved outputs three blocks deep, as AnchorReserveService computes it

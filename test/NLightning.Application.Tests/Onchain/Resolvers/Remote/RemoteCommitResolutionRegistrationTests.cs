@@ -58,7 +58,7 @@ public class RemoteCommitResolutionRegistrationTests
     {
         // Arrange (finding 5): the wallet may save new addresses; that save must not be the round's unit of work
         var wallet = new Mock<IBitcoinWalletService>();
-        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false))
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>()))
               .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, false,
                                                    "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"));
         var scopes = 0;

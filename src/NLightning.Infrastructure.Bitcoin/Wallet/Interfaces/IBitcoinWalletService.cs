@@ -14,13 +14,16 @@ public interface IBitcoinWalletService
     /// were spent (NL-280). Every call returns another address.
     /// </summary>
     /// <remarks>
-    /// It saves the scope's unit of work: call it before staging anything else in that scope.
+    /// It saves the scope's unit of work: call it before staging anything else in that scope. Calls of one node run one
+    /// at a time; <paramref name="cancellationToken"/> ends the wait for the node's address lock (NL-1387).
     /// </remarks>
-    Task<WalletAddressModel> GetUnusedAddressAsync(AddressType addressType, bool isChange);
+    Task<WalletAddressModel> GetUnusedAddressAsync(AddressType addressType, bool isChange,
+                                              CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The same as <see cref="GetUnusedAddressAsync"/> (every handed-out address is reserved since NL-280); kept as the
     /// explicit name for callers that own the address (NL-045: a channel's <c>upfront_shutdown_script</c>).
     /// </summary>
-    Task<WalletAddressModel> ReserveUnusedAddressAsync(AddressType addressType, bool isChange);
+    Task<WalletAddressModel> ReserveUnusedAddressAsync(AddressType addressType, bool isChange,
+                                                  CancellationToken cancellationToken = default);
 }

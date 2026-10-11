@@ -16,34 +16,22 @@ using Networks;
 
 /// <summary>Named BIP84/BIP86 accounts with durable public discovery metadata and isolated watch-only scripts.</summary>
 public sealed class WalletAccountService(IUnitOfWork uow, ISecureKeyManager keys, IBlockchainMonitor monitor,
-                                        IOptions<NodeOptions> options)
+                                        IOptions<NodeOptions> options, WalletLocks locks)
 {
     private readonly ConditionalWeakTable<IUnitOfWork, List<WalletAddressModel>> _staged = new();
-    private static readonly SemaphoreSlim s_gate = new(1, 1);
     private readonly HashSet<string> _stagedWatchScripts = new(StringComparer.Ordinal);
     private readonly Network _network = options.Value.BitcoinNetwork.ToNBitcoinNetwork();
 
-    /// <summary>The monitor holds the account allocator gate through its block commit.</summary>
-    public static async ValueTask<IDisposable> EnterDiscoveryAsync(CancellationToken ct)
-    {
-        await s_gate.WaitAsync(ct);
-        return new DiscoveryLease();
-    }
-
-    private sealed class DiscoveryLease : IDisposable
-    {
-        private int _released;
-        public void Dispose()
-        {
-            if (Interlocked.Exchange(ref _released, 1) == 0) s_gate.Release();
-        }
-    }
+    /// <summary>
+    /// The monitor holds this node's account allocator gate through its block commit (per node, NL-1387).
+    /// </summary>
+    public ValueTask<IDisposable> EnterDiscoveryAsync(CancellationToken ct) => locks.EnterAccountsAsync(ct);
 
     public async Task<WalletAccountModel> CreateAsync(string name, AddressType type, CancellationToken ct)
     {
         ValidateName(name);
         ValidateType(type);
-        await s_gate.WaitAsync(ct);
+        var lease = await locks.EnterAccountsAsync(ct);
         try
         {
             if (await uow.WalletAccountDbRepository.GetAsync(name, ct) is not null)
@@ -62,7 +50,7 @@ public sealed class WalletAccountService(IUnitOfWork uow, ISecureKeyManager keys
             foreach (var address in added) monitor.WatchBitcoinAddress(address);
             return account;
         }
-        finally { s_gate.Release(); }
+        finally { lease.Dispose(); }
     }
 
     public async Task<WalletAccountModel> ImportAsync(string name, string xpub, byte[] fingerprint,
@@ -88,7 +76,7 @@ public sealed class WalletAccountService(IUnitOfWork uow, ISecureKeyManager keys
         var account = new WalletAccountModel(name, type, index, normalized, fingerprint.ToArray(),
             $"m/{(type == AddressType.P2Tr ? 86 : 84)}'/{(testnet ? 1 : 0)}'/{index}'", true, 0);
         if (dryRun) return account;
-        await s_gate.WaitAsync(ct);
+        var lease = await locks.EnterAccountsAsync(ct);
         try
         {
             if (await uow.WalletAccountDbRepository.GetAsync(name, ct) is not null)
@@ -102,12 +90,12 @@ public sealed class WalletAccountService(IUnitOfWork uow, ISecureKeyManager keys
             await uow.SaveChangesAsync();
             return account;
         }
-        finally { s_gate.Release(); }
+        finally { lease.Dispose(); }
     }
 
     public async Task<WalletAddressModel> NextAsync(string name, AddressType type, bool change, CancellationToken ct)
     {
-        await s_gate.WaitAsync(ct);
+        var lease = await locks.EnterAccountsAsync(ct);
         try
         {
             var account = await uow.WalletAccountDbRepository.GetAsync(name, ct)
@@ -139,7 +127,7 @@ public sealed class WalletAccountService(IUnitOfWork uow, ISecureKeyManager keys
             foreach (var derived in newlyDerived) monitor.WatchBitcoinAddress(derived);
             return address;
         }
-        finally { s_gate.Release(); }
+        finally { lease.Dispose(); }
     }
 
     /// <summary>Stage named-account discovery in the block's own unit of work. The caller saves and watches after commit.</summary>
@@ -169,7 +157,7 @@ public sealed class WalletAccountService(IUnitOfWork uow, ISecureKeyManager keys
     /// <summary>Discover imported-account gaps using every historical receipt, including outputs already spent.</summary>
     public async Task<bool> ExtendWatchDiscoveryAsync(IReadOnlyList<Transaction> transactions, CancellationToken ct)
     {
-        await s_gate.WaitAsync(ct);
+        var lease = await locks.EnterAccountsAsync(ct);
         try
         {
             var scripts = transactions.SelectMany(tx => tx.Outputs).Select(o => Convert.ToHexString(o.ScriptPubKey.ToBytes()))
@@ -199,7 +187,7 @@ public sealed class WalletAccountService(IUnitOfWork uow, ISecureKeyManager keys
             if (changed) await uow.SaveChangesAsync();
             return changed;
         }
-        finally { s_gate.Release(); }
+        finally { lease.Dispose(); }
     }
 
     public string Address(WalletAccountModel account, bool change, uint index) =>

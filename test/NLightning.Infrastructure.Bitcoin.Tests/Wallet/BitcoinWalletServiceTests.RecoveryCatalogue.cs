@@ -24,7 +24,7 @@ public partial class BitcoinWalletServiceTests
         _secureKeyManager.Verify(keys => keys.GetWalletPublicKey(It.IsAny<uint>(), It.IsAny<bool>(), AddressType.P2Tr),
             Times.Never);
         await Assert.ThrowsAsync<NotSupportedException>(() =>
-            CreateService(BitcoinNetwork.Regtest).GetUnusedAddressAsync(AddressType.P2Tr, false));
+            CreateService(BitcoinNetwork.Regtest).GetUnusedAddressAsync(AddressType.P2Tr, false, TestContext.Current.CancellationToken));
         _unitOfWork.Verify(unit => unit.SaveChangesAsync(), Times.Never);
     }
 
@@ -77,10 +77,10 @@ public partial class BitcoinWalletServiceTests
         var source = RecoverySource();
         await source.StageAddressesAsync(_unitOfWork.Object, cancellationToken: TestContext.Current.CancellationToken);
         var service = CreateService(BitcoinNetwork.Regtest);
-        var handedOut = await service.GetUnusedAddressAsync(AddressType.P2Tr, true);
+        var handedOut = await service.GetUnusedAddressAsync(AddressType.P2Tr, true, TestContext.Current.CancellationToken);
         // Act
         await source.StageAddressesAsync(_unitOfWork.Object, 40, TestContext.Current.CancellationToken);
-        var next = await service.GetUnusedAddressAsync(AddressType.P2Tr, true);
+        var next = await service.GetUnusedAddressAsync(AddressType.P2Tr, true, TestContext.Current.CancellationToken);
         // Assert
         Assert.Equal(0u, handedOut.Index);
         Assert.Equal(1u, next.Index);

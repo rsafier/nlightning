@@ -55,7 +55,7 @@ public partial class WalletSpendServiceTests
         Assert.Equal(sent.Change.Satoshi, change.AmountSats);
         Assert.False(change.Ignored);
         Assert.Null(Assert.Single(_stored).ChangeScript);
-        _walletService.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), true), Times.Never);
+        _walletService.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), true, It.IsAny<CancellationToken>()), Times.Never);
         var restoredScanner = CreateChangeScanner(prevouts, receiver.Keys, options);
         IReadOnlyList<SilentPaymentOutputModel> restored;
         using (await restoredScanner.EnterAsync(TestContext.Current.CancellationToken))

@@ -24,7 +24,7 @@ public partial class WalletSpendServiceTests
         Domain.Bitcoin.Wallet.Interfaces.IFeeInputSelector? selector = null)
     {
         var change = GetP2TrExtKey(50, true).Neuter().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, Network.RegTest);
-        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Tr, true))
+        _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Tr, true, It.IsAny<CancellationToken>()))
                       .ReturnsAsync(new WalletAddressModel(AddressType.P2Tr, 50, true, change.ToString()));
         return new WalletSpendService(selector ?? _selector, _anchorReserve.Object, _utxos, signer ?? _signer, _monitor.Object,
             _feeService.Object, _scopeFactory, Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance,

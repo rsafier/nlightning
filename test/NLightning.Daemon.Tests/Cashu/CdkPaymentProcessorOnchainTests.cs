@@ -30,7 +30,7 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
     public async Task Given_AnOnchainMintQuote_When_CreatedTwice_Then_OneFreshWalletAddressByQuoteId()
     {
         // Arrange
-        Wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false))
+        Wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>()))
               .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 7, false, MintAddress));
 
         // Act
@@ -42,7 +42,7 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
         Assert.Equal("mint-1", first.RequestIdentifier.Id);
         Assert.Equal(MintAddress, first.Request);
         Assert.Equal(MintAddress, replay.Request);
-        Wallet.Verify(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false), Times.Once);
+        Wallet.Verify(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>()), Times.Once);
         Assert.Equal(MintAddress, (await Quotes.GetAsync("mint-1"))!.Address);
     }
 
@@ -50,7 +50,7 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
     public async Task Given_ADepositToAMintQuote_When_ItReachesTwoConfirmations_Then_ReportedOnceByOutpoint()
     {
         // Arrange
-        Wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false))
+        Wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>()))
               .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 7, false, MintAddress));
         await CreateMintQuoteAsync("mint-2");
         using var stream = Client.WaitPaymentEvent(new EmptyRequest(), cancellationToken: Ct);

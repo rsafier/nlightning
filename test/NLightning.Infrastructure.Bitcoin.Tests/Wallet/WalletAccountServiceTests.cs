@@ -52,7 +52,8 @@ public sealed class WalletAccountServiceTests
             .Returns((AddressType type, uint index) => AccountKey(type, index));
         keys.Setup(k => k.GetDepositAccount(It.IsAny<AddressType>())).Returns((AddressType type) => AccountKey(type, 0));
         _service = new WalletAccountService(_uow.Object, keys.Object, _monitor.Object,
-            Microsoft.Extensions.Options.Options.Create(new NodeOptions { BitcoinNetwork = "regtest" }));
+            Microsoft.Extensions.Options.Options.Create(new NodeOptions { BitcoinNetwork = "regtest" }),
+            new WalletLocks());
     }
 
     [Fact]
@@ -110,7 +111,7 @@ public sealed class WalletAccountServiceTests
         await _service.CreateAsync("two", AddressType.P2Tr, Ct);
         var used = _addresses.Where(a => !a.IsChange && a.DerivationIndex == 19).ToArray();
         _uow.Invocations.Clear();
-        using var gate = await WalletAccountService.EnterDiscoveryAsync(Ct);
+        using var gate = await _service.EnterDiscoveryAsync(Ct);
         var added = await _service.StageOwnedDiscoveryAsync(_uow.Object, used, Ct);
         Assert.Equal(40, added.Count);
         Assert.Equal(20u, _accounts["one"].ExternalKeyCount);

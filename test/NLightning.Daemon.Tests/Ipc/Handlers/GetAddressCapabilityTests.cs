@@ -27,7 +27,7 @@ public class GetAddressCapabilityTests
     {
         var wallet = new Mock<IBitcoinWalletService>();
         wallet.SetupGet(service => service.SupportedWalletAddressTypes).Returns(AddressType.P2Wpkh);
-        wallet.Setup(service => service.GetUnusedAddressAsync(AddressType.P2Wpkh, false))
+        wallet.Setup(service => service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>()))
               .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, false, "bcrt1qfixture"));
         var services = new ServiceCollection().AddSingleton(wallet.Object);
         using var provider = services.BuildServiceProvider();
@@ -46,7 +46,7 @@ public class GetAddressCapabilityTests
             }, NLightningMessagePackOptions.Options, TestContext.Current.CancellationToken)
         }, TestContext.Current.CancellationToken);
 
-        wallet.Verify(service => service.GetUnusedAddressAsync(AddressType.P2Tr, It.IsAny<bool>()), Times.Never);
+        wallet.Verify(service => service.GetUnusedAddressAsync(AddressType.P2Tr, It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
         if (succeeds)
         {
             Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
@@ -58,7 +58,7 @@ public class GetAddressCapabilityTests
         else
         {
             Assert.Equal(IpcEnvelopeKind.Error, response.Kind);
-            wallet.Verify(service => service.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()),
+            wallet.Verify(service => service.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
                 Times.Never);
         }
     }

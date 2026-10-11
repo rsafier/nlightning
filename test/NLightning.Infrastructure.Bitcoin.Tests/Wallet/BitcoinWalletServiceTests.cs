@@ -23,6 +23,7 @@ public partial class BitcoinWalletServiceTests
     private readonly Mock<ISecureKeyManager> _secureKeyManager = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<IWalletAddressesDbRepository> _addresses = new();
+    private readonly WalletLocks _locks = new(); // one node: every service of the test shares it
     private readonly List<WalletAddressModel> _stored = [];
     private readonly HashSet<uint> _funded = [];
     private readonly HashSet<(AddressType Type, bool IsChange, uint Index)> _reserved = [];
@@ -94,7 +95,7 @@ public partial class BitcoinWalletServiceTests
         var service = CreateService(BitcoinNetwork.Regtest);
 
         // Act
-        var address = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        var address = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         // Assert: the hand-out batch plus the discovery window (NL-463), all watched, only the hand-out reserved
         Assert.Equal(0u, address.Index);
@@ -110,12 +111,12 @@ public partial class BitcoinWalletServiceTests
     {
         // Arrange
         var service = CreateService(BitcoinNetwork.Regtest);
-        await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         // Act
         var addresses = new List<WalletAddressModel>();
         for (var i = 0; i < 12; i++)
-            addresses.Add(await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false));
+            addresses.Add(await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken));
 
         // Assert: indexes 1..12, all reserved, no second batch generated (30 stored in total)
         Assert.Equal(Enumerable.Range(1, 12).Select(i => (uint)i), addresses.Select(a => a.Index));
@@ -128,10 +129,10 @@ public partial class BitcoinWalletServiceTests
         // Arrange: indexes 0..29 are all handed out (reserved)
         var service = CreateService(BitcoinNetwork.Regtest);
         for (var i = 0; i < 10 + BitcoinWalletService.GapLimit; i++)
-            await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+            await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         // Act
-        var address = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        var address = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         // Assert: the next batch runs 30..59, none of the old ones again (the duplicate key failed the save before
         // the fix)
@@ -147,13 +148,13 @@ public partial class BitcoinWalletServiceTests
     {
         // Arrange: the batch 0..29 was generated and a deposit (restored funds, NL-463) landed on window address 25
         var service = CreateService(BitcoinNetwork.Regtest);
-        await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
         _funded.Add(25);
 
         // Act
         var addresses = new List<WalletAddressModel>();
         for (var i = 0; i < 6; i++)
-            addresses.Add(await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false));
+            addresses.Add(await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken));
 
         // Assert: nothing below the funded address is handed out again (NL-280); hand-outs continue 26..29, then the
         // pool is exhausted and the next batch keeps a window past it (30..59)
@@ -171,7 +172,7 @@ public partial class BitcoinWalletServiceTests
         var service = CreateService(BitcoinNetwork.Regtest);
 
         // Act
-        var address = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        var address = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(1u, address.Index);
@@ -183,10 +184,10 @@ public partial class BitcoinWalletServiceTests
     {
         // Arrange
         var service = CreateService(BitcoinNetwork.Regtest);
-        await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
 
         // Act
-        var change = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, true);
+        var change = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, true, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(0u, change.Index);
@@ -202,7 +203,7 @@ public partial class BitcoinWalletServiceTests
         // highest index without the lock
         var first = CreateService(BitcoinNetwork.Regtest);
         for (var i = 0; i < 10 + BitcoinWalletService.GapLimit; i++)
-            await first.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+            await first.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken);
         // Both scopes find no unused address (the pool ran out between their lookups), and the index query yields
         _addresses.Setup(r => r.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()))
                   .ReturnsAsync((WalletAddressModel?)null);
@@ -220,8 +221,8 @@ public partial class BitcoinWalletServiceTests
         var third = CreateService(BitcoinNetwork.Regtest);
 
         // Act
-        var addresses = await Task.WhenAll(second.GetUnusedAddressAsync(AddressType.P2Wpkh, false),
-                                           third.GetUnusedAddressAsync(AddressType.P2Wpkh, false));
+        var addresses = await Task.WhenAll(second.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken),
+                                           third.GetUnusedAddressAsync(AddressType.P2Wpkh, false, TestContext.Current.CancellationToken));
 
         // Assert: 30..59 and 60..89, no duplicate key (NL-283)
         Assert.Equal([30u, 60u], addresses.Select(a => a.Index).Order());
@@ -242,7 +243,7 @@ public partial class BitcoinWalletServiceTests
         var service = CreateService(new BitcoinNetwork(network));
 
         // Act
-        var address = await service.GetUnusedAddressAsync(addressType, false);
+        var address = await service.GetUnusedAddressAsync(addressType, false, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.StartsWith(prefix, address.Address);
@@ -259,6 +260,6 @@ public partial class BitcoinWalletServiceTests
     {
         return new BitcoinWalletService(_blockchainMonitor.Object, NullLogger<BitcoinWalletService>.Instance,
                                         new OptionsWrapper<NodeOptions>(new NodeOptions { BitcoinNetwork = network }),
-                                        _secureKeyManager.Object, _unitOfWork.Object);
+                                        _secureKeyManager.Object, _unitOfWork.Object, _locks);
     }
 }

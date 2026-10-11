@@ -1224,9 +1224,12 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 var usedNamedAddresses = uow.WalletAddressesDbRepository.GetAllAddresses()
                     .Where(address => address.AccountIndex != 0 && outputScripts.Contains(
                         BitcoinAddress.Create(address.Address, _network).ScriptPubKey)).ToArray();
-                using var accountLease = usedNamedAddresses.Length > 0
-                    ? await WalletAccountService.EnterDiscoveryAsync(cancellationToken) : null;
-                if (usedNamedAddresses.Length > 0 && scope.ServiceProvider.GetService<WalletAccountService>() is { } accounts)
+                // This node's account gate (NL-1387), held through the commit so no allocation interleaves
+                var accounts = usedNamedAddresses.Length > 0
+                    ? scope.ServiceProvider.GetService<WalletAccountService>() : null;
+                using var accountLease = accounts is not null
+                    ? await accounts.EnterDiscoveryAsync(cancellationToken) : null;
+                if (accounts is not null)
                     discoveredAddresses = await accounts.StageOwnedDiscoveryAsync(uow, usedNamedAddresses, cancellationToken);
                 await uow.SaveChangesAsync();
             }

@@ -349,7 +349,7 @@ public sealed partial class LightningService
         await using var scope = CreateScope();
         var wallet = scope.ServiceProvider.GetService<IBitcoinWalletService>()
                   ?? throw new RpcException(new Status(StatusCode.Unavailable, "the wallet is not available"));
-        var address = await wallet.GetUnusedAddressAsync(type, false);
+        var address = await wallet.GetUnusedAddressAsync(type, false, context.CancellationToken);
         return new NewAddressResponse { Address = address.Address };
     }
 

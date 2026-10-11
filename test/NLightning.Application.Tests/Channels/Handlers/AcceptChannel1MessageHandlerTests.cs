@@ -77,7 +77,7 @@ public class AcceptChannel1MessageHandlerTests
 
         _mockUtxoMemoryRepository.Setup(r => r.GetLockedUtxosForChannel(It.IsAny<ChannelId>())).Returns([]);
 
-        _mockWalletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
+        _mockWalletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>()))
                          .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, true, "bcrt1qchange"));
 
         _mockFundingTransactionModelFactory
@@ -335,7 +335,7 @@ public class AcceptChannel1MessageHandlerTests
         await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
 
         // Assert
-        _mockWalletService.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()),
+        _mockWalletService.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
                                   Times.Never);
         Assert.NotNull(built);
         Assert.Null(built.ChangeAddress);
@@ -372,7 +372,7 @@ public class AcceptChannel1MessageHandlerTests
         // Assert
         Assert.NotNull(probe);
         Assert.Equal(AddressType.P2Wpkh, probe.AddressType);
-        _mockWalletService.Verify(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true), Times.Once);
+        _mockWalletService.Verify(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true, It.IsAny<CancellationToken>()), Times.Once);
         Assert.NotNull(built);
         Assert.Equal("bcrt1qchange", built.ChangeAddress?.Address);
         Assert.Equal("bcrt1qchange", _tempChannel.ChangeAddress?.Address);

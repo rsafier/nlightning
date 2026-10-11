@@ -61,7 +61,7 @@ public class RevokedCommitDataSourceTests
         var provider = services.BuildServiceProvider();
         _broadcasts.Setup(b => b.GetByChannelIdAsync(It.IsAny<ChannelId>()))
                    .ReturnsAsync(Array.Empty<BroadcastTransactionModel>());
-        _wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false))
+        _wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>()))
                .ReturnsAsync(() => new WalletAddressModel(AddressType.P2Wpkh, _nextAddressIndex++, false,
                                                           new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
                                                                                       Network.Main).ToString()));
@@ -249,7 +249,7 @@ public class RevokedCommitDataSourceTests
         // Assert: a rebuilt penalty pays to the same script (same txid at the same fee); another channel gets its own
         Assert.Equal(first, second);
         Assert.NotEqual(first, otherChannel);
-        _wallet.Verify(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false), Times.Exactly(2));
+        _wallet.Verify(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false, It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
     [Fact]
@@ -276,7 +276,7 @@ public class RevokedCommitDataSourceTests
 
         // Assert
         Assert.Equal(storedScript, destination);
-        _wallet.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()), Times.Never);
+        _wallet.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
