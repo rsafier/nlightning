@@ -365,6 +365,26 @@ public class ChannelDbRepositoryTests
     }
 
     [Fact]
+    public async Task Given_ChannelsInAnyState_When_ListingLocalKeyIndexes_Then_EachRowHasOurIndexAndItsState()
+    {
+        // Arrange (NL-1392: the restore refuses a backed-up channel whose index a live row already uses)
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var open = SqliteDbTestContext.CreateChannel(true, localKeyIndex: 3, remoteKeyIndex: 500);
+        var closed = SqliteDbTestContext.CreateChannel(false, state: ChannelState.Closed, localKeyIndex: 7);
+        await SaveAndReloadAsync(db, open);
+        await SaveAndReloadAsync(db, closed);
+
+        // Act
+        await using var context = db.CreateDbContext();
+        var rows = await new ChannelDbRepository(context, db.Sha256).GetLocalKeyIndexesAsync();
+
+        // Assert: the peer's key set is never listed
+        Assert.Equal(2, rows.Count);
+        Assert.Contains((open.ChannelId, 3u, open.State), rows);
+        Assert.Contains((closed.ChannelId, 7u, ChannelState.Closed), rows);
+    }
+
+    [Fact]
     public async Task Given_AliasUsedByAnotherChannel_When_Saved_Then_TheDatabaseRejectsIt()
     {
         // Arrange

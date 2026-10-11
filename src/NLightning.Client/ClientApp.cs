@@ -253,6 +253,10 @@ internal static class ClientApp
                 case "rotate-macaroon-root-key":
                     new RotateMacaroonRootKeyPrinter().Print(await client.RotateMacaroonRootKeyAsync(cancellationToken));
                     break;
+                case "openhold":
+                case "open-hold":
+                    new OpenHoldPrinter().Print(await client.OpenHoldAsync(commandArgs.Length == 1, cancellationToken));
+                    break;
                 case "chainstatus":
                 case "chain-status":
                     var chainStatus = await client.ChainStatusAsync(cancellationToken);
@@ -327,7 +331,7 @@ internal static class ClientApp
                     var restoreBytes = await ReadBackupArgumentAsync(commandArgs, cancellationToken);
                     var restore = await client.RestoreChanBackupAsync(restoreBytes, cancellationToken);
                     new RestoreChanBackupPrinter().Print(restore);
-                    if (restore.Channels.Any(c => c.Outcome is "Failed" or "KeysMismatch"))
+                    if (restore.Channels.Any(c => c.Outcome is "Failed" or "KeysMismatch" or "KeyIndexInUse"))
                         return Failure;
                     break;
                 case "createoffer":
@@ -467,6 +471,12 @@ internal static class ClientApp
             case "rotatemacaroonrootkey":
             case "rotate-macaroon-root-key":
                 return null;
+            case "openhold":
+            case "open-hold":
+                return commandArgs.Length == 0
+                    || (commandArgs.Length == 1 && string.Equals(commandArgs[0], "--release", StringComparison.Ordinal))
+                           ? null
+                           : $"Invalid arguments. Usage: {cmd} [--release]";
             case "shutdown":
             case "stop":
                 return ParseShutdownOptions(commandArgs, out var shutdownError) is null

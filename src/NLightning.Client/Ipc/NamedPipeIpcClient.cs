@@ -834,6 +834,14 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         SendRequestAsync<RotateMacaroonRootKeyIpcRequest, RotateMacaroonRootKeyIpcResponse>(
             ClientCommand.RotateMacaroonRootKey, new RotateMacaroonRootKeyIpcRequest(), ct);
 
+    /// <summary>
+    /// Shows the hold on channel opens, and with <paramref name="release"/> lifts the start hold of
+    /// <c>Node:Backup:HoldOpensUntilRestore</c> (ClientCommand 59, NL-1392).
+    /// </summary>
+    public Task<OpenHoldIpcResponse> OpenHoldAsync(bool release, CancellationToken ct = default) =>
+        SendRequestAsync<OpenHoldIpcRequest, OpenHoldIpcResponse>(ClientCommand.OpenHold,
+                                                                  new OpenHoldIpcRequest { Release = release }, ct);
+
     public Task<ChainStatusIpcResponse> ChainStatusAsync(CancellationToken ct = default) =>
         SendRequestAsync<ChainStatusIpcRequest, ChainStatusIpcResponse>(ClientCommand.ChainStatus,
                                                                          new ChainStatusIpcRequest(), ct);

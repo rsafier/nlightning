@@ -8,6 +8,7 @@ using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Channels.Enums;
 using NLightning.Domain.Channels.Interfaces;
+using NLightning.Domain.Channels.KeyIndexes;
 using NLightning.Domain.Channels.Models;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
@@ -404,6 +405,54 @@ public class OpenChannel1MessageHandlerTests
         Assert.Equal(_validMessage.Payload.ChannelId, exception.ChannelId);
         _mockChannelMemoryRepository.Verify(x => x.AddTemporaryChannel(It.IsAny<CompactPubKey>(),
                                                                         It.IsAny<ChannelModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AChannelRestoreInProgress_When_OpenChannelReceived_Then_RefusedWithARetryableError()
+    {
+        // Arrange - NL-1392: no new channel key index while a restore runs
+        var gate = new ChannelKeyIndexGate();
+        using var restore = gate.BeginRestore();
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object, keyIndexGate: gate);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures,
+                                                      _peerPubKey));
+
+        // Assert: an error for the temporary channel that never names the reason to the peer; nothing created
+        Assert.Contains("NL-1392", exception.Message);
+        Assert.Equal(_validMessage.Payload.ChannelId, exception.ChannelId);
+        Assert.Equal(ChannelKeyIndexHold.PeerMessage, exception.PeerMessage);
+        _mockChannelFactory.Verify(x => x.CreateChannelV1AsNonInitiatorAsync(It.IsAny<OpenChannel1Message>(),
+                                                                             It.IsAny<FeatureOptions>(),
+                                                                             It.IsAny<CompactPubKey>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ARestoreThatStartsDuringTheOpen_When_TheSignerRefusesTheIndex_Then_TheOpenGetsAnError()
+    {
+        // Arrange - NL-1392: the gate was open at the check; the factory's key index is refused by the signer
+        var gate = new ChannelKeyIndexGate();
+        _mockChannelFactory.Setup(x => x.CreateChannelV1AsNonInitiatorAsync(It.IsAny<OpenChannel1Message>(),
+                                                                            It.IsAny<FeatureOptions>(),
+                                                                            It.IsAny<CompactPubKey>()))
+                           .ThrowsAsync(new ChannelKeyIndexHeldException(ChannelKeyIndexHold.RestoreInProgressReason));
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object, nodeOptions: s_regtestOptions,
+                                                     keyIndexGate: gate);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures,
+                                                      _peerPubKey));
+
+        // Assert
+        Assert.Equal(_validMessage.Payload.ChannelId, exception.ChannelId);
+        Assert.Equal(ChannelKeyIndexHold.PeerMessage, exception.PeerMessage);
     }
 
     [Fact]

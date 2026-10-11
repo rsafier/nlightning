@@ -14,6 +14,7 @@ using Application.Protocol.Factories;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
@@ -736,9 +737,13 @@ public partial class ChannelRestoreServiceTests : IDisposable
                                                 TimeSpan? connectBudget = null, TimeSpan? resumeTimeout = null,
                                                 IChannelFundingKeySource? fundingKeySource = null,
                                                 bool asChainMonitor = false,
-                                                IPeerStorageService? peerStorage = null)
+                                                IPeerStorageService? peerStorage = null,
+                                                IChannelKeyIndexGate? keyIndexGate = null)
     {
         var channelRepository = new Mock<IChannelDbRepository>();
+        channelRepository.Setup(r => r.GetLocalKeyIndexesAsync())
+                         .ReturnsAsync(() => _storedChannels.Select(c => (c.ChannelId, c.LocalKeySet.KeyIndex, c.State))
+                                                            .ToList());
         channelRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
                          .ReturnsAsync((ChannelId id) => _storedChannels.FirstOrDefault(c => c.ChannelId == id));
         channelRepository.Setup(r => r.GetAllAsync()).ReturnsAsync(() => _storedChannels.ToList());
@@ -820,7 +825,8 @@ public partial class ChannelRestoreServiceTests : IDisposable
                                          provider.GetRequiredService<IServiceScopeFactory>(), _sha256,
                                          _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance,
                                          spendLocator, onchainWatcher, keyIndexReserver, graphStore, channelMemory,
-                                         fundingKeySource, timeProvider: _clock, peerStorage: () => peerStorage)
+                                         fundingKeySource, timeProvider: _clock, peerStorage: () => peerStorage,
+                                         keyIndexGate: keyIndexGate)
         {
             DisconnectTimeout = TimeSpan.FromSeconds(1),
             ConnectBudget = connectBudget ?? TimeSpan.FromSeconds(20),

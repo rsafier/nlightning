@@ -22,6 +22,8 @@ using Models;
 /// reader that predates that field reads index 0 and refuses a spliced channel here rather than restore it with the
 /// wrong key. A pending splice whose key does not derive is left out of the entry (it can't be followed).</item>
 /// <item>A repeated channel id is restored once (<see cref="ChannelRestoreAction.Duplicate"/>).</item>
+/// <item>A channel whose key index another live channel of this database, or an open of this process, already uses is
+/// refused (<see cref="FindKeyIndexConflict"/>, <see cref="ChannelRestoreAction.KeyIndexInUse"/>, NL-1392).</item>
 /// </list>
 /// </remarks>
 public static class ChannelRestorePlanner
@@ -112,5 +114,45 @@ public static class ChannelRestorePlanner
         }
 
         return plan;
+    }
+
+    /// <summary>
+    /// Why <paramref name="entry"/> must not be restored because its key index is already in use (NL-1392), or null.
+    /// </summary>
+    /// <remarks>
+    /// Two channels at one key index share their funding key, basepoints and per-commitment seed: a secret one of them
+    /// reveals belongs to the other too. In use: a channel row of another channel id at that index in any state but
+    /// <see cref="ChannelState.Closed"/> and <see cref="ChannelState.Stale"/> (a closed channel signs nothing more, a
+    /// stale one never held funds), or an index this process handed out for a negotiation that has no row yet. The
+    /// detail says what the operator must do.
+    /// </remarks>
+    /// <param name="entry">The backed-up channel to restore.</param>
+    /// <param name="rows">Our key index of every channel row of the database, with its state.</param>
+    /// <param name="isAllocatedByThisProcess">Whether this process handed out a key index (null: unknown).</param>
+    public static string? FindKeyIndexConflict(
+        ChannelBackupEntry entry, IEnumerable<(ChannelId ChannelId, uint KeyIndex, ChannelState State)> rows,
+        Func<uint, bool>? isAllocatedByThisProcess)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(rows);
+
+        foreach (var (channelId, keyIndex, state) in rows)
+        {
+            if (keyIndex != entry.KeyIndex || channelId == entry.ChannelId || state is ChannelState.Closed
+                                                                                   or ChannelState.Stale)
+                continue;
+
+            return $"key index {entry.KeyIndex} is already used by channel {channelId} ({state}) of this database: "
+                 + "two channels must never sign with the same keys. Close that channel first (closechannel, or "
+                 + "forceclosechannel when its peer is away), wait until it is Closed, then run restorechanbackup "
+                 + "again";
+        }
+
+        if (isAllocatedByThisProcess?.Invoke(entry.KeyIndex) == true)
+            return $"key index {entry.KeyIndex} was handed out by this process to a channel negotiation not stored "
+                 + "yet: two channels must never sign with the same keys. Wait until that open completes or fails; "
+                 + "close the channel if it opened, then restart the node and run restorechanbackup again";
+
+        return null;
     }
 }

@@ -15,6 +15,7 @@ using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
@@ -76,10 +77,12 @@ public partial class LocalLightningSigner : ILightningSigner
                                 IChannelSigningInfoSource? signingInfoSource = null,
                                 IChannelSignerGuardStore? guardStore = null,
                                 INodeWriteFence? writeFence = null,
-                                IChannelKeyIndexStore? keyIndexStore = null)
+                                IChannelKeyIndexStore? keyIndexStore = null,
+                                IChannelKeyIndexGate? keyIndexGate = null)
     {
         _writeFence = writeFence;
         _keyIndexStore = keyIndexStore;
+        _keyIndexGate = keyIndexGate;
         _fundingOutputBuilder = fundingOutputBuilder;
         _keyDerivationService = keyDerivationService;
         _logger = logger;
@@ -96,18 +99,19 @@ public partial class LocalLightningSigner : ILightningSigner
     public uint CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
     {
         // Generate a new key for this channel; with a key index store, at an index claimed in the database first
-        // (NL-1388)
-        uint index;
-        ExtPrivKey channelPrivExtKey;
-        if (_keyIndexStore is null)
+        // (NL-1388), and only while the channel key index gate is open (a restore in progress, NL-1392)
+        ExtPrivKey? nextChannelKey = null;
+        uint Reserve()
         {
-            channelPrivExtKey = _secureKeyManager.GetNextChannelKey(out index);
+            if (_keyIndexStore is not null)
+                return ReserveClaimedChannelKeyIndex();
+
+            nextChannelKey = _secureKeyManager.GetNextChannelKey(out var next);
+            return next;
         }
-        else
-        {
-            index = ReserveClaimedChannelKeyIndex();
-            channelPrivExtKey = _secureKeyManager.GetChannelKeyAtIndex(index);
-        }
+
+        var index = _keyIndexGate is null ? Reserve() : _keyIndexGate.Allocate(Reserve);
+        var channelPrivExtKey = nextChannelKey ?? _secureKeyManager.GetChannelKeyAtIndex(index);
         var channelKey = ExtKey.CreateFromBytes(channelPrivExtKey);
 
         // Generate Lightning basepoints using proper BIP32 derivation paths

@@ -43,6 +43,7 @@ using Domain.Accounting.Prices;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
 using Domain.Client.Interfaces;
@@ -287,6 +288,10 @@ public static class NodeServiceExtensions
         services.AddScoped<IClientCommandHandler<RotateMacaroonRootKeyClientRequest,
             RotateMacaroonRootKeyClientResponse>, RotateMacaroonRootKeyClientHandler>();
 
+        // NL-1392: the hold on channel opens while a restore runs or the node waits for one (ClientCommand 59)
+        services.AddScoped<IClientCommandHandler<OpenHoldClientRequest, OpenHoldClientResponse>,
+            OpenHoldClientHandler>();
+
         // BOLT 7 G2-T6: the gossip graph's nodes (ClientCommand 17) and channels (18)
         services.AddScoped<IClientCommandHandler<ListNodesClientRequest, ListNodesClientResponse>,
             ListNodesClientHandler>();
@@ -331,6 +336,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, PendingSweepsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ChainStatusIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, RotateMacaroonRootKeyIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, OpenHoldIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListNodesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListGraphChannelsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, GetRouteIpcHandler>();
@@ -446,7 +452,8 @@ public static class NodeServiceExtensions
             services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
                 new RemoteLightningSigner(remoteConnection, sp.GetRequiredService<IChannelSigningInfoSource>(),
                                            sp.GetRequiredService<IUtxoMemoryRepository>(),
-                                           sp.GetService<IChannelKeyIndexStore>())));
+                                           sp.GetService<IChannelKeyIndexStore>(),
+                                           sp.GetService<IChannelKeyIndexGate>())));
         }
 
         if (vlsConnection is not null)
@@ -458,7 +465,8 @@ public static class NodeServiceExtensions
                 sp.GetRequiredService<VlsSigningWorkflowCoordinator>());
             services.AddSingleton<VlsLightningSigner>(sp =>
                 new VlsLightningSigner(vlsConnection, sp.GetRequiredService<VlsChannelMappingRegistry>(),
-                    sp.GetRequiredService<IChannelSigningInfoSource>(), sp.GetRequiredService<IUtxoMemoryRepository>()));
+                    sp.GetRequiredService<IChannelSigningInfoSource>(), sp.GetRequiredService<IUtxoMemoryRepository>(),
+                    sp.GetService<IChannelKeyIndexGate>()));
             services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp => sp.GetRequiredService<VlsLightningSigner>()));
             services.AddSingleton<IVlsChannelSigner>(sp => sp.GetRequiredService<VlsLightningSigner>());
             services.AddSingleton<IVlsGossipSigner>(sp => sp.GetRequiredService<VlsLightningSigner>());

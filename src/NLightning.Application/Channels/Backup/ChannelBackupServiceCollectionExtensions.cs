@@ -7,6 +7,7 @@ namespace NLightning.Application.Channels.Backup;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Crypto.Hashes;
 using Domain.Crypto.Interfaces;
 using Domain.Node.Interfaces;
@@ -39,10 +40,13 @@ public static class ChannelBackupServiceCollectionExtensions
     /// <see cref="IChannelLockProvider"/> when one is registered. The registered <see cref="IOnchainChannelWatcher"/>
     /// (or, registered later, <see cref="OnchainChannelWatcher"/>) is wrapped in a
     /// <see cref="SpliceFollowingOnchainChannelWatcher"/>, so a splice of a recovery channel that the chain monitor
-    /// reports moves the channel instead of closing it; the restore service uses the unwrapped watcher.
+    /// reports moves the channel instead of closing it; the restore service uses the unwrapped watcher. The restore holds
+    /// the <see cref="IChannelKeyIndexGate"/> (TryAdd'ed, the signers' one) while it runs (NL-1392).
     /// </summary>
     public static IServiceCollection AddChannelBackupServices(this IServiceCollection services)
     {
+        // The signers' gate (AddBitcoinInfrastructure TryAdds the same one): held while a restore runs (NL-1392)
+        services.TryAddSingleton<IChannelKeyIndexGate, ChannelKeyIndexGate>();
         services.TryAddSingleton<IChannelBackupService>(sp => new ChannelBackupService(
                                                             sp.GetRequiredService<IServiceScopeFactory>(),
                                                             sp.GetRequiredService<ISecureKeyManager>(),
@@ -78,7 +82,8 @@ public static class ChannelBackupServiceCollectionExtensions
                                                              sp.GetService<IChannelMemoryRepository>(),
                                                              sp.GetService<IChannelFundingKeySource>(),
                                                              sp.GetService<IChannelLockProvider>(),
-                                                             peerStorage: () => sp.GetService<IPeerStorageService>()));
+                                                             peerStorage: () => sp.GetService<IPeerStorageService>(),
+                                                             keyIndexGate: sp.GetService<IChannelKeyIndexGate>()));
         services.TryAddSingleton<IFundingSpendLocator>(sp => sp.GetService<IBitcoinChainService>() is { } chain
                                                                  ? new ChainFundingSpendLocator(
                                                                      chain,

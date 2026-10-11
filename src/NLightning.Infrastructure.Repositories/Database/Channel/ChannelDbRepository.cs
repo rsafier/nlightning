@@ -211,6 +211,20 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         return indexes.Count == 0 ? 0 : indexes.Max();
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyCollection<(ChannelId ChannelId, uint KeyIndex, ChannelState State)>>
+        GetLocalKeyIndexesAsync()
+    {
+        var rows = await _context.ChannelKeySets
+                                 .AsNoTracking()
+                                 .Where(k => k.IsLocal)
+                                 .Join(DbSet.AsNoTracking(), k => k.ChannelId, c => c.ChannelId,
+                                       (k, c) => new { c.ChannelId, k.KeyIndex, c.State })
+                                 .ToListAsync();
+
+        return rows.Select(r => (r.ChannelId, r.KeyIndex, (ChannelState)r.State)).ToList();
+    }
+
     public async Task<IEnumerable<ChannelModel>> GetAllAsync()
     {
         return await LoadAllConsistentlyAsync(_ => true);

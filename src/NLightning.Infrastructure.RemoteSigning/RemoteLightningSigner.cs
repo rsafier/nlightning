@@ -3,6 +3,7 @@ using NLightning.Domain.Bitcoin.SilentPayments;
 using NLightning.Domain.Bitcoin.Transactions.Models;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Bitcoin.Wallet.Models;
+using NLightning.Domain.Channels.KeyIndexes;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Money;
@@ -20,18 +21,32 @@ public sealed class RemoteLightningSigner : ILightningSigner
     private readonly IChannelSigningInfoSource? _source;
     private readonly IUtxoMemoryRepository? _wallet;
     private readonly IChannelKeyIndexStore? _keyIndexStore;
+    private readonly IChannelKeyIndexGate? _keyIndexGate;
     private readonly Lock _keyIndexLock = new();
 
     public RemoteLightningSigner(RemoteSignerConnection connection, IChannelSigningInfoSource? source = null, IUtxoMemoryRepository? wallet = null,
-                                 IChannelKeyIndexStore? keyIndexStore = null)
-    { _connection = connection; _source = source; _wallet = wallet; _keyIndexStore = keyIndexStore; }
+                                 IChannelKeyIndexStore? keyIndexStore = null, IChannelKeyIndexGate? keyIndexGate = null)
+    { _connection = connection; _source = source; _wallet = wallet; _keyIndexStore = keyIndexStore; _keyIndexGate = keyIndexGate; }
 
     /// <summary>
     /// The remote signer allocates the index (its own journal is authoritative); with a key index store the node then
     /// claims it in the database's high-water mark (NL-1388) before anything goes to the peer, so an index the database
     /// already saw (a signer whose state was rolled back, a second process) refuses the channel instead of reusing it.
+    /// Nothing is asked of the signer while the channel key index gate is held (a restore, NL-1392).
     /// </summary>
     public uint CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
+    {
+        ChannelBasepoints allocatedBasepoints = default;
+        CompactPubKey allocatedPoint = default;
+        uint Allocate() => AllocateClaimed(out allocatedBasepoints, out allocatedPoint);
+
+        var index = _keyIndexGate is null ? Allocate() : _keyIndexGate.Allocate(Allocate);
+        basepoints = allocatedBasepoints;
+        firstPerCommitmentPoint = allocatedPoint;
+        return index;
+    }
+
+    private uint AllocateClaimed(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
     {
         // One allocation and claim at a time, so two opens of this process never claim out of order
         lock (_keyIndexLock)

@@ -4,6 +4,8 @@ using NBitcoin;
 namespace NLightning.Infrastructure.Bitcoin.Tests.Signers;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.KeyIndexes;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
@@ -82,6 +84,70 @@ public class LocalLightningSignerKeyIndexTests
         Assert.Throws<SignerException>(() => signer.CreateNewChannel(out _, out _));
     }
 
+    [Fact]
+    public void Given_AHeldKeyIndexGate_When_CreatingAChannel_Then_NothingIsReservedOrClaimed()
+    {
+        // Arrange: a restore holds the gate (NL-1392)
+        var keys = KeyManager(3);
+        var store = new Mock<IChannelKeyIndexStore>();
+        var gate = new ChannelKeyIndexGate();
+        using var restore = gate.BeginRestore();
+        var signer = CreateSigner(keys.Object, store.Object, gate);
+
+        // Act & Assert
+        var exception = Assert.Throws<ChannelKeyIndexHeldException>(() => signer.CreateNewChannel(out _, out _));
+        Assert.Equal(ChannelKeyIndexHold.RestoreInProgressReason, exception.Reason);
+        keys.Verify(k => k.ReserveChannelKeyIndex(), Times.Never);
+        keys.Verify(k => k.GetChannelKeyAtIndex(It.IsAny<uint>()), Times.Never);
+        store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public void Given_AnOpenKeyIndexGate_When_CreatingAChannel_Then_TheGateRemembersTheIndex()
+    {
+        // Arrange
+        var keys = KeyManager(3);
+        var store = new Mock<IChannelKeyIndexStore>();
+        store.Setup(s => s.TryClaim(4)).Returns(true);
+        var gate = new ChannelKeyIndexGate();
+        var signer = CreateSigner(keys.Object, store.Object, gate);
+
+        // Act
+        var index = signer.CreateNewChannel(out _, out _);
+
+        // Assert
+        Assert.Equal(4u, index);
+        Assert.True(gate.IsAllocatedByThisProcess(4));
+    }
+
+    [Fact]
+    public void Given_NoStoreAndAnOpenGate_When_CreatingAChannel_Then_TheKeyManagersNextKeyIsUsedAndRemembered()
+    {
+        // Arrange: without a store the key manager's next key, as before NL-1388
+        var keys = KeyManager(3);
+        keys.Setup(k => k.GetNextChannelKey(out It.Ref<uint>.IsAny))
+            .Returns(new GetNextChannelKeyCallback((out uint index) =>
+             {
+                 index = 6;
+                 return s_master.Derive(6).ToBytes();
+             }));
+        var gate = new ChannelKeyIndexGate();
+        var signer = new LocalLightningSigner(new Mock<IFundingOutputBuilder>().Object, new KeyDerivationService(),
+                                              new Mock<ILogger<LocalLightningSigner>>().Object, new NodeOptions(),
+                                              keys.Object, new Mock<IUtxoMemoryRepository>().Object,
+                                              keyIndexGate: gate);
+
+        // Act
+        var index = signer.CreateNewChannel(out _, out _);
+
+        // Assert
+        Assert.Equal(6u, index);
+        Assert.True(gate.IsAllocatedByThisProcess(6));
+        keys.Verify(k => k.GetChannelKeyAtIndex(It.IsAny<uint>()), Times.Never);
+    }
+
+    private delegate ExtPrivKey GetNextChannelKeyCallback(out uint index);
+
     /// <summary>A key manager whose reservations count up from <paramref name="lastUsed"/> and that can be raised.
     /// </summary>
     private static Mock<ISecureKeyManager> KeyManager(uint lastUsed)
@@ -101,8 +167,9 @@ public class LocalLightningSignerKeyIndexTests
         return keys;
     }
 
-    private static LocalLightningSigner CreateSigner(ISecureKeyManager keys, IChannelKeyIndexStore store) =>
+    private static LocalLightningSigner CreateSigner(ISecureKeyManager keys, IChannelKeyIndexStore store,
+                                                     IChannelKeyIndexGate? gate = null) =>
         new(new Mock<IFundingOutputBuilder>().Object, new KeyDerivationService(),
             new Mock<ILogger<LocalLightningSigner>>().Object, new NodeOptions(), keys,
-            new Mock<IUtxoMemoryRepository>().Object, keyIndexStore: store);
+            new Mock<IUtxoMemoryRepository>().Object, keyIndexStore: store, keyIndexGate: gate);
 }

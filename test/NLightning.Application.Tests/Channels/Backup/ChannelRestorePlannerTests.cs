@@ -115,4 +115,68 @@ public class ChannelRestorePlannerTests
         // Assert
         Assert.Empty(plan);
     }
+
+    [Theory]
+    [InlineData(ChannelState.Open, true)]
+    [InlineData(ChannelState.V1FundingSigned, true)]
+    [InlineData(ChannelState.Failed, true)]
+    [InlineData(ChannelState.OnchainResolving, true)]
+    [InlineData(ChannelState.Closed, false)]
+    [InlineData(ChannelState.Stale, false)]
+    public void Given_AnotherChannelAtTheSameKeyIndex_When_Checked_Then_OnlyALiveOneConflicts(ChannelState state,
+                                                                                             bool conflicts)
+    {
+        // Arrange - NL-1392
+        var data = new BackupTestData();
+        var entry = ChannelBackupService.CreateEntry(data.AddChannel(4), data.Peers[0]);
+        var other = new ChannelId(Enumerable.Repeat((byte)0xEE, 32).ToArray());
+
+        // Act
+        var conflict = ChannelRestorePlanner.FindKeyIndexConflict(entry, [(other, 4u, state)], null);
+
+        // Assert
+        if (conflicts)
+        {
+            Assert.NotNull(conflict);
+            Assert.Contains(other.ToString(), conflict);
+            Assert.Contains("never sign with the same keys", conflict);
+        }
+        else
+        {
+            Assert.Null(conflict);
+        }
+    }
+
+    [Fact]
+    public void Given_RowsOfOtherIndexesOrTheSameChannel_When_Checked_Then_NoConflict()
+    {
+        // Arrange - NL-1392: a database that already has channels at other indexes keeps restoring
+        var data = new BackupTestData();
+        var entry = ChannelBackupService.CreateEntry(data.AddChannel(4), data.Peers[0]);
+        var other = new ChannelId(Enumerable.Repeat((byte)0xEE, 32).ToArray());
+
+        // Act
+        var conflict = ChannelRestorePlanner.FindKeyIndexConflict(
+            entry, [(other, 3u, ChannelState.Open), (other, 5u, ChannelState.Open), (entry.ChannelId, 4u,
+                                                                                     ChannelState.Open)],
+            index => index == 7);
+
+        // Assert
+        Assert.Null(conflict);
+    }
+
+    [Fact]
+    public void Given_AnIndexThisProcessHandedOut_When_Checked_Then_ItConflicts()
+    {
+        // Arrange - NL-1392
+        var data = new BackupTestData();
+        var entry = ChannelBackupService.CreateEntry(data.AddChannel(4), data.Peers[0]);
+
+        // Act
+        var conflict = ChannelRestorePlanner.FindKeyIndexConflict(entry, [], index => index == 4);
+
+        // Assert
+        Assert.NotNull(conflict);
+        Assert.Contains("handed out by this process", conflict);
+    }
 }

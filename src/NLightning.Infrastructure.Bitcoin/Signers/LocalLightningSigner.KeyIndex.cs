@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Infrastructure.Bitcoin.Signers;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Exceptions;
 
 /// <summary>
@@ -24,6 +25,9 @@ public partial class LocalLightningSigner
     private const int MaxKeyIndexClaims = 8;
 
     private readonly IChannelKeyIndexStore? _keyIndexStore;
+
+    // Every new index goes through it when registered (NL-1392): refused while a restore holds it
+    private readonly IChannelKeyIndexGate? _keyIndexGate;
 
     // One reservation and claim at a time in this process: two opens racing would otherwise claim out of order and the
     // lower index would be refused as if another process had handed it out

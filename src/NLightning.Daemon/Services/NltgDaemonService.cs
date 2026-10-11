@@ -10,6 +10,7 @@ using Application.Accounting;
 using Application.Accounting.Books;
 using Application.Accounting.Financial;
 using Application.Accounting.Prices;
+using Application.Channels.Backup;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -24,6 +25,7 @@ using Application.Payments.Trampoline;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Client.Interfaces;
 using Domain.Gossip.Addresses;
@@ -171,6 +173,9 @@ public class NltgDaemonService : BackgroundService
 
             // Never hand out a channel key index a stored channel already uses (SECURITY_REVIEW SR-19)
             await ReconcileChannelKeyIndexAsync();
+
+            // A node set up on a fresh database to restore its channels refuses opens until the restore (NL-1392)
+            await ApplyOpenHoldUntilRestoreAsync();
 
             // Open the accounting feed with the node's balances, once per node (NL-602 A1-T6): before the peers
             // connect and the chain monitor runs, so the database does not change while it is read
@@ -438,6 +443,37 @@ public class NltgDaemonService : BackgroundService
                          + "negotiation(s) mid-flight; stopping anyway (nothing is broadcast; the HTLC expiry "
                          + "monitor and the resolvers run at the next start)", result.Snapshot.HtlcsInFlight,
                            result.Snapshot.NegotiationCount);
+    }
+
+    /// <summary>
+    /// <c>Node:Backup:HoldOpensUntilRestore</c> (NL-1392): at a start whose database holds no channel row, every
+    /// channel open is refused (<see cref="IChannelKeyIndexGate.HoldUntilRestore"/>) until a <c>restorechanbackup</c>
+    /// completes or the operator runs <c>openhold --release</c>, so an open accepted before the restore can't take a
+    /// backed-up channel's key index. Runs before the peers start.
+    /// </summary>
+    private async Task ApplyOpenHoldUntilRestoreAsync()
+    {
+        if (_scopeFactory is null)
+            return;
+
+        using var scope = _scopeFactory.CreateScope();
+        if (scope.ServiceProvider.GetService<IOptions<ChannelBackupOptions>>()?.Value is not
+            { HoldOpensUntilRestore: true }
+         || scope.ServiceProvider.GetService<IChannelKeyIndexGate>() is not { } gate)
+            return;
+
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var channels = await unitOfWork.ChannelDbRepository.GetLocalKeyIndexesAsync();
+        if (channels.Count > 0)
+        {
+            _logger.LogInformation("Node:Backup:HoldOpensUntilRestore is set but the database already holds {Count} "
+                                 + "channel(s): channel opens are not held", channels.Count);
+            return;
+        }
+
+        gate.HoldUntilRestore();
+        _logger.LogWarning("Node:Backup:HoldOpensUntilRestore: the database holds no channel, so every channel open is "
+                         + "refused until restorechanbackup completes or 'openhold --release' lifts the hold");
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using NLightning.Domain.Crypto.ValueObjects;
 
 namespace NLightning.Domain.Channels.Interfaces;
 
+using Enums;
 using Models;
 using ValueObjects;
 
@@ -31,4 +32,11 @@ public interface IChannelDbRepository
     /// there is none). The daemon raises the key file's last used index to it at startup (SECURITY_REVIEW SR-19).
     /// </summary>
     Task<uint> GetHighestLocalKeyIndexAsync();
+
+    /// <summary>
+    /// Gets our channel key index of every stored channel row with the row's state, whatever the state, without loading
+    /// the channels (a row the repository refuses for legacy HTLC rows is listed too). A channel restore refuses a
+    /// backed-up channel whose index a live channel of this database already uses (NL-1392).
+    /// </summary>
+    Task<IReadOnlyCollection<(ChannelId ChannelId, uint KeyIndex, ChannelState State)>> GetLocalKeyIndexesAsync();
 }

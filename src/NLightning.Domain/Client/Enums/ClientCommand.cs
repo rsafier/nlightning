@@ -162,4 +162,10 @@ public enum ClientCommand
     /// three default macaroons are baked again.
     /// </summary>
     RotateMacaroonRootKey = 58,
+
+    /// <summary>
+    /// Shows, and with <c>--release</c> lifts, the hold on channel opens (NL-1392, <c>openhold</c>): the start hold of
+    /// <c>Node:Backup:HoldOpensUntilRestore</c> and a running restore, which refuse every new channel key index.
+    /// </summary>
+    OpenHold = 59,
 }
