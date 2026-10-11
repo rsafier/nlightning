@@ -3,23 +3,29 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Application.Channels.Backup;
 
+using Domain.Bitcoin.Interfaces;
 using Domain.Protocol.Interfaces;
 using Interfaces;
 
 /// <summary>
 /// Reserves restored channel indexes through the key-manager boundary, including remote signers.
-/// Managers without reconciliation support advance public index reservations instead.
+/// Managers without reconciliation support advance public index reservations instead. With the database's channel key
+/// index high-water mark (<see cref="IChannelKeyIndexStore"/>, NL-1388) it is raised too, so a later process over the
+/// same database never hands out a restored channel's index either.
 /// </summary>
 public sealed class SecureKeyManagerKeyIndexReserver : IChannelKeyIndexReserver
 {
     private readonly ISecureKeyManager _keyManager;
+    private readonly IChannelKeyIndexStore? _keyIndexStore;
     private readonly ILogger<SecureKeyManagerKeyIndexReserver> _logger;
     private readonly Lock _gate = new();
 
     public SecureKeyManagerKeyIndexReserver(ISecureKeyManager keyManager,
-                                            ILogger<SecureKeyManagerKeyIndexReserver>? logger = null)
+                                            ILogger<SecureKeyManagerKeyIndexReserver>? logger = null,
+                                            IChannelKeyIndexStore? keyIndexStore = null)
     {
         _keyManager = keyManager;
+        _keyIndexStore = keyIndexStore;
         _logger = logger ?? NullLogger<SecureKeyManagerKeyIndexReserver>.Instance;
     }
 
@@ -27,6 +33,9 @@ public sealed class SecureKeyManagerKeyIndexReserver : IChannelKeyIndexReserver
     public Task<uint> ReserveThroughAsync(uint highestUsedIndex, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        // The database's mark first: a failure refuses the restore before the key manager moves
+        _keyIndexStore?.Raise(highestUsedIndex);
 
         try
         {

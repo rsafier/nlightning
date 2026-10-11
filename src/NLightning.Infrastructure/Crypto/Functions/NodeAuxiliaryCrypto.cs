@@ -79,6 +79,11 @@ public static class NodeAuxiliaryCrypto
                 HKDF.DeriveKey(HashAlgorithmName.SHA256, nodePrivateKey, backupKey,
                                "NLightning static channel backup"u8, "nltg-scb-v1"u8);
                 return backupKey;
+            case NodeDataPurpose.MacaroonRootKey:
+                var macaroonKey = new byte[32];
+                HKDF.DeriveKey(HashAlgorithmName.SHA256, nodePrivateKey, macaroonKey,
+                               "NLightning macaroon root keys"u8, "nltg-macaroon-root-v1"u8);
+                return macaroonKey;
             default:
                 throw new ArgumentOutOfRangeException(nameof(purpose));
         }

@@ -32,6 +32,7 @@ using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -400,8 +401,10 @@ public class NltgDaemonService : BackgroundService
 
     /// <summary>
     /// Raises the key file's last used channel key index to the highest one stored in the channel tables (every row,
-    /// whatever its state), so a key-file write lost after its channel row was committed cannot make the next open
-    /// reuse that index (SECURITY_REVIEW SR-19).
+    /// whatever its state) and in the database's high-water mark, so a key-file write lost after its channel row was
+    /// committed, or a key file older than the database (a replacement host), cannot make the next open reuse that
+    /// index (SECURITY_REVIEW SR-19, NL-1388). Then raises the high-water mark to the key file's index: a node that
+    /// upgrades in place seeds it from its key file and channel rows.
     /// </summary>
     private async Task ReconcileChannelKeyIndexAsync()
     {
@@ -418,8 +421,19 @@ public class NltgDaemonService : BackgroundService
             return;
         }
         var highest = await unitOfWork.ChannelDbRepository.GetHighestLocalKeyIndexAsync();
+
+        // The high-water mark is the local signer's (NL-1388): a remote signer keeps its own allocation journal
+        var keyIndexStore = _secureKeyManager is SecureKeyManager
+                                ? scope.ServiceProvider.GetService<IChannelKeyIndexStore>()
+                                : null;
+        if (keyIndexStore?.GetHighWater() is { } stored && stored > highest)
+            highest = stored;
+
         if (_secureKeyManager.EnsureLastUsedChannelIndexAtLeast(highest))
             _logger.LogWarning("The signer's last used channel key index was below the database's highest ({Index}); "
                              + "raised it", highest);
+
+        if (keyIndexStore is not null && _secureKeyManager is SecureKeyManager localKeys)
+            keyIndexStore.Raise(Math.Max(highest, localKeys.LastUsedChannelKeyIndex));
     }
 }

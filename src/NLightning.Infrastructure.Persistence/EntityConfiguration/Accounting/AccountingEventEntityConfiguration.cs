@@ -53,7 +53,9 @@ public static class AccountingEventEntityConfiguration
             entity.Property(e => e.Finality).IsRequired();
             entity.Property(e => e.Flags).IsRequired();
             entity.Property(e => e.Details).IsRequired(false);
-            entity.Property(e => e.LedgerSeq).IsRequired(false);
+            // A concurrency token (NL-1390): a seal or duplicate mark only updates a row still unsealed, so a second
+            // sealer over the same database fails its save instead of overwriting a sealed row
+            entity.Property(e => e.LedgerSeq).IsRequired(false).IsConcurrencyToken();
             entity.Property(e => e.Hash).IsRequired(false);
 
             // The sealer finds a key's sealed row and the unsealed rows; readers page by ledger sequence and filter by
@@ -61,7 +63,10 @@ public static class AccountingEventEntityConfiguration
             entity.HasIndex(e => e.EventKey);
             entity.HasIndex(e => e.ReversesEventKey);
             entity.HasIndex(e => new { e.Kind, e.BlockHeight, e.LedgerSeq });
-            entity.HasIndex(e => e.LedgerSeq);
+            // Unique (NL-1390): two sealers that read the same chain tip cannot both commit the next ledger sequence,
+            // so the hash chain never forks. Unsealed rows (null) are not constrained; SQL Server's convention filters
+            // them out of the index
+            entity.HasIndex(e => e.LedgerSeq).IsUnique();
             entity.HasIndex(e => e.OccurredAt);
             entity.HasIndex(e => e.ChannelId);
 

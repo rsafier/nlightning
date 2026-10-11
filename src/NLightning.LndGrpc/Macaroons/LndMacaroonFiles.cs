@@ -23,8 +23,10 @@ public static class LndMacaroonFiles
     /// </summary>
     /// <param name="allowGenerate">False (<c>Node:Startup:RequireProvisionedSecrets</c>, NL-1352): a missing root key
     /// is refused and missing macaroons are not baked, so no credential file is written.</param>
+    /// <param name="allowGenerateRootKey">False (<c>LndGrpc:RequireExistingRootKey</c>, NL-1389): a missing root key is
+    /// refused; missing macaroons are still baked from an existing one.</param>
     public static byte[] EnsureCreated(string directory, ILogger? logger = null, NodeSigningContext? context = null,
-                                       bool allowGenerate = true)
+                                       bool allowGenerate = true, bool allowGenerateRootKey = true)
     {
         if (context is not null) LndCredentialEnrollment.Bind(directory, context);
         var rootKeyPath = Path.Combine(directory, RootKeyFileName);
@@ -43,6 +45,12 @@ public static class LndMacaroonFiles
                 $"The LND gRPC macaroon root key {rootKeyPath} is missing and Node:Startup:RequireProvisionedSecrets "
               + "forbids generating it: deliver lndGrpcMacaroonRootKey with the key.");
         }
+        else if (!allowGenerateRootKey)
+        {
+            throw new InvalidOperationException(
+                $"The LND gRPC macaroon root key {rootKeyPath} is missing and LndGrpc:RequireExistingRootKey forbids "
+              + "generating it: restore it, or deliver lndGrpcMacaroonRootKey with the key.");
+        }
         else
         {
             Directory.CreateDirectory(directory);
@@ -56,10 +64,21 @@ public static class LndMacaroonFiles
         if (!allowGenerate)
             return rootKey;
 
-        Bake(directory, AdminFileName, rootKey, LndPermissions.Admin, rotated, logger);
-        Bake(directory, ReadOnlyFileName, rootKey, LndPermissions.Read, rotated, logger);
-        Bake(directory, InvoiceFileName, rootKey, LndPermissions.Invoice, rotated, logger);
+        BakeDefaultFiles(directory, rootKey, rotated, logger);
         return rootKey;
+    }
+
+    /// <summary>
+    /// Bakes the three default macaroons that are missing in <paramref name="directory"/> under
+    /// <paramref name="rootKey"/> (the effective root key 0, e.g. one kept in the database, NL-1389); with
+    /// <paramref name="replace"/> (a new root key) every one is baked again.
+    /// </summary>
+    public static void BakeDefaultFiles(string directory, byte[] rootKey, bool replace, ILogger? logger = null)
+    {
+        Directory.CreateDirectory(directory);
+        Bake(directory, AdminFileName, rootKey, LndPermissions.Admin, replace, logger);
+        Bake(directory, ReadOnlyFileName, rootKey, LndPermissions.Read, replace, logger);
+        Bake(directory, InvoiceFileName, rootKey, LndPermissions.Invoice, replace, logger);
     }
 
     /// <summary>

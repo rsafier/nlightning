@@ -75,9 +75,11 @@ public partial class LocalLightningSigner : ILightningSigner
                                 IUtxoMemoryRepository utxoMemoryRepository,
                                 IChannelSigningInfoSource? signingInfoSource = null,
                                 IChannelSignerGuardStore? guardStore = null,
-                                INodeWriteFence? writeFence = null)
+                                INodeWriteFence? writeFence = null,
+                                IChannelKeyIndexStore? keyIndexStore = null)
     {
         _writeFence = writeFence;
+        _keyIndexStore = keyIndexStore;
         _fundingOutputBuilder = fundingOutputBuilder;
         _keyDerivationService = keyDerivationService;
         _logger = logger;
@@ -93,8 +95,19 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public uint CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
     {
-        // Generate a new key for this channel
-        var channelPrivExtKey = _secureKeyManager.GetNextChannelKey(out var index);
+        // Generate a new key for this channel; with a key index store, at an index claimed in the database first
+        // (NL-1388)
+        uint index;
+        ExtPrivKey channelPrivExtKey;
+        if (_keyIndexStore is null)
+        {
+            channelPrivExtKey = _secureKeyManager.GetNextChannelKey(out index);
+        }
+        else
+        {
+            index = ReserveClaimedChannelKeyIndex();
+            channelPrivExtKey = _secureKeyManager.GetChannelKeyAtIndex(index);
+        }
         var channelKey = ExtKey.CreateFromBytes(channelPrivExtKey);
 
         // Generate Lightning basepoints using proper BIP32 derivation paths

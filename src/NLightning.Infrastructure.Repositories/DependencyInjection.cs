@@ -70,6 +70,9 @@ public static class DependencyInjection
         // operation, raised before a secret or signature leaves the signer
         services.AddSingleton<IChannelSignerGuardStore, ChannelSignerGuardStore>();
 
+        // The channel key index high-water mark (NL-1388): the local signer claims every new index here first
+        services.AddSingleton<IChannelKeyIndexStore, ChannelKeyIndexStore>();
+
         // Register memory repositories
         services.AddSingleton<IChannelMemoryRepository, ChannelMemoryRepository>();
         services.AddSingleton<IUtxoMemoryRepository, UtxoMemoryRepository>();

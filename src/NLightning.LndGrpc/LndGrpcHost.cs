@@ -87,14 +87,29 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         MacaroonVerifier? verifier = null;
         if (!_options.AllowNoMacaroons)
         {
-            if (secrets.LndGrpcMacaroonRootKey is null)
-                LndMacaroonFiles.EnsureCreated(DataDirectory, _logger, context, allowGenerate);
             var rootKeys = _serviceProvider.GetService<LndRootKeyStore>() is { } registered
                         && registered.DataDirectory == DataDirectory
                         && registered.Context == context
                         && registered.IsProvisioned == (secrets.LndGrpcMacaroonRootKey is not null)
                                ? registered
                                : new LndRootKeyStore(DataDirectory, context, secrets);
+            if (secrets.LndGrpcMacaroonRootKey is null)
+            {
+                // The root keys live in the node's database when it can hold them (NL-1389); the default macaroons
+                // stay files, baked from root key 0
+                var created = rootKeys.Initialize(allowGenerate && !_options.RequireExistingRootKey);
+                if (rootKeys.UsesDatabase)
+                {
+                    if (allowGenerate)
+                        LndMacaroonFiles.BakeDefaultFiles(DataDirectory, rootKeys.TryGet(0)!, created, _logger);
+                }
+                else
+                {
+                    LndMacaroonFiles.EnsureCreated(DataDirectory, _logger, context, allowGenerate,
+                                                   !_options.RequireExistingRootKey);
+                }
+            }
+
             verifier = new MacaroonVerifier(rootKeys, _timeProvider);
         }
 

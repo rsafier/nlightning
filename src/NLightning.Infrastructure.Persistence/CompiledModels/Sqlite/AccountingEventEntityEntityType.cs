@@ -612,7 +612,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 typeof(long?),
                 propertyInfo: typeof(AccountingEventEntity).GetProperty("LedgerSeq", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(AccountingEventEntity).GetField("<LedgerSeq>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                nullable: true);
+                nullable: true,
+                concurrencyToken: true);
             ledgerSeq.SetGetter(
                 long? (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.LedgerSeq(instance),
                 bool (AccountingEventEntity instance) => !(AccountingEventEntityUnsafeAccessors.LedgerSeq(instance).HasValue));
@@ -654,6 +655,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                     long (long v) => v),
                 mappingInfo: new RelationalTypeMappingInfo(
                     storeTypeName: "INTEGER"));
+            ledgerSeq.SetCurrentValueComparer(new EntryCurrentValueComparer<long?>(ledgerSeq));
             ledgerSeq.SetComparer(new NullableValueComparer<long>(ledgerSeq.TypeMapping.Comparer));
             ledgerSeq.SetKeyComparer(new NullableValueComparer<long>(ledgerSeq.TypeMapping.KeyComparer));
 
@@ -981,7 +983,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 new[] { eventKey });
 
             var index1 = runtimeEntityType.AddIndex(
-                new[] { ledgerSeq });
+                new[] { ledgerSeq },
+                unique: true);
 
             var index2 = runtimeEntityType.AddIndex(
                 new[] { occurredAt });

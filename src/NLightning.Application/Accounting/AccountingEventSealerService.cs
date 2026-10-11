@@ -20,7 +20,10 @@ using Domain.Persistence.Interfaces;
 /// </summary>
 /// <remarks>
 /// <para>Rounds never overlap (one gate for the loop and <see cref="SealNowAsync"/>), so the ledger sequence stays
-/// dense and the chain linear. A row whose save committed after a round read the table is simply sealed by the next
+/// dense and the chain linear. A second sealer over the same database (another process) cannot fork the chain either
+/// (NL-1390): the ledger sequence is unique and a seal only updates a row still unsealed, so of two batches sealed from
+/// the same tip only the first save commits; the other is logged as a warning, counted on
+/// <c>nlightning.accounting.seal.conflicts</c> and sealed again from the new tip. A row whose save committed after a round read the table is simply sealed by the next
 /// round, after the rows sealed before it: readers that follow the ledger sequence never skip it.</para>
 /// <para>A duplicate is logged as a warning with its key and counted on <c>nlightning.accounting.events.duplicate</c>
 /// (a writer bug, never a failed core save); sealed events are counted on
@@ -44,6 +47,7 @@ public sealed class AccountingEventSealerService : IAccountingEventSealer, IAsyn
     private readonly TimeProvider _timeProvider;
     private readonly Counter<long> _sealedCounter;
     private readonly Counter<long> _duplicateCounter;
+    private readonly Counter<long> _conflictCounter;
 
     private TaskCompletionSource _wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? _loop;
@@ -51,6 +55,7 @@ public sealed class AccountingEventSealerService : IAccountingEventSealer, IAsyn
     private bool _stopped;
     private long _totalSealed;
     private long _totalDuplicates;
+    private long _totalConflicts;
 
     public AccountingEventSealerService(IServiceScopeFactory scopeFactory,
                                         ILogger<AccountingEventSealerService> logger,
@@ -67,6 +72,9 @@ public sealed class AccountingEventSealerService : IAccountingEventSealer, IAsyn
                                                    "Accounting events given a ledger sequence");
         _duplicateCounter = Meter.CreateCounter<long>("nlightning.accounting.events.duplicate", "{event}",
                                                       "Accounting events whose key was already sealed (a writer bug)");
+        _conflictCounter = Meter.CreateCounter<long>("nlightning.accounting.seal.conflicts", "{batch}",
+                                                     "Seal batches refused because another sealer over the same "
+                                                   + "database committed first");
     }
 
     /// <summary>The interval between rounds (<see cref="AccountingOptions.SealInterval"/>, the default when not
@@ -80,6 +88,10 @@ public sealed class AccountingEventSealerService : IAccountingEventSealer, IAsyn
 
     /// <summary>The duplicates marked since the process started.</summary>
     public long TotalDuplicates => Interlocked.Read(ref _totalDuplicates);
+
+    /// <summary>The batches refused since the process started because another sealer committed first (NL-1390).
+    /// </summary>
+    public long TotalConflicts => Interlocked.Read(ref _totalConflicts);
 
     /// <summary>The meter, for tests that assert the instruments.</summary>
     internal Meter Meter { get; }
@@ -201,7 +213,25 @@ public sealed class AccountingEventSealerService : IAccountingEventSealer, IAsyn
                 var currentTip = await repository.GetChainTipAsync(cancellationToken);
                 var seals = AccountingEventSealer.Seal(currentTip, batch, sealedKeys, out var newTip);
                 await repository.ApplySealsAsync(seals, cancellationToken);
-                await unitOfWork.SaveChangesAsync();
+                try
+                {
+                    await unitOfWork.SaveChangesAsync();
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    if (!await TipMovedPastAsync(currentTip, cancellationToken))
+                        throw;
+
+                    // Another sealer over this database committed first (NL-1390): the unique ledger sequence and the
+                    // unsealed-row check refused this batch whole, so the chain did not fork. Seal again from the new
+                    // tip
+                    _conflictCounter.Add(1);
+                    Interlocked.Increment(ref _totalConflicts);
+                    _logger.LogWarning(e, "Another accounting sealer sealed past ledger sequence {LedgerSeq} first; "
+                                        + "this batch was not saved and is sealed again from the new tip",
+                                       currentTip.LedgerSeq);
+                    continue;
+                }
 
                 tip = newTip;
                 tipRead = true;
@@ -241,6 +271,23 @@ public sealed class AccountingEventSealerService : IAccountingEventSealer, IAsyn
         }
 
         return new AccountingSealRoundResult(sealedCount, duplicateCount, tip);
+    }
+
+    /// <summary>Whether the sealed chain's tip is past <paramref name="tip"/> (read in a scope of its own).</summary>
+    private async Task<bool> TipMovedPastAsync(AccountingChainTip tip, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingEventDbRepository;
+            var now = await repository.GetChainTipAsync(cancellationToken);
+            return now.LedgerSeq > tip.LedgerSeq;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // The database is unavailable: the save's own failure is reported
+            return false;
+        }
     }
 
     private async Task RunAsync()

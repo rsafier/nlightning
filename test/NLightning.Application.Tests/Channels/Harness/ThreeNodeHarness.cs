@@ -877,6 +877,10 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IRemoteShachainDbRepository RemoteShachainDbRepository => inner.RemoteShachainDbRepository;
     public IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository => inner.ChannelSigningInfoDbRepository;
     public IChannelSignerGuardDbRepository ChannelSignerGuardDbRepository => inner.ChannelSignerGuardDbRepository;
+    public IChannelKeyIndexDbRepository ChannelKeyIndexDbRepository => inner.ChannelKeyIndexDbRepository;
+    public Domain.Node.Credentials.IMacaroonRootKeyDbRepository MacaroonRootKeyDbRepository =>
+        inner.MacaroonRootKeyDbRepository;
+
     public IGraphDbRepository GraphDbRepository => inner.GraphDbRepository;
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
     public Domain.Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository => inner.KeyRingDbRepository;

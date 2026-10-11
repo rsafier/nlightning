@@ -394,6 +394,19 @@ public partial class SecureKeyManager : ISecureKeyManager, IDisposable
     }
 
     /// <summary>
+    /// The last used channel key index (the key file's, or the injected one's), for seeding the database's high-water
+    /// mark of a node that upgrades in place (NL-1388).
+    /// </summary>
+    public uint LastUsedChannelKeyIndex
+    {
+        get
+        {
+            lock (_lastUsedIndexLock)
+                return _lastUsedIndex;
+        }
+    }
+
+    /// <summary>
     /// Writes the last used channel key index to the key file (<see cref="GetNextChannelKey"/> already does it before
     /// it returns).
     /// </summary>

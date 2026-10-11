@@ -663,7 +663,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 typeof(long?),
                 propertyInfo: typeof(AccountingEventEntity).GetProperty("LedgerSeq", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(AccountingEventEntity).GetField("<LedgerSeq>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                nullable: true);
+                nullable: true,
+                concurrencyToken: true);
             ledgerSeq.SetGetter(
                 long? (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.LedgerSeq(instance),
                 bool (AccountingEventEntity instance) => !(AccountingEventEntityUnsafeAccessors.LedgerSeq(instance).HasValue));
@@ -703,6 +704,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     bool (long v1, long v2) => v1 == v2,
                     int (long v) => ((object)v).GetHashCode(),
                     long (long v) => v));
+            ledgerSeq.SetCurrentValueComparer(new EntryCurrentValueComparer<long?>(ledgerSeq));
             ledgerSeq.SetComparer(new NullableValueComparer<long>(ledgerSeq.TypeMapping.Comparer));
             ledgerSeq.SetKeyComparer(new NullableValueComparer<long>(ledgerSeq.TypeMapping.KeyComparer));
             ledgerSeq.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
@@ -1070,7 +1072,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 new[] { eventKey });
 
             var index1 = runtimeEntityType.AddIndex(
-                new[] { ledgerSeq });
+                new[] { ledgerSeq },
+                unique: true);
+            index1.AddAnnotation("Relational:Filter", "[LedgerSeq] IS NOT NULL");
 
             var index2 = runtimeEntityType.AddIndex(
                 new[] { occurredAt });

@@ -666,7 +666,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             typeof(long?),
             propertyInfo: typeof(AccountingEventEntity).GetProperty("LedgerSeq", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
             fieldInfo: typeof(AccountingEventEntity).GetField("<LedgerSeq>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-            nullable: true);
+            nullable: true,
+            concurrencyToken: true);
         ledgerSeq.SetGetter(
             long? (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.LedgerSeq(instance),
             bool (AccountingEventEntity instance) => !(AccountingEventEntityUnsafeAccessors.LedgerSeq(instance).HasValue));
@@ -706,6 +707,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 bool (long v1, long v2) => v1 == v2,
                 int (long v) => ((object)v).GetHashCode(),
                 long (long v) => v));
+        ledgerSeq.SetCurrentValueComparer(new EntryCurrentValueComparer<long?>(ledgerSeq));
         ledgerSeq.SetComparer(new NullableValueComparer<long>(ledgerSeq.TypeMapping.Comparer));
         ledgerSeq.SetKeyComparer(new NullableValueComparer<long>(ledgerSeq.TypeMapping.KeyComparer));
         ledgerSeq.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
@@ -1070,7 +1072,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     index0.AddAnnotation("Relational:Name", "ix_accounting_events_event_key");
 
     var index1 = runtimeEntityType.AddIndex(
-        new[] { ledgerSeq });
+        new[] { ledgerSeq },
+        unique: true);
     index1.AddAnnotation("Relational:Name", "ix_accounting_events_ledger_seq");
 
     var index2 = runtimeEntityType.AddIndex(

@@ -152,6 +152,7 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<long?>("LedgerSeq")
+                        .IsConcurrencyToken()
                         .HasColumnType("INTEGER");
 
                     b.Property<long>("OccurredAt")
@@ -179,7 +180,8 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.HasIndex("EventKey");
 
-                    b.HasIndex("LedgerSeq");
+                    b.HasIndex("LedgerSeq")
+                        .IsUnique();
 
                     b.HasIndex("OccurredAt");
 
@@ -1587,6 +1589,19 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("ChannelFundings");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelKeyIndexHighWaterEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("HighWater")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ChannelKeyIndexHighWater");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelKeySetEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
@@ -2298,6 +2313,29 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsUnique();
 
                     b.ToTable("KeyRingKeys", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.MacaroonRootKeyEntity", b =>
+                {
+                    b.Property<long>("RootKeyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Ciphertext")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Nonce")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("RootKeyId");
+
+                    b.ToTable("MacaroonRootKeys");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.NodeSigningEnrollmentEntity", b =>

@@ -90,7 +90,8 @@ public static class ChannelBackupServiceCollectionExtensions
                                                                sp.GetRequiredService<ILightningSigner>()));
         services.TryAddSingleton<IChannelKeyIndexReserver>(sp => new SecureKeyManagerKeyIndexReserver(
                                                                sp.GetRequiredService<ISecureKeyManager>(),
-                                                               sp.GetService<ILogger<SecureKeyManagerKeyIndexReserver>>()));
+                                                               sp.GetService<ILogger<SecureKeyManagerKeyIndexReserver>>(),
+                                                               sp.GetService<IChannelKeyIndexStore>()));
         AddSpliceFollowingOnchainWatcher(services);
         return services;
     }

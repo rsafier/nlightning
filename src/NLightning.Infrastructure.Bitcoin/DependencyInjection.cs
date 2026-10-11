@@ -115,7 +115,8 @@ public static class DependencyInjection
                                             secureKeyManager, utxoMemoryRepository,
                                             sp.GetService<IChannelSigningInfoSource>(),
                                             sp.GetService<IChannelSignerGuardStore>(),
-                                            sp.GetService<INodeWriteFence>());
+                                            sp.GetService<INodeWriteFence>(),
+                                            sp.GetService<IChannelKeyIndexStore>());
         });
 
         // BOLT 12 BIP-340 signatures; the keys stay in ILightningSigner (BOLT 12 plan B1)

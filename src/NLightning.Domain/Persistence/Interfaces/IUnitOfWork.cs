@@ -61,6 +61,11 @@ public interface IUnitOfWork : IDisposable
     IChannelSignerGuardDbRepository ChannelSignerGuardDbRepository =>
         throw new NotSupportedException("This unit of work does not store signer guards.");
 
+    // The channel key index high-water mark (NL-1388, migration AddSharedDatabaseHardening); the default is for test
+    // doubles that store none (a local signer over them then refuses every new channel)
+    IChannelKeyIndexDbRepository ChannelKeyIndexDbRepository =>
+        throw new NotSupportedException("This unit of work does not store the channel key index high-water mark.");
+
     // BOLT 7 graph (migration AddGossipGraph)
     IGraphDbRepository GraphDbRepository { get; }
 
@@ -74,6 +79,11 @@ public interface IUnitOfWork : IDisposable
     // the default keeps none
     Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository =>
         Bitcoin.Wallet.Interfaces.NullWalletTransactionDbRepository.Instance;
+
+    // The LND gRPC macaroon root keys, encrypted with the node data key (NL-1389, migration
+    // AddSharedDatabaseHardening); the default is for test doubles that store none
+    Node.Credentials.IMacaroonRootKeyDbRepository MacaroonRootKeyDbRepository =>
+        throw new NotSupportedException("This unit of work does not store macaroon root keys.");
 
     Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository =>
         throw new NotSupportedException("This unit of work does not store key ring keys.");

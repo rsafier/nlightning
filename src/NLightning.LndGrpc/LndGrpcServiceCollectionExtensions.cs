@@ -58,11 +58,17 @@ public static class LndGrpcServiceCollectionExtensions
     /// <c>LndGrpc:DataDirectory</c> resolved against <paramref name="configPath"/>.</summary>
     public static IServiceCollection AddLndGrpcHost(this IServiceCollection services, string configPath)
     {
-        // The macaroon root keys (BakeMacaroon, NL-1169), shared by the host's verifier and LightningService
+        // The macaroon root keys (BakeMacaroon, NL-1169), shared by the host's verifier and LightningService; kept in
+        // the node's database, encrypted with the node data key (NL-1389)
         services.AddSingleton(sp => new LndRootKeyStore(sp.GetRequiredService<IOptions<LndGrpcOptions>>().Value
                                                           .ResolveDataDirectory(configPath),
             Macaroons.LndCredentialContext.Resolve(sp),
-            sp.GetService<Domain.Node.Provisioning.ProvisionedSecrets>()));
+            sp.GetService<Domain.Node.Provisioning.ProvisionedSecrets>(),
+            sp.GetService<Domain.Protocol.Interfaces.ISecureKeyManager>() is { } keyManager
+                ? new LndRootKeyDatabase(sp.GetRequiredService<IServiceScopeFactory>(), keyManager,
+                                         sp.GetService<TimeProvider>())
+                : null,
+            sp.GetService<ILogger<LndRootKeyStore>>()));
         services.AddHostedService(sp =>
         {
             var options = sp.GetRequiredService<IOptions<LndGrpcOptions>>();

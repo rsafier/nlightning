@@ -74,6 +74,7 @@ public class UnitOfWork : IUnitOfWork
     private RemoteShachainDbRepository? _remoteShachainDbRepository;
     private ChannelSigningInfoDbRepository? _channelSigningInfoDbRepository;
     private ChannelSignerGuardDbRepository? _channelSignerGuardDbRepository;
+    private ChannelKeyIndexDbRepository? _channelKeyIndexDbRepository;
     private InteractiveTxSessionDbRepository? _interactiveTxSessionDbRepository;
     private ChannelFundingDbRepository? _channelFundingDbRepository;
     private ChannelPolicyDbRepository? _channelPolicyDbRepository;
@@ -177,6 +178,9 @@ public class UnitOfWork : IUnitOfWork
     public IChannelSignerGuardDbRepository ChannelSignerGuardDbRepository =>
         _channelSignerGuardDbRepository ??= new ChannelSignerGuardDbRepository(_context, _writeFence);
 
+    public IChannelKeyIndexDbRepository ChannelKeyIndexDbRepository =>
+        _channelKeyIndexDbRepository ??= new ChannelKeyIndexDbRepository(_context, _writeFence);
+
     public IGraphDbRepository GraphDbRepository => _graphDbRepository ??= new GraphDbRepository(_context);
 
     public Domain.Signing.Vls.IVlsChannelMappingDbRepository VlsChannelMappingDbRepository =>
@@ -187,6 +191,10 @@ public class UnitOfWork : IUnitOfWork
 
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
+
+    private MacaroonRootKeyDbRepository? _macaroonRootKeyDbRepository;
+    public Domain.Node.Credentials.IMacaroonRootKeyDbRepository MacaroonRootKeyDbRepository =>
+        _macaroonRootKeyDbRepository ??= new MacaroonRootKeyDbRepository(_context, _writeFence);
 
     private ImportedTapscriptDbRepository? _importedTapscriptDbRepository;
     public Domain.Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository =>

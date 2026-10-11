@@ -62,6 +62,7 @@ public class NLightningDbContext : DbContext
     public DbSet<ChannelFundingEntity> ChannelFundings { get; set; }
     public DbSet<ChannelSignerGuardEntity> ChannelSignerGuards { get; set; }
     public DbSet<ChannelSignerBroadcastSessionEntity> ChannelSignerBroadcastSessions { get; set; }
+    public DbSet<ChannelKeyIndexHighWaterEntity> ChannelKeyIndexHighWater { get; set; }
     public DbSet<ChannelPolicyEntity> ChannelPolicies { get; set; }
 
     // On-chain resolution DbSets
@@ -79,6 +80,7 @@ public class NLightningDbContext : DbContext
     // Node DbSets
     public DbSet<VlsChannelMappingEntity> VlsChannelMappings { get; set; }
     public DbSet<NodeSigningEnrollmentEntity> NodeSigningEnrollments { get; set; }
+    public DbSet<MacaroonRootKeyEntity> MacaroonRootKeys { get; set; }
     public DbSet<SigningWorkflowEntity> SigningWorkflows { get; set; }
     public DbSet<SigningRequestEntity> SigningRequests { get; set; }
     public DbSet<PeerEntity> Peers { get; set; }
@@ -162,6 +164,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureChannelFundingEntity(_databaseType);
         modelBuilder.ConfigureChannelSignerGuardEntity(_databaseType);
         modelBuilder.ConfigureChannelSignerBroadcastSessionEntity(_databaseType);
+        modelBuilder.ConfigureChannelKeyIndexHighWaterEntity();
         modelBuilder.ConfigureChannelPolicyEntity(_databaseType);
 
         // On-chain resolution entities
@@ -171,6 +174,7 @@ public class NLightningDbContext : DbContext
 
         // Node entities
         modelBuilder.ConfigureNodeSigningEnrollmentEntity(_databaseType);
+        modelBuilder.ConfigureMacaroonRootKeyEntity(_databaseType);
         modelBuilder.ConfigureSigningWorkflowEntities(_databaseType);
         modelBuilder.ConfigureVlsChannelMappingEntity(_databaseType);
         modelBuilder.ConfigurePeerEntity(_databaseType);

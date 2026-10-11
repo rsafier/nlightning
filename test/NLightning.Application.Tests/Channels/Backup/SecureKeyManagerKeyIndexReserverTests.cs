@@ -1,6 +1,7 @@
 namespace NLightning.Application.Tests.Channels.Backup;
 
 using Application.Channels.Backup;
+using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
@@ -28,6 +29,39 @@ public class SecureKeyManagerKeyIndexReserverTests
         Assert.Equal(9u, _lastUsedIndex);
         keyManager.Object.GetNextChannelKey(out var next);
         Assert.Equal(10u, next);
+    }
+
+    [Fact]
+    public async Task Given_TheDatabaseHighWaterMark_When_Reserved_Then_ItIsRaisedBeforeTheKeyManager()
+    {
+        // Arrange (NL-1388): a later process over the same database must skip the restored channels' indexes too
+        _lastUsedIndex = 2;
+        var keyManager = CreateKeyManager();
+        var store = new Mock<IChannelKeyIndexStore>();
+        var reserver = new SecureKeyManagerKeyIndexReserver(keyManager.Object, keyIndexStore: store.Object);
+
+        // Act
+        await reserver.ReserveThroughAsync(9, TestContext.Current.CancellationToken);
+
+        // Assert
+        store.Verify(s => s.Raise(9), Times.Once);
+        Assert.Equal(9u, _lastUsedIndex);
+    }
+
+    [Fact]
+    public async Task Given_ADatabaseHighWaterMarkThatFails_When_Reserved_Then_TheRestoreIsRefused()
+    {
+        // Arrange
+        _lastUsedIndex = 2;
+        var keyManager = CreateKeyManager();
+        var store = new Mock<IChannelKeyIndexStore>();
+        store.Setup(s => s.Raise(It.IsAny<uint>())).Throws(new InvalidOperationException("database down"));
+        var reserver = new SecureKeyManagerKeyIndexReserver(keyManager.Object, keyIndexStore: store.Object);
+
+        // Act & Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => reserver.ReserveThroughAsync(9, TestContext.Current.CancellationToken));
+        Assert.Equal(2u, _lastUsedIndex);
     }
 
     [Fact]
