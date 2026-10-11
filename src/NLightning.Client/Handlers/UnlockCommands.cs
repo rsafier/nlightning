@@ -16,13 +16,14 @@ using Daemon.Contracts.Utilities;
 internal static class UnlockCommands
 {
     internal const string Usage = "--key-file <path> [--password-file <path> | --password-stdin] "
-                                + "[--secrets-file <path>] [--socket <path>] [--frame] | unlock --status [--socket <path>]";
+                                + "[--secrets-file <path>] [--macaroon-dir <path>] [--socket <path>] [--frame] "
+                                + "| unlock --status [--socket <path>]";
 
     /// <summary>The longest wait for the node's answer (the key file's Argon2id and the database checks).</summary>
     internal static readonly TimeSpan AnswerTimeout = TimeSpan.FromMinutes(5);
 
     internal sealed record Arguments(bool Status, string? KeyFile, string? PasswordFile, bool PasswordStdin,
-                                     string? SecretsFile, string? Socket, bool Frame);
+                                     string? SecretsFile, string? Socket, bool Frame, string? MacaroonDirectory = null);
 
     internal static string? Validate(string cmd, string[] commandArgs) =>
         Parse(commandArgs, out var error) is null ? $"{error} Usage: {cmd} {Usage}" : null;
@@ -31,7 +32,7 @@ internal static class UnlockCommands
     {
         error = null;
         bool status = false, passwordStdin = false, frame = false;
-        string? keyFile = null, passwordFile = null, secretsFile = null, socket = null;
+        string? keyFile = null, passwordFile = null, secretsFile = null, socket = null, macaroonDirectory = null;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var name = commandArgs[i];
@@ -46,7 +47,7 @@ internal static class UnlockCommands
                 case "--frame":
                     frame = true;
                     continue;
-                case "--key-file" or "--password-file" or "--secrets-file" or "--socket":
+                case "--key-file" or "--password-file" or "--secrets-file" or "--socket" or "--macaroon-dir":
                     if (i + 1 >= commandArgs.Length)
                     {
                         error = $"{name} needs a value.";
@@ -57,6 +58,7 @@ internal static class UnlockCommands
                     if (name == "--key-file") keyFile = value;
                     else if (name == "--password-file") passwordFile = value;
                     else if (name == "--secrets-file") secretsFile = value;
+                    else if (name == "--macaroon-dir") macaroonDirectory = value;
                     else socket = value;
                     continue;
                 default:
@@ -67,7 +69,8 @@ internal static class UnlockCommands
 
         if (status)
         {
-            if (keyFile is not null || passwordFile is not null || passwordStdin || secretsFile is not null || frame)
+            if (keyFile is not null || passwordFile is not null || passwordStdin || secretsFile is not null || frame
+             || macaroonDirectory is not null)
             {
                 error = "--status takes only --socket.";
                 return null;
@@ -93,8 +96,19 @@ internal static class UnlockCommands
             error = "--frame needs --password-file (stdout carries the frame).";
             return null;
         }
+        else if (frame && macaroonDirectory is not null)
+        {
+            error = "--macaroon-dir needs the node's answer, which --frame does not read.";
+            return null;
+        }
+        else if (macaroonDirectory is not null && secretsFile is null)
+        {
+            error = "--macaroon-dir needs --secrets-file with lndGrpcMacaroonRootKey.";
+            return null;
+        }
 
-        return new Arguments(status, keyFile, passwordFile, passwordStdin, secretsFile, socket, frame);
+        return new Arguments(status, keyFile, passwordFile, passwordStdin, secretsFile, socket, frame,
+                             macaroonDirectory);
     }
 
     /// <returns>The process exit code: 0 when the node is (now) unlocked or answered a status, 1 otherwise.</returns>
@@ -116,7 +130,8 @@ internal static class UnlockCommands
                     Secrets = arguments.SecretsFile is null
                                   ? null
                                   : KeyProvisioningProtocol.ParseSecrets(
-                                      await File.ReadAllTextAsync(arguments.SecretsFile, ct))
+                                      await File.ReadAllTextAsync(arguments.SecretsFile, ct)),
+                    ReturnLndGrpcMacaroons = arguments.MacaroonDirectory is null ? null : true
                 };
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -173,6 +188,52 @@ internal static class UnlockCommands
         if (!response.Ok)
         {
             await errorOutput.WriteLineAsync($"Refused: {response.Error}");
+            return 1;
+        }
+
+        if (arguments.MacaroonDirectory is not null)
+            return await WriteMacaroonsAsync(arguments.MacaroonDirectory, response, output, errorOutput, ct);
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Writes the macaroons a node baked under the delivered root key (NL-1352) on the operator's side: the node keeps
+    /// none on disk. Each file is new and owner-only; an existing one is never replaced.
+    /// </summary>
+    private static async Task<int> WriteMacaroonsAsync(string directory, KeyProvisioningResponse response,
+                                                       TextWriter output, TextWriter errorOutput, CancellationToken ct)
+    {
+        if (response.LndGrpcMacaroons is not { Count: > 0 } macaroons)
+        {
+            await errorOutput.WriteLineAsync("The node unlocked but returned no macaroons.");
+            return 1;
+        }
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+                Directory.CreateDirectory(directory);
+            else
+                Directory.CreateDirectory(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite
+                                                                           | UnixFileMode.UserExecute);
+            foreach (var (name, value) in macaroons.OrderBy(m => m.Key, StringComparer.Ordinal))
+            {
+                if (name is not ("admin" or "readonly" or "invoice"))
+                    continue;
+
+                var path = Path.Combine(directory, $"{name}.macaroon");
+                var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+                if (!OperatingSystem.IsWindows())
+                    options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                await using (var stream = new FileStream(path, options))
+                    await stream.WriteAsync(Convert.FromBase64String(value), ct);
+                await output.WriteLineAsync($"Wrote {path}");
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or FormatException)
+        {
+            await errorOutput.WriteLineAsync($"The macaroons could not be written: {e.Message}");
             return 1;
         }
 

@@ -21,10 +21,12 @@ public static class LndMacaroonFiles
     /// Loads the root key, creating it (and re-baking the three macaroons) when missing; bakes any missing macaroon.
     /// Returns the root key.
     /// </summary>
-    public static byte[] EnsureCreated(string directory, ILogger? logger = null, NodeSigningContext? context = null)
+    /// <param name="allowGenerate">False (<c>Node:Startup:RequireProvisionedSecrets</c>, NL-1352): a missing root key
+    /// is refused and missing macaroons are not baked, so no credential file is written.</param>
+    public static byte[] EnsureCreated(string directory, ILogger? logger = null, NodeSigningContext? context = null,
+                                       bool allowGenerate = true)
     {
         if (context is not null) LndCredentialEnrollment.Bind(directory, context);
-        Directory.CreateDirectory(directory);
         var rootKeyPath = Path.Combine(directory, RootKeyFileName);
         var rotated = false;
         byte[] rootKey;
@@ -35,8 +37,15 @@ public static class LndMacaroonFiles
                 throw new InvalidOperationException($"{rootKeyPath} is not a 32-byte macaroon root key; delete it to "
                                                   + "make a new one (every macaroon baked before stops working).");
         }
+        else if (!allowGenerate)
+        {
+            throw new InvalidOperationException(
+                $"The LND gRPC macaroon root key {rootKeyPath} is missing and Node:Startup:RequireProvisionedSecrets "
+              + "forbids generating it: deliver lndGrpcMacaroonRootKey with the key.");
+        }
         else
         {
+            Directory.CreateDirectory(directory);
             rootKey = MacaroonVerifier.NewRootKey();
             WriteExclusive(rootKeyPath, rootKey);
             rotated = true;
@@ -44,10 +53,40 @@ public static class LndMacaroonFiles
         }
 
         rootKey = LndCredentialEnrollment.EffectiveRootKey(rootKey, context);
+        if (!allowGenerate)
+            return rootKey;
+
         Bake(directory, AdminFileName, rootKey, LndPermissions.Admin, rotated, logger);
         Bake(directory, ReadOnlyFileName, rootKey, LndPermissions.Read, rotated, logger);
         Bake(directory, InvoiceFileName, rootKey, LndPermissions.Invoice, rotated, logger);
         return rootKey;
+    }
+
+    /// <summary>
+    /// The three default macaroons (<c>admin</c>, <c>readonly</c>, <c>invoice</c>) baked in memory under a root key
+    /// delivered with the key of a locked start (NL-1352): handed back to the provisioner, never written by the node.
+    /// </summary>
+    /// <param name="storedRootKey">The delivered root key (the bytes <c>macaroons.key</c> would hold); not changed.</param>
+    /// <param name="services">The node's services, for the credential context (<see cref="LndCredentialContext"/>).
+    /// </param>
+    public static IReadOnlyDictionary<string, byte[]> BakeDefaults(ReadOnlySpan<byte> storedRootKey,
+                                                                   IServiceProvider services)
+    {
+        var context = LndCredentialContext.Resolve(services);
+        var rootKey = LndCredentialEnrollment.EffectiveRootKey(storedRootKey.ToArray(), context);
+        try
+        {
+            return new Dictionary<string, byte[]>(StringComparer.Ordinal)
+            {
+                ["admin"] = NewMacaroon(rootKey, LndPermissions.Admin).Serialize(),
+                ["readonly"] = NewMacaroon(rootKey, LndPermissions.Read).Serialize(),
+                ["invoice"] = NewMacaroon(rootKey, LndPermissions.Invoice).Serialize()
+            };
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(rootKey);
+        }
     }
 
     /// <summary>A new macaroon for <paramref name="ops"/> under <paramref name="rootKey"/> (LND's oven: a random 16-byte

@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Transport.Tor;
 
 using Domain.Gossip.Addresses;
 using Domain.Node.Options;
+using Domain.Node.Provisioning;
 
 /// <inheritdoc cref="ITorOnionService"/>
 /// <remarks>
@@ -33,11 +34,15 @@ public sealed class TorOnionService : ITorOnionService
     private string? _onionHost;
     private AddressDescriptor? _descriptor;
 
-    public TorOnionService(ILogger<TorOnionService> logger, IOptions<NodeOptions> nodeOptions)
+    private readonly ProvisionedSecrets _secrets;
+
+    public TorOnionService(ILogger<TorOnionService> logger, IOptions<NodeOptions> nodeOptions,
+                           ProvisionedSecrets? provisionedSecrets = null)
     {
         _logger = logger;
         _torOptions = nodeOptions.Value.Tor;
         _listenAddresses = nodeOptions.Value.GetListenAddresses();
+        _secrets = provisionedSecrets ?? ProvisionedSecrets.None;
     }
 
     /// <inheritdoc />
@@ -200,10 +205,17 @@ public sealed class TorOnionService : ITorOnionService
             var pow = BuildPoWOptions(protocolInfo);
 
             var keyFile = _torOptions.OnionServiceKeyFile;
-            var savedKey = TorOnionKeyFile.Read(keyFile);
-            if (savedKey is not null && TorOnionKeyFile.HasGroupOrOtherPermissions(keyFile))
+            // A key delivered with the node key of a locked start (NL-1352) is used from memory: the file is neither
+            // read nor written
+            var savedKey = _secrets.TorOnionServiceKey ?? TorOnionKeyFile.Read(keyFile);
+            if (_secrets.TorOnionServiceKey is null && savedKey is not null
+             && TorOnionKeyFile.HasGroupOrOtherPermissions(keyFile))
                 _logger.LogWarning("The onion service key {KeyFile} is readable by other users; whoever reads it can "
                                  + "take over our onion address: chmod 600 it (NL-584)", keyFile);
+            if (savedKey is null && _secrets.RefuseGeneration)
+                throw new TorOnionKeyFileException($"The onion service key {keyFile} is missing and "
+                                                 + "Node:Startup:RequireProvisionedSecrets forbids creating it: "
+                                                 + "deliver torOnionServiceKey with the node key");
             var (serviceId, newKey) = await client.AddOnionAsync(savedKey, _torOptions.OnionServicePort, target,
                                                                   cancellationToken, clientAuthKeys, pow);
             if (savedKey is null)

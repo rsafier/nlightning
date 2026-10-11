@@ -11,6 +11,7 @@ using NLightning.Daemon.Extensions;
 using NLightning.Daemon.Provisioning;
 using NLightning.Daemon.Utilities;
 using NLightning.Domain.Node.Options;
+using NLightning.Domain.Node.Provisioning;
 using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Protocol.ValueObjects;
 using NLightning.Infrastructure.Bitcoin.Managers;
@@ -97,6 +98,7 @@ try
     ISecureKeyManager keyManager;
     var password = string.Empty;
     var nodeConfig = initialConfig;
+    var provisionedSecrets = ProvisionedSecrets.None;
 
     // Locked start (NL-1349): no key material at start; the node waits for its key on the provisioning endpoint
     var startupOptions = StartupOptions.Read(initialConfig, DaemonUtils.IsLockedRequested(args));
@@ -136,6 +138,7 @@ try
 
         keyManager = unlocked!.KeyManager;
         nodeConfig = unlocked.Configuration;
+        provisionedSecrets = unlocked.Secrets;
     }
     else if (vlsConnection is not null)
     {
@@ -233,7 +236,7 @@ try
     // Create and run host
     var host = Host.CreateDefaultBuilder(DaemonUtils.NormalizeArgs(args))
                    .ConfigureNltg(nodeConfig)
-                   .ConfigureNltgServices(keyManager, configPath, remoteConnection, vlsConnection)
+                   .ConfigureNltgServices(keyManager, configPath, remoteConnection, vlsConnection, provisionedSecrets)
                    .Build();
 
     // Run migrations if configured

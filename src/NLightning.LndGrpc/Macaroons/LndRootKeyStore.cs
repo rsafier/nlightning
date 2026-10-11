@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using NLightning.Domain.Node.Provisioning;
 using NLightning.Domain.Signing;
 
 namespace NLightning.LndGrpc.Macaroons;
@@ -10,6 +11,9 @@ namespace NLightning.LndGrpc.Macaroons;
 /// asks for it. The storage id inside a macaroon is the decimal id as text, as LND writes it (<c>"0"</c>, <c>"7"</c>).
 /// Deleting an id deletes its key and so invalidates every macaroon baked with it; id 0 cannot be deleted (LND's
 /// <c>ErrDeletionForbidden</c>).
+/// <para>With a root key delivered with the key of a locked start (NL-1352) the store is memory-only: id 0 is that key,
+/// no file is read or written, and other ids are refused (they would need a file to survive a restart). With
+/// <c>Node:Startup:RequireProvisionedSecrets</c> new ids are refused too.</para>
 /// </summary>
 public sealed class LndRootKeyStore
 {
@@ -19,13 +23,29 @@ public sealed class LndRootKeyStore
     private readonly Lock _lock = new();
     private readonly string _directory;
 
+    private readonly byte[]? _provisionedRootKey;
+    private readonly bool _allowGenerate;
+
     public LndRootKeyStore(string dataDirectory, NodeSigningContext? context = null)
+        : this(dataDirectory, context, null)
+    {
+    }
+
+    /// <param name="dataDirectory">The data directory.</param>
+    /// <param name="context">The credential context, or null.</param>
+    /// <param name="secrets">The secrets a locked start received (NL-1352), or null.</param>
+    public LndRootKeyStore(string dataDirectory, NodeSigningContext? context, ProvisionedSecrets? secrets)
     {
         DataDirectory = dataDirectory;
         Context = context;
-        if (context is not null) LndCredentialEnrollment.Bind(dataDirectory, context);
+        _provisionedRootKey = secrets?.LndGrpcMacaroonRootKey;
+        _allowGenerate = secrets is not { RefuseGeneration: true };
+        if (context is not null && _provisionedRootKey is null) LndCredentialEnrollment.Bind(dataDirectory, context);
         _directory = Path.Combine(dataDirectory, DirectoryName);
     }
+
+    /// <summary>Whether the root key was delivered with the node key (memory only).</summary>
+    public bool IsProvisioned => _provisionedRootKey is not null;
 
     /// <summary>The data directory (<c>LndGrpc:DataDirectory</c>).</summary>
     public string DataDirectory { get; }
@@ -40,6 +60,12 @@ public sealed class LndRootKeyStore
     {
         if (_keys.TryGetValue(id, out var cached))
             return cached;
+
+        if (_provisionedRootKey is not null)
+            return id == 0
+                       ? _keys.GetOrAdd(0, _ => LndCredentialEnrollment.EffectiveRootKey(_provisionedRootKey.ToArray(),
+                                                                                           Context))
+                       : null;
 
         var path = PathOf(id);
         if (!File.Exists(path))
@@ -58,6 +84,12 @@ public sealed class LndRootKeyStore
                 return key;
             if (id == 0)
                 throw new InvalidOperationException("The default macaroon root key is missing");
+            if (_provisionedRootKey is not null)
+                throw new InvalidOperationException("only root key id 0 is available: the root key was provisioned "
+                                                  + "in memory and new root keys would need a file");
+            if (!_allowGenerate)
+                throw new InvalidOperationException("new root keys are refused: Node:Startup:RequireProvisionedSecrets "
+                                                  + "forbids writing them to disk");
 
             Directory.CreateDirectory(_directory);
             key = MacaroonVerifier.NewRootKey();
@@ -72,7 +104,7 @@ public sealed class LndRootKeyStore
         var ids = new SortedSet<ulong>();
         if (TryGet(0) is not null)
             ids.Add(0);
-        if (Directory.Exists(_directory))
+        if (_provisionedRootKey is null && Directory.Exists(_directory))
         {
             foreach (var file in Directory.EnumerateFiles(_directory, "*.key"))
             {
@@ -95,6 +127,9 @@ public sealed class LndRootKeyStore
         lock (_lock)
         {
             _keys.TryRemove(id, out _);
+            if (_provisionedRootKey is not null)
+                return false;
+
             var path = PathOf(id);
             if (!File.Exists(path))
                 return false;

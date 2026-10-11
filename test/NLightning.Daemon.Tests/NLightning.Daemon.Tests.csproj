@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Daemon\NLightning.Daemon.csproj"/>
+    <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
   </ItemGroup>
 
 </Project>

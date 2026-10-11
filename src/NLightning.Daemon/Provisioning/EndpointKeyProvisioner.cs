@@ -160,7 +160,8 @@ public sealed class EndpointKeyProvisioner : IKeyProvisioner
                     // Null: the attempt's answer was written by the locked start through RespondAsync
                     var response = await HandleRequestAsync(request, connection, token);
                     if (response is not null)
-                        await KeyProvisioningProtocol.WriteResponseAsync(connection.Output, response, token);
+                        await KeyProvisioningProtocol.WriteResponseAsync(connection.Output, response, token,
+                                                                         request.FrameVersion);
                 }
             }
         }
@@ -213,13 +214,13 @@ public sealed class EndpointKeyProvisioner : IKeyProvisioner
                                                      try
                                                      {
                                                          await KeyProvisioningProtocol.WriteResponseAsync(
-                                                             connection.Output, response, ct);
+                                                             connection.Output, response, ct, request.FrameVersion);
                                                      }
                                                      finally
                                                      {
                                                          answered.TrySetResult();
                                                      }
-                                                 });
+                                                 }, request.ReturnLndGrpcMacaroons == true);
         if (!_attempts.Writer.TryWrite(attempt))
         {
             attempt.Dispose();

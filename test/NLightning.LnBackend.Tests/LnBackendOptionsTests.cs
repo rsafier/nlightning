@@ -284,4 +284,25 @@ public sealed class LnBackendOptionsTests
         using var provider = services.BuildServiceProvider();
         return provider.GetRequiredService<IValidateOptions<LnBackendOptions>>().Validate(null, options);
     }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void Given_ProvisionedTls_When_ANonLoopbackListenerIsValidated_Then_OnlyAClientCaAuthenticatesIt(
+        bool withClientCa, bool valid)
+    {
+        // Arrange: TLS delivered with the key of a locked start (NL-1352), no TlsDirectory (the PEM contents are not
+        // read by validation)
+        var options = new LnBackendOptions { Enabled = true, Port = 0, ListenAddress = "0.0.0.0" };
+        options.UseProvisionedTls(new Domain.Node.Provisioning.ProvisionedTls("cert", "key",
+                                                                              withClientCa ? "ca" : null));
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Equal(valid, errors.Count == 0);
+        Assert.True(options.HasTls());
+        Assert.Equal(withClientCa, options.AuthenticatesClients());
+    }
 }

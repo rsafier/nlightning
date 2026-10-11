@@ -104,10 +104,10 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
 
         ListeningAddresses = [.. addresses];
         BoundPort = new Uri(addresses.First()).Port;
-        var mutualTls = !string.IsNullOrWhiteSpace(_options.TlsDirectory) && HasCa(_options.TlsDirectory);
+        var mutualTls = _options.AuthenticatesClients();
         var transport = mutualTls
                             ? "mTLS"
-                            : string.IsNullOrWhiteSpace(_options.TlsDirectory)
+                            : !_options.HasTls()
                                 ? "insecure loopback: h2c, no client authentication"
                                 : "insecure loopback: TLS without client authentication";
         _logger.LogInformation("Cashu payment processor listening on {Address}:{Port} ({Transport}, unit {Unit})",
@@ -145,14 +145,26 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     private void ConfigureListener(ListenOptions listen)
     {
         listen.Protocols = HttpProtocols.Http2;
-        if (string.IsNullOrWhiteSpace(_options.TlsDirectory))
+        if (!_options.HasTls())
             return;
 
-        var directory = _options.TlsDirectory;
-        var certificate = X509Certificate2.CreateFromPemFile(Path.Combine(directory, "server.pem"),
+        X509Certificate2 certificate;
+        X509Certificate2? ca;
+        if (_options.GetProvisionedTls() is { } provisioned)
+        {
+            // Delivered with the key of a locked start (NL-1352): from memory, no file read
+            certificate = X509Certificate2.CreateFromPem(provisioned.CertificatePem, provisioned.KeyPem);
+            ca = provisioned.ClientCaPem is null ? null : X509Certificate2.CreateFromPem(provisioned.ClientCaPem);
+        }
+        else
+        {
+            var directory = _options.TlsDirectory!;
+            certificate = X509Certificate2.CreateFromPemFile(Path.Combine(directory, "server.pem"),
                                                              Path.Combine(directory, "server.key"));
-        var caPath = Path.Combine(directory, "ca.pem");
-        var ca = HasCa(directory) ? X509CertificateLoader.LoadCertificateFromFile(caPath) : null;
+            var caPath = Path.Combine(directory, "ca.pem");
+            ca = HasCa(directory) ? X509CertificateLoader.LoadCertificateFromFile(caPath) : null;
+        }
+
         listen.UseHttps(https =>
         {
             https.ServerCertificate = certificate;
@@ -192,7 +204,8 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     /// <summary>Warns when <c>server.key</c> can be read by the group or others (NL-1000).</summary>
     private void WarnIfKeyReadable()
     {
-        if (string.IsNullOrWhiteSpace(_options.TlsDirectory) || OperatingSystem.IsWindows())
+        if (_options.GetProvisionedTls() is not null || string.IsNullOrWhiteSpace(_options.TlsDirectory)
+                                                     || OperatingSystem.IsWindows())
             return;
 
         var key = Path.Combine(_options.TlsDirectory, "server.key");

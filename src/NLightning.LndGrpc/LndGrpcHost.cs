@@ -14,6 +14,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.LndGrpc;
 
+using Domain.Node.Provisioning;
 using Macaroons;
 using Services;
 using Tls;
@@ -41,6 +42,7 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
 
     private WebApplication? _app;
     private X509Certificate2? _certificate;
+    private X509Certificate2? _clientCa;
 
     public LndGrpcHost(IServiceProvider serviceProvider, IOptions<LndGrpcOptions> options, string dataDirectory,
                        ILogger<LndGrpcHost> logger, TimeProvider? timeProvider = null)
@@ -68,17 +70,28 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
             throw new InvalidOperationException(error);
 
         var context = Macaroons.LndCredentialContext.Resolve(_serviceProvider);
-        if (context is not null) LndCredentialEnrollment.Bind(DataDirectory, context);
-        _certificate = LndTlsFiles.EnsureCreated(DataDirectory, _options, _timeProvider, _logger);
+        // Secrets delivered with the key of a locked start (NL-1352) are used from memory: their files are neither read
+        // nor written
+        var secrets = _serviceProvider.GetService<ProvisionedSecrets>() ?? ProvisionedSecrets.None;
+        var allowGenerate = !secrets.RefuseGeneration;
+        var fileCredentials = secrets.LndGrpcTls is null
+                           || (!_options.AllowNoMacaroons && secrets.LndGrpcMacaroonRootKey is null);
+        if (context is not null && fileCredentials) LndCredentialEnrollment.Bind(DataDirectory, context);
+        _certificate = secrets.LndGrpcTls is { } tls
+                           ? LndTlsFiles.FromProvisioned(tls)
+                           : LndTlsFiles.EnsureCreated(DataDirectory, _options, _timeProvider, _logger, allowGenerate);
+        _clientCa = secrets.LndGrpcTls?.ClientCaPem is { } clientCa ? X509Certificate2.CreateFromPem(clientCa) : null;
         MacaroonVerifier? verifier = null;
         if (!_options.AllowNoMacaroons)
         {
-            LndMacaroonFiles.EnsureCreated(DataDirectory, _logger, context);
+            if (secrets.LndGrpcMacaroonRootKey is null)
+                LndMacaroonFiles.EnsureCreated(DataDirectory, _logger, context, allowGenerate);
             var rootKeys = _serviceProvider.GetService<LndRootKeyStore>() is { } registered
                         && registered.DataDirectory == DataDirectory
                         && registered.Context == context
+                        && registered.IsProvisioned == (secrets.LndGrpcMacaroonRootKey is not null)
                                ? registered
-                               : new LndRootKeyStore(DataDirectory, context);
+                               : new LndRootKeyStore(DataDirectory, context, secrets);
             verifier = new MacaroonVerifier(rootKeys, _timeProvider);
         }
 
@@ -180,8 +193,11 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         BoundPort = new Uri(addresses.First()).Port;
         _logger.LogInformation("LND gRPC (lnrpc.Lightning, routerrpc.Router, invoicesrpc.Invoices, walletrpc.WalletKit) listening on {Address}:{Port} (TLS{ClientCertificates}, "
                              + "{Macaroons}; files in {Directory})", _options.ListenAddress, BoundPort,
-                               string.IsNullOrWhiteSpace(_options.ClientCaPath) ? "" : " with client certificates",
-                               verifier is null ? "NO macaroons" : "macaroons", DataDirectory);
+                               _clientCa is null && string.IsNullOrWhiteSpace(_options.ClientCaPath)
+                                   ? ""
+                                   : " with client certificates",
+                               verifier is null ? "NO macaroons" : "macaroons",
+                               fileCredentials ? DataDirectory : "memory (provisioned)");
         if (verifier is null)
             _logger.LogWarning("INSECURE: the LND gRPC server checks no macaroon (LndGrpc:AllowNoMacaroons): every "
                              + "local process and user can spend from this node through it");
@@ -200,6 +216,8 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
 
         _certificate?.Dispose();
         _certificate = null;
+        _clientCa?.Dispose();
+        _clientCa = null;
     }
 
     /// <inheritdoc />
@@ -213,9 +231,10 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
     private void ConfigureListener(ListenOptions listen)
     {
         listen.Protocols = HttpProtocols.Http2;
-        var ca = string.IsNullOrWhiteSpace(_options.ClientCaPath)
-                     ? null
-                     : X509CertificateLoader.LoadCertificateFromFile(_options.ClientCaPath);
+        var ca = _clientCa
+              ?? (string.IsNullOrWhiteSpace(_options.ClientCaPath)
+                      ? null
+                      : X509CertificateLoader.LoadCertificateFromFile(_options.ClientCaPath));
         listen.UseHttps(https =>
         {
             https.ServerCertificate = _certificate;

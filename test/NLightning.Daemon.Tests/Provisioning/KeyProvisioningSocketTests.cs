@@ -99,6 +99,72 @@ public sealed class KeyProvisioningSocketTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ARootKeyInTheSecretsFile_When_TheClientUnlocksWithAMacaroonDir_Then_ItWritesTheMacaroons()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        // Arrange: a secrets file with a version 2 field (the root key), so the client writes a version 2 frame
+        var keyFile = _files.CreateKeyFile(Password, bip32: true, out var nodeId);
+        var keyPath = Path.Combine(_files.OperatorPath, "node.key.json");
+        await File.WriteAllBytesAsync(keyPath, keyFile, TestContext.Current.CancellationToken);
+        var passwordPath = Path.Combine(_files.OperatorPath, "password");
+        await File.WriteAllTextAsync(passwordPath, Password, TestContext.Current.CancellationToken);
+        var rootKey = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        var secretsPath = Path.Combine(_files.OperatorPath, "secrets.json");
+        await File.WriteAllTextAsync(secretsPath, $$"""{ "lndGrpcMacaroonRootKey": "{{Convert.ToBase64String(rootKey)}}" }""",
+                                     TestContext.Current.CancellationToken);
+        var macaroonDirectory = Path.Combine(_files.OperatorPath, "macaroons");
+        var (startup, provisioner) = CreateSocketStartup(new ListLogger());
+        var run = startup.RunAsync(TestContext.Current.CancellationToken);
+        await WaitForSocketAsync();
+
+        // Act
+        var output = new StringWriter();
+        var errors = new StringWriter();
+        var exitCode = await UnlockCommands.RunAsync(["--key-file", keyPath, "--password-file", passwordPath,
+                                                      "--secrets-file", secretsPath, "--macaroon-dir",
+                                                      macaroonDirectory],
+                                                     _files.ConfigPath, TextReader.Null, output, errors,
+                                                     TestContext.Current.CancellationToken);
+        var unlocked = await run;
+        await provisioner.DisposeAsync();
+
+        // Assert: the three macaroons on the operator's side, owner-only; none in the configuration directory
+        Assert.True(exitCode == 0, errors.ToString());
+        Assert.Contains($"Node id: {nodeId}", output.ToString());
+        using var keyManager = unlocked!.KeyManager;
+        Assert.Equal(rootKey, unlocked.Secrets.LndGrpcMacaroonRootKey);
+        foreach (var name in new[] { "admin", "readonly", "invoice" })
+        {
+            var path = Path.Combine(macaroonDirectory, $"{name}.macaroon");
+            Assert.True(File.Exists(path), path);
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        }
+
+        Assert.Empty(Directory.EnumerateFiles(_files.ConfigPath, "*.macaroon", SearchOption.AllDirectories));
+    }
+
+    [Theory]
+    [InlineData("--frame", "--macaroon-dir needs the node's answer")]
+    [InlineData("--no-secrets", "--macaroon-dir needs --secrets-file")]
+    public void Given_AMacaroonDirWithoutItsPrerequisites_When_Parsed_Then_ItIsRefused(string variant, string error)
+    {
+        // Arrange
+        string[] arguments = variant == "--frame"
+                                 ? ["--key-file", "k", "--password-file", "p", "--secrets-file", "s", "--frame",
+                                    "--macaroon-dir", "m"]
+                                 : ["--key-file", "k", "--password-file", "p", "--macaroon-dir", "m"];
+
+        // Act
+        var parsed = UnlockCommands.Parse(arguments, out var message);
+
+        // Assert
+        Assert.Null(parsed);
+        Assert.Contains(error, message);
+    }
+
+    [Fact]
     public async Task Given_AMalformedFrame_When_Sent_Then_TheEndpointAnswersAnErrorAndKeepsListening()
     {
         if (OperatingSystem.IsWindows())

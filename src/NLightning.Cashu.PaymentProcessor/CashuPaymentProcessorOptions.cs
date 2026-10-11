@@ -2,6 +2,8 @@ using System.Net;
 
 namespace NLightning.Cashu.PaymentProcessor;
 
+using Domain.Node.Provisioning;
+
 /// <summary>
 /// <c>Cashu:PaymentProcessor</c>: the CDK payment processor that lets a Cashu mint (<c>cdk-mintd</c> with
 /// <c>ln_backend = "grpcprocessor"</c>) use this node as its Lightning backend (Cashu plan C1, NL-992).
@@ -150,6 +152,27 @@ public sealed class CashuPaymentProcessorOptions
     /// <summary>Whether <see cref="Unit"/> is msat.</summary>
     public bool IsMsat => string.Equals(Unit, "msat", StringComparison.OrdinalIgnoreCase);
 
+    // Set by the host from the locked start's secrets, never bound (a method, not a property)
+    private ProvisionedTls? _provisionedTls;
+
+    /// <summary>
+    /// Uses TLS material delivered with the key of a locked start (NL-1352) instead of the <see cref="TlsDirectory"/>
+    /// files, which are then neither read nor needed.
+    /// </summary>
+    public void UseProvisionedTls(ProvisionedTls? tls) => _provisionedTls = tls;
+
+    /// <summary>The provisioned TLS material, or null when the <see cref="TlsDirectory"/> files are used.</summary>
+    public ProvisionedTls? GetProvisionedTls() => _provisionedTls;
+
+    /// <summary>Whether the listener uses TLS (provisioned or <see cref="TlsDirectory"/>).</summary>
+    public bool HasTls() => _provisionedTls is not null || !string.IsNullOrWhiteSpace(TlsDirectory);
+
+    /// <summary>Whether clients must present a certificate (a provisioned client CA, or <c>ca.pem</c>).</summary>
+    public bool AuthenticatesClients() =>
+        _provisionedTls is not null
+            ? _provisionedTls.ClientCaPem is not null
+            : !string.IsNullOrWhiteSpace(TlsDirectory) && File.Exists(Path.Combine(TlsDirectory, "ca.pem"));
+
     /// <summary>
     /// The problems with these options, empty when they are valid.
     /// </summary>
@@ -162,8 +185,8 @@ public sealed class CashuPaymentProcessorOptions
 
         if (isMainnet && !AllowMainnet)
             errors.Add($"{SectionName} is refused on mainnet unless AllowMainnet is true (a mint is custodial).");
-        var hasTls = !string.IsNullOrWhiteSpace(TlsDirectory);
-        var authenticatesClients = hasTls && File.Exists(Path.Combine(TlsDirectory!, "ca.pem"));
+        var hasTls = HasTls();
+        var authenticatesClients = AuthenticatesClients();
         if (!IPAddress.TryParse(ListenAddress, out var address))
             errors.Add($"{SectionName}:ListenAddress '{ListenAddress}' is not an IP address.");
         else if (!IPAddress.IsLoopback(address) && !authenticatesClients)
@@ -210,7 +233,7 @@ public sealed class CashuPaymentProcessorOptions
                 errors.Add($"{SectionName}:OnchainAddressType '{OnchainAddressType}' is not P2Wpkh or P2Tr.");
         }
 
-        if (!string.IsNullOrWhiteSpace(TlsDirectory))
+        if (_provisionedTls is null && !string.IsNullOrWhiteSpace(TlsDirectory))
         {
             foreach (var file in new[] { "server.pem", "server.key" })
             {

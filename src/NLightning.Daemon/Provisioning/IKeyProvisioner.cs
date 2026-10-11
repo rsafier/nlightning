@@ -28,13 +28,17 @@ public interface IKeyProvisioner : IAsyncDisposable
 /// <see cref="RespondAsync"/>; disposing the attempt wipes the material.
 /// </summary>
 public sealed class KeyProvisioningAttempt(ProvisionedKeyMaterial material, KeyProvisioningSecrets? secrets,
-                                           Func<KeyProvisioningResponse, CancellationToken, Task> respond)
+                                           Func<KeyProvisioningResponse, CancellationToken, Task> respond,
+                                           bool returnLndGrpcMacaroons = false)
     : IDisposable
 {
     public ProvisionedKeyMaterial Material { get; } = material;
 
     /// <summary>At-rest secrets delivered with the key (NL-1352), or null.</summary>
     public KeyProvisioningSecrets? Secrets { get; } = secrets;
+
+    /// <summary>Whether the answer carries the default LND gRPC macaroons baked under the delivered root key.</summary>
+    public bool ReturnLndGrpcMacaroons { get; } = returnLndGrpcMacaroons;
 
     public Task RespondAsync(KeyProvisioningResponse response, CancellationToken cancellationToken) =>
         respond(response, cancellationToken);

@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 104 | 106 |
-| in-progress | 0 | 1 | 8 | 1 | 10 |
-| fixed | 15 | 74 | 272 | 540 | 901 |
+| open | 0 | 0 | 2 | 105 | 107 |
+| in-progress | 0 | 1 | 8 | 0 | 9 |
+| fixed | 15 | 74 | 272 | 541 | 902 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **291** | **667** | **1048** |
+| **Total** | **15** | **75** | **291** | **668** | **1049** |
 
 ### Epics
 
@@ -11024,12 +11024,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** NL-1349
 
 ### NL-1352 Locked start: at-rest secrets delivered with the key
-- **Status:** in-progress
+- **Status:** fixed
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `KeyProvisioningSecrets` (`src/NLightning.Daemon.Contracts/Provisioning/KeyProvisioningProtocol.cs`), `LockedStartup.ApplySecrets`
 - **Evidence:** a locked node still read its other secrets from files or its configuration.
 - **Fix:** the unlock request may carry `databaseConnectionString`, `bitcoinRpcUser` and `bitcoinRpcPassword`, laid over the configuration in memory before the identity check (client `unlock --secrets-file`); without them the configuration is used as today. Remaining: the LND gRPC macaroon root key and TLS key, the Tor onion service key and the CDK processor's TLS keys are still files.
+- **Fix (completed):** frame `NLKP` v2 (a request is written as v1 unless it uses a v2 field; a v1 node refuses a v2 frame before unlocking instead of ignoring secrets it does not know; v2 fields in a v1 frame are refused) adds `torControlPassword`, `torOnionServiceKey`, `lndGrpcMacaroonRootKey`, `lndGrpcTls`, `cashuProcessorTls`, `lnBackendTls` and `returnLndGrpcMacaroons`. `ProvisionedSecretsReader` checks each value before the key is opened (a malformed one keeps the node locked with a reason naming the field) and yields the Domain singleton `ProvisionedSecrets`; `LndGrpcHost`/`LndRootKeyStore`, `TorOnionService` and the Cashu/LN backend options (`UseProvisionedTls`) use it from memory, their files neither read nor written; absent values keep the file behavior. `Node:Startup:RequireProvisionedSecrets` (locked starts, default false) refuses the unlock while an enabled consumer has neither a file nor a value and makes the generators refuse instead of writing. Client `unlock --macaroon-dir` writes the default macaroons the node bakes in memory. Audit and security notes: `SECURITY_REVIEW.md` SR-39; docs `LOCKED_START.md` "Secrets bundle".
 - **Blocks/Blocked-by:** NL-1349
 
 
@@ -11149,3 +11150,11 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** NL-1355's audit of the host-started background work. The services the hosts stop (`HtlcExpiryMonitor`, `FeeUpdateScheduler`, `OnionReplayBlockPruner`, `MempoolReactor`, `SpliceAutoBumper`, the accounting sealer, backfill, books, projector and price valuation, `PeerBootstrapService`, `ExpiredBolt12InvoicePruner`, `ChannelBackupMonitor`, `GraphPruner`, and since NL-1355 the on-chain executor, `ChannelFailureService` and `AnchorCpfpService`) cancel and await their work. These others are fire-and-forget from chain-monitor events or timers: the chain monitor and the peer manager stop in the same step, so a task already started can still save (and, for the closing timeout and the funding-spend classification, broadcast) between that step and the container's disposal, or touch the disposed container after it.
 - **Fix sketch:** track those tasks and give `ChannelManager`, `SpliceDepthWatcher` and the timeout monitors a `StopAsync` (refuse new work, cancel, await bounded) that the hosts call before the chain monitor and the peers stop.
 - **Blocks/Blocked-by:** found by NL-1355
+
+### NL-1380 The AOT analyzer gate reports 144 trim/AOT warnings
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `JsonSerializer` reflection overloads in `Application/Channels/Services/NativeV1ChannelOpening.cs` and `NativeV1FundedInboundOpening.cs`, `Infrastructure.RemoteSigning/` (`SignerWire`, `NativeSignerAuthority*`, `RemoteSigningWorkflowCoordinator*`, `NativeAuthorizedChannelStateStore`, `DurableSignerState`, ...), `Infrastructure.VlsSigning/`, `Infrastructure.Bitcoin` (`SwapSessionStateStore`, `NativeNonceStateStore`, `WalletSpendService`, `WalletPsbtService.Publication`, `BlockPrevoutSource`), `Application/Onchain/Fees/SweepScheduler.cs`, `LndGrpc/LndUnknownMethods.cs`
+- **Evidence:** `dotnet build src/NLightning.Daemon -c Release.Native -r osx-arm64 -p:PublishAot=true --no-incremental` at `wip/fafo` `ed23e0ba` (NL-1352 lane, 2026-10-11): 144 IL2026/IL3050 warnings (72 sites, each reported twice), none in the files that lane changed; CLAUDE.md says the gate must stay at 0.
+- **Fix sketch:** move those serializations to source-generated `JsonSerializerContext`s (as `KeyProvisioningJsonContext` and `KeyFileDataJsonContext` do), then put the gate back at 0.
