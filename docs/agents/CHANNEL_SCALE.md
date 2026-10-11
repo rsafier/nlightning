@@ -113,18 +113,16 @@ have taken about 15 minutes (16 dials at a time, 15 s each).
 
 ## Open follow-ups
 
-Filed with NL-1357 (no IDs of their own yet):
-
-1. **Startup reads every channel three times.** The peer manager's load (`GetPeersForStartupAsync`, one consistent read
+1. **Startup reads every channel three times** (NL-1354, low). The peer manager's load (`GetPeersForStartupAsync`, one consistent read
    per channel), the registration's state reload for pending HTLC events (the load already read the settled-HTLC
    archive and drops it) and the signer's lazy load of its signing info on first use. Linear, but 6.6 s + 4 s at 10,000
    on SQLite and 40 s + 18 s on Postgres. Fix sketch: hand the loaded settled archive to the registration, and load the
    signing info set-based once at startup instead of one query per channel.
-2. **The on-chain executor's background round outlives the node's stop.** `OnchainResolutionExecutor` has no stop;
+2. **The on-chain executor's background round outlives the node's stop** (NL-1355, medium). `OnchainResolutionExecutor` has no stop;
    a round scheduled by the last block runs on after the service provider is disposed (logged
    `ObjectDisposedException`; in the benchmark it recreated an empty SQLite file after the database was deleted).
    Fix sketch: a stop that cancels and awaits the loop, called by the host before the provider is disposed.
-3. **Readiness waits `StartupDialWait` when any stored peer does not answer.** With dead peers stored, every start
+3. **Readiness waits `StartupDialWait` when any stored peer does not answer** (NL-576, by design). With dead peers stored, every start
    waits the full 15 s before the chain monitor starts (by design, NL-576), whatever the channel count.
-4. **One peer connection caps payments at about 17/s** with SQLite here (ordered per-peer processing, one fsynced save
+4. **One peer connection caps payments at about 17/s** (not filed) with SQLite here (ordered per-peer processing, one fsynced save
    per transition); more concurrency only adds latency.

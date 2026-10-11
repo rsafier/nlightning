@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 95 | 97 |
+| open | 0 | 0 | 3 | 96 | 99 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
 | fixed | 15 | 74 | 267 | 536 | 892 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **286** | **653** | **1029** |
+| **Total** | **15** | **75** | **287** | **654** | **1031** |
 
 ### Epics
 
@@ -10938,7 +10938,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `test/NLightning.Integration.Tests/Scale/` (`ScaleNode`, `ScaleChain`, `ChannelScaleSeeder`, `ChannelScaleBenchmarkTests`, `ChannelScaleLivePeerTests`), `src/NLightning.Application/Node/Managers/PeerManager.cs` (`StartAsync`), `docs/agents/CHANNEL_SCALE.md`
 - **Evidence:** no measurement of a node with thousands of channels existed. The benchmark seeds 1,000-10,000 Open anchors channels (real keys, funding transactions on an in-memory chain, commitment snapshots, HTLCs in flight) across up to 1,000 peers, starts the daemon's composition and times every start step, memory, the per-block rounds, `FindChannels`, a live peer reestablishing 1,000 channels and payments. It found NL-1358..NL-1360 and this: the startup dials went in database order 16 at a time, so with 190 stored peers that never answer listed before a live peer, the live peer's channels became usable 166.6 s after the start (about 15 minutes with 1,000 such peers).
 - **Fix:** the startup dials go to the peers seen last first (`PeerModel.LastSeenAt` descending); the live peer above is usable when the start returns (16.3 s, the `StartupDialWait`). Test `PeerManagerTests.Given_ManyDeadPeersListedFirst_When_StartAsync_Then_ThePeerSeenLastIsDialedFirst`. The benchmark is `Explicit` + `Category=Long` (`ChannelScaleBenchmarkTests.Given_1000To10000Channels_*`, `ChannelScaleLivePeerTests.Given_ThousandsOfChannelsAndALivePeer_*`, sizes and Postgres from `NLTG_SCALE_*`), with two default-run variants of about 8 s together; results and method in `docs/agents/CHANNEL_SCALE.md`.
-- **Follow-ups (not filed separately):** (1) startup reads every channel three times: the peer manager's per-channel consistent load, the registration's state reload for pending HTLC events, and the signer's lazy signing-info load (6.6 s + 4 s at 10,000 on SQLite, 40 s + 18 s on Postgres; linear); (2) `OnchainResolutionExecutor` has no stop, so a round scheduled by the last block runs on after the service provider is disposed (`ObjectDisposedException` logged); (3) any stored peer that never answers makes every start wait the full `StartupDialWait` (NL-576, by design); (4) one peer connection caps payments at about 17/s on SQLite (ordered per-peer processing, one fsynced save per transition).
+- **Follow-ups:** startup reads every channel three times (NL-1354); the on-chain executor's round outlives the node's stop (NL-1355); any stored peer that never answers makes every start wait the full `StartupDialWait` (NL-576, by design); one peer connection caps payments at about 17/s on SQLite (ordered per-peer processing, one fsynced save per transition).
 
 ### NL-1358 Loading the retired short channel ids at startup was quadratic in the channel count
 - **Status:** fixed (branch `wip/channel-scale`)
@@ -10963,3 +10963,22 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `src/NLightning.Application/Payments/Send/LocalLiquidityEstimator.cs` (`MaxSendableMsat`), `PaymentRoutePlanner.BuildPaths`
 - **Evidence:** the planner orders the candidate channels by what each can send, and the estimator answers by a binary search of about 30 dry-run `SendAdd`s (half of them throwing `CommitmentRefusedException`) per channel, for every payment. With 1,000 channels to the payee, payments ran at 6.5-7.2/s with a p50 of 109-123 ms against 48 ms with 50 channels (NL-1357's live-peer benchmark; stack samples all in `LocalLiquidityEstimator.TrySend`).
 - **Fix:** the answer without planned HTLCs, a function of the immutable snapshot alone, is kept per snapshot instance and `cltv_expiry` in a `ConditionalWeakTable` (released with the snapshot). Payments over 1,000 channels to the payee: 13-17/s, p50 40 ms. Tests: `LocalLiquidityEstimatorTests` (kept answer equals a fresh search, planned HTLCs bypass it, another snapshot is searched again).
+
+### NL-1354 Startup reads every channel three times
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `UnitOfWork.GetPeersForStartupAsync` / `ChannelDbRepository.LoadAllConsistentlyAsync`, `ChannelManager.QueuePendingDomainEventsAsync`, `LocalLightningSigner` with `ChannelSigningInfoDbRepository` (lazy load)
+- **Evidence:** NL-1357's benchmark at 10,000 channels: the peer manager's start loads each channel in its own consistent read (about 9 queries; 4.8 s on SQLite, 26 s on Postgres), each registration reloads the channel's state only to get the settled-HTLC archive the load already read and dropped (1.9 s, 14 s), and the signer loads each channel's signing info on its first use (4.0 s, 17.8 s). Restart 6.6 s on SQLite and 39.7 s on Postgres; linear, about 30 round trips per channel.
+- **Fix sketch:** carry the settled archive the load read into the registration (no second state load), and load the signers' signing info in one set-based query at startup; keep the per-channel consistent read (NL-810) or batch it by snapshot.
+- **Blocks/Blocked-by:** found by NL-1357
+
+### NL-1355 The on-chain executor's round runs on after the node stops
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`ScheduleRound`/`LoopAsync`, no stop), the hosts' stop order (`NltgDaemonService`, `NLightningTestNode`)
+- **Evidence:** `ChannelManager` schedules a round on every block (`Task.Run(LoopAsync)`) and nothing stops or awaits it: in NL-1357's benchmark a round scheduled by the last block (and one at height 0) ran after the chain monitor and peers had stopped and the service provider was disposed, logging `ObjectDisposedException` ("Releasing the wallet inputs of discarded splices ... failed") and `no such table` errors; it opened the node's SQLite database after the test deleted it, creating an empty file. Between the peers' stop and the provider's disposal the same round can still save resolutions and publish sweeps or penalties.
+- **Fix sketch:** a `StopAsync` on the executor that cancels its loop token and awaits the running round, called by the hosts with the safety services (before the chain monitor and the peers stop); `ScheduleRound` refuses after the stop.
+- **Blocks/Blocked-by:** found by NL-1357
+
