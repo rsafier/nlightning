@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.LndGrpc.Tls;
 
+using Domain.Node.Provisioning;
+
 /// <summary>
 /// The server certificate in the data directory, as LND makes it (<c>lnd/cert</c>): <c>tls.cert</c> and
 /// <c>tls.key</c>, an ECDSA P-256 self-signed CA certificate (key usages digital signature, key encipherment and
@@ -19,14 +21,21 @@ public static class LndTlsFiles
     public const string KeyFileName = "tls.key";
 
     /// <summary>The certificate with its private key, generating the pair when missing.</summary>
+    /// <param name="allowGenerate">False (<c>Node:Startup:RequireProvisionedSecrets</c>, NL-1352): a missing pair is
+    /// refused instead of written.</param>
     public static X509Certificate2 EnsureCreated(string directory, LndGrpcOptions options, TimeProvider timeProvider,
-                                                 ILogger? logger = null)
+                                                 ILogger? logger = null, bool allowGenerate = true)
     {
-        Directory.CreateDirectory(directory);
         var certificatePath = Path.Combine(directory, CertificateFileName);
         var keyPath = Path.Combine(directory, KeyFileName);
         if (!File.Exists(certificatePath) || !File.Exists(keyPath))
         {
+            if (!allowGenerate)
+                throw new InvalidOperationException(
+                    $"The LND gRPC TLS pair ({certificatePath}, {keyPath}) is missing and "
+                  + "Node:Startup:RequireProvisionedSecrets forbids generating it: deliver lndGrpcTls with the key.");
+
+            Directory.CreateDirectory(directory);
             if (File.Exists(certificatePath))
                 File.Delete(certificatePath);
             if (File.Exists(keyPath))
@@ -36,7 +45,16 @@ public static class LndTlsFiles
             logger?.LogInformation("Generated the LND gRPC TLS certificate {Path}", certificatePath);
         }
 
-        var certificate = X509Certificate2.CreateFromPemFile(certificatePath, keyPath);
+        return ForServer(X509Certificate2.CreateFromPemFile(certificatePath, keyPath));
+    }
+
+    /// <summary>The certificate delivered with the key of a locked start (NL-1352), from memory: no file is read or
+    /// written.</summary>
+    public static X509Certificate2 FromProvisioned(ProvisionedTls tls) =>
+        ForServer(X509Certificate2.CreateFromPem(tls.CertificatePem, tls.KeyPem));
+
+    private static X509Certificate2 ForServer(X509Certificate2 certificate)
+    {
         if (!OperatingSystem.IsWindows())
             return certificate;
 

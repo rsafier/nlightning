@@ -13,6 +13,7 @@ sources) are unchanged.
 | `Node:Startup:Provisioner` | `Socket` | `Socket` (the Unix socket below) or `Stdin` (frames on stdin, answers on stdout; the log goes to stderr until the node starts; not with `--daemon`). |
 | `Node:Startup:SocketPath` | `<configPath>/provisioning/key.sock` | Absolute path, at most 103 bytes (`sun_path`). |
 | `Node:Startup:FailureDelayMilliseconds` | 1000 | Wait after a refused key before the next attempt is read (0-60000). |
+| `Node:Startup:RequireProvisionedSecrets` | false | Never write a secret the node would generate (NL-1352, below). |
 
 `Node:Startup` is read by hand (`Configuration/StartupOptions`), not bound. `--check-config` validates it when the start
 is locked. A locked start refuses `Signing:Mode` other than `Local`, any password option and `NLTG_PASSWORD`. A key file
@@ -36,17 +37,30 @@ Transports implement `Provisioning/IProvisioningEndpoint` (`UnixSocketProvisioni
 ## Protocol
 
 One frame each way per exchange (`Daemon.Contracts/Provisioning/KeyProvisioningProtocol`): the 4 bytes `NLKP`, version
-byte `1`, a big-endian u32 body length (at most 1 MiB) and a UTF-8 JSON body (camelCase, source-generated, AOT safe).
+byte `1` or `2`, a big-endian u32 body length (at most 1 MiB) and a UTF-8 JSON body (camelCase, source-generated, AOT
+safe). Version 2 (NL-1352) adds the file secrets and `returnLndGrpcMacaroons` below; everything else is version 1. A
+request is written as version 1 unless it uses a version 2 field, so a newer client still unlocks an older node; an older
+node refuses a version 2 frame ("Unsupported key provisioning version 2") before it unlocks, instead of ignoring secrets
+it does not know and writing their files. The node answers in the request's version and refuses version 2 fields in a
+version 1 frame. (Optional fields in a version 1 frame were rejected for that reason: System.Text.Json skips unknown
+properties, so an older node would have started and generated the files the secrets were meant to replace.)
 
 Request:
 
 ```json
 { "kind": "unlock", "material": "encrypted-key-file", "keyFile": "<base64 of the key file>", "password": "...",
-  "secrets": { "databaseConnectionString": "...", "bitcoinRpcUser": "...", "bitcoinRpcPassword": "..." } }
+  "secrets": { "databaseConnectionString": "...", "bitcoinRpcUser": "...", "bitcoinRpcPassword": "...",
+               "torControlPassword": "...", "torOnionServiceKey": "ED25519-V3:<base64>",
+               "lndGrpcMacaroonRootKey": "<base64 of 32 bytes>",
+               "lndGrpcTls": { "certificate": "<PEM>", "key": "<PEM>", "clientCa": "<PEM, optional>" },
+               "cashuProcessorTls": { "certificate": "...", "key": "...", "clientCa": "..." },
+               "lnBackendTls": { "certificate": "...", "key": "...", "clientCa": "..." } },
+  "returnLndGrpcMacaroons": true }
 ```
 
 `{ "kind": "status" }` asks for the state only. Response:
-`{ "ok": true|false, "state": "locked"|"unlocked", "network": "regtest", "nodeId": "<hex, once unlocked>", "error": "..." }`.
+`{ "ok": true|false, "state": "locked"|"unlocked", "network": "regtest", "nodeId": "<hex, once unlocked>", "error": "...",
+"lndGrpcMacaroons": { "admin": "<base64>", "readonly": "...", "invoice": "..." } }` (the macaroons only when asked).
 A malformed frame or body is answered with an error that never echoes the body.
 
 ## Key provisioners
@@ -87,12 +101,48 @@ reservation; the larger of its index and the delivered file's is used, so a key 
 rewritten in a locked start) cannot hand out a used index (SECURITY_REVIEW SR-19). Passwords and key bytes are never
 logged; the delivered key file's buffer is wiped after use (the password is a managed string, as in a normal start).
 
-## Secrets bundle (NL-1352, partial)
+## Secrets bundle (NL-1352)
 
-The unlock request may carry `databaseConnectionString`, `bitcoinRpcUser` and `bitcoinRpcPassword`; each given value
-replaces `Database:ConnectionString`, `Bitcoin:RpcUser` or `Bitcoin:RpcPassword` in memory, before the identity check.
-Without them the configuration is used as today. The LND gRPC macaroon root key and TLS key, the Tor onion service key
-and the CDK processor's TLS keys are still files.
+The unlock request may carry every secret the node otherwise reads from disk or its configuration, so a locked node can
+run with no secret at rest (the audit and the security notes are `SECURITY_REVIEW.md` SR-39):
+
+| Field | Replaces | Use |
+|---|---|---|
+| `databaseConnectionString` | `Database:ConnectionString` | configuration, in memory |
+| `bitcoinRpcUser`, `bitcoinRpcPassword` | `Bitcoin:RpcUser`, `Bitcoin:RpcPassword` | configuration, in memory |
+| `torControlPassword` (v2) | `Node:Tor:ControlPassword` | configuration, in memory |
+| `torOnionServiceKey` (v2) | the file `Node:Tor:OnionServiceKeyFile` | handed to Tor's `ADD_ONION`; the file is neither read nor written |
+| `lndGrpcMacaroonRootKey` (v2) | `<lnd-grpc>/macaroons.key` and the baked `*.macaroon` | root key id 0 in memory; no macaroon file is written; other root key ids (`BakeMacaroon` with `root_key_id`) are refused |
+| `lndGrpcTls` (v2) | `<lnd-grpc>/tls.cert`, `tls.key`, `LndGrpc:ClientCaPath` | the server certificate (and client CA) from memory |
+| `cashuProcessorTls`, `lnBackendTls` (v2) | `TlsDirectory/server.pem`, `server.key`, `ca.pem` | the server certificate and client CA from memory (`TlsDirectory` may be unset) |
+
+Each value is checked before the key is opened (`Provisioning/ProvisionedSecretsReader`): the root key is base64 of 32
+bytes, a certificate or CA is PEM or base64 DER, a key is PEM (any label `X509Certificate2.CreateFromPem` reads) or
+base64 PKCS#8 DER and must match its certificate, the onion key is `ED25519-V3:` and base64 of 64 bytes. A malformed value
+keeps the node locked and is answered with a reason that names the field, never its value. The accepted values become
+`Domain/Node/Provisioning/ProvisionedSecrets`, one DI singleton (`AddProvisionedSecrets` in `ConfigureNltgServices`)
+that `LndGrpcHost`/`LndRootKeyStore`, `TorOnionService` and the Cashu/LN backend options (`UseProvisionedTls`, a method
+the configuration binder never binds) read. A secret not delivered keeps today's file behavior, so a standard node
+upgrades in place.
+
+`returnLndGrpcMacaroons: true` (needs `lndGrpcMacaroonRootKey`) bakes the default `admin`, `readonly` and `invoice`
+macaroons in memory and returns them in the answer: the provisioner already holds the root key, so nothing new leaves
+the node, and the node writes none. The client writes them with `--macaroon-dir`.
+
+`Node:Startup:RequireProvisionedSecrets=true` (locked starts only; default false) forbids writing any secret the node
+would generate on its first start. The unlock is refused (node still locked, nothing written) while an enabled consumer
+has neither a delivered value nor an existing file: `LndGrpc:Enabled` without `lndGrpcTls` and `tls.cert`/`tls.key`, or
+without `lndGrpcMacaroonRootKey` and `macaroons.key` (unless `AllowNoMacaroons`), and an onion service
+(`Node:Tor` `IsOnionServiceEnabled`) without `torOnionServiceKey` and its key file. Should a consumer still reach
+generation, it refuses instead: `LndTlsFiles`/`LndMacaroonFiles` throw at the gRPC host's start, missing default
+macaroons of a file root key are not baked, new root key ids are refused, and the Tor onion service is not started. Files
+that exist are still used.
+
+With every secret delivered the configuration directory needs only `appsettings.json` (`ProvisionedLockedStartTests`:
+LND gRPC, Cashu processor, LN backend and Tor onion service run and the directory still holds that one file; the
+database, data rather than a secret, lives where the delivered connection string points). A running node still writes
+its non-secret state there: the public `nltg.key-index`, the per-process IPC cookie (SR-15), logs, the fee cache and,
+with backups on, `channel.backup` (encrypted to the node key).
 
 ## Client
 
@@ -100,14 +150,16 @@ The client (`NLightning.Client`, `nltg` in its usage text):
 
 ```bash
 NLightning.Client --network regtest unlock --status
-NLightning.Client --network regtest unlock --key-file node.key.json --password-file pw [--secrets-file secrets.json] [--socket <path>]
+NLightning.Client --network regtest unlock --key-file node.key.json --password-file pw [--secrets-file secrets.json] [--macaroon-dir <dir>] [--socket <path>]
 NLightning.Client --network regtest unlock --key-file node.key.json --password-stdin < pw
 # Stdin provisioner: the request frame goes to the daemon's stdin
 NLightning.Client unlock --key-file node.key.json --password-file pw --frame | NLightning.Daemon --network regtest --locked
 ```
 
 `unlock` does not use the IPC pipe. It prints the state, network and node id; exit 0 when the node is (now) unlocked or
-answered a status, 1 otherwise. The secrets file is the `secrets` JSON object above.
+answered a status, 1 otherwise. The secrets file is the `secrets` JSON object above. `--macaroon-dir <dir>` (with a
+secrets file holding `lndGrpcMacaroonRootKey`, not with `--frame`) asks for the default macaroons and writes
+`admin.macaroon`, `readonly.macaroon` and `invoice.macaroon` there, owner-only and never over an existing file.
 
 ## Tests
 
@@ -115,5 +167,9 @@ answered a status, 1 otherwise. The secrets file is the `secrets` JSON object ab
 to their own node ids, wrong password and a database or key index of another key refused with every file unchanged,
 channel key index persisted and restored, secrets applied in memory, no secret in any file or log line;
 `KeyProvisioningSocketTests`: the client over the socket, socket and directory modes, malformed frames, stale and live
-sockets, the stdin endpoint; `LockedStartOptionsTests`) and
+sockets, the stdin endpoint, `--macaroon-dir`; `LockedStartOptionsTests`; `ProvisionedSecretsTests`: frame versions,
+every secret read and refused by name, `RequireProvisionedSecrets`, macaroons returned; `ProvisionedLockedStartTests`:
+the end-to-end start with every secret and only `appsettings.json` on disk), the consumers' own tests
+(`LndGrpc.Tests/LndGrpcHostTests.Provisioned`, `Infrastructure.Tests/Transport/Tor/TorOnionServiceTests`,
+`Daemon.Tests/Cashu/CashuPaymentProcessorHostTests`, `LnBackend.Tests/LnBackendOptionsTests`) and
 `test/NLightning.Infrastructure.Bitcoin.Tests/Managers/SecureKeyManagerKeyFileContentTests`.

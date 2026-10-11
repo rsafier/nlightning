@@ -86,7 +86,8 @@ internal static class LockedStartupRunner
         try
         {
             startup = new LockedStartup(network, configPath, initialConfig, provisioner, logger,
-                                        TimeSpan.FromMilliseconds(startupOptions.FailureDelayMilliseconds));
+                                        TimeSpan.FromMilliseconds(startupOptions.FailureDelayMilliseconds),
+                                        requireProvisionedSecrets: startupOptions.RequireProvisionedSecrets);
             var unlocked = await startup.RunAsync(stop.Token);
             return unlocked is null ? (1, null) : (null, unlocked);
         }

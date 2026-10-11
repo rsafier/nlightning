@@ -31,6 +31,13 @@ public sealed class StartupOptions
     /// <summary>The wait after a refused key before the next attempt is read (default 1 s, 0..60 s).</summary>
     public int FailureDelayMilliseconds { get; set; } = 1000;
 
+    /// <summary>
+    /// <c>Node:Startup:RequireProvisionedSecrets</c> (NL-1352, locked starts only): the node writes no secret it would
+    /// otherwise generate on its first start (the LND gRPC TLS pair and macaroon root key, the Tor onion service key):
+    /// an unlock request that leaves one with neither a delivered value nor an existing file is refused.
+    /// </summary>
+    public bool RequireProvisionedSecrets { get; set; }
+
     public bool IsStdin => string.Equals(Provisioner, StdinProvisioner, StringComparison.OrdinalIgnoreCase);
 
     public static StartupOptions Read(IConfiguration configuration, bool lockedFlag)
@@ -41,7 +48,8 @@ public sealed class StartupOptions
             Locked = lockedFlag || section.GetValue("Locked", false),
             Provisioner = section["Provisioner"] is { Length: > 0 } provisioner ? provisioner : SocketProvisioner,
             SocketPath = section["SocketPath"] is { Length: > 0 } socketPath ? socketPath : null,
-            FailureDelayMilliseconds = section.GetValue("FailureDelayMilliseconds", 1000)
+            FailureDelayMilliseconds = section.GetValue("FailureDelayMilliseconds", 1000),
+            RequireProvisionedSecrets = section.GetValue("RequireProvisionedSecrets", false)
         };
     }
 

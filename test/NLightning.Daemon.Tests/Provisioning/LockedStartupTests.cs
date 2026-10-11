@@ -339,7 +339,11 @@ internal sealed class QueueKeyProvisioner : IKeyProvisioner
 
     public sealed record Pending(Task<KeyProvisioningResponse> Response);
 
-    public Pending Enqueue(byte[] keyFile, string password, KeyProvisioningSecrets? secrets = null)
+    public Pending EnqueueReturningMacaroons(byte[] keyFile, string password, KeyProvisioningSecrets secrets) =>
+        Enqueue(keyFile, password, secrets, returnLndGrpcMacaroons: true);
+
+    public Pending Enqueue(byte[] keyFile, string password, KeyProvisioningSecrets? secrets = null,
+                           bool returnLndGrpcMacaroons = false)
     {
         var response = new TaskCompletionSource<KeyProvisioningResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -349,7 +353,7 @@ internal sealed class QueueKeyProvisioner : IKeyProvisioner
                                       {
                                           response.TrySetResult(answer);
                                           return Task.CompletedTask;
-                                      }));
+                                      }, returnLndGrpcMacaroons));
         return new Pending(response.Task);
     }
 

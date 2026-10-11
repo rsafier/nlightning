@@ -49,6 +49,7 @@ using Domain.Client.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Options;
+using Domain.Node.Provisioning;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -79,14 +80,18 @@ public static class NodeServiceExtensions
     /// <summary>
     /// Registers all NLTG application services for dependency injection
     /// </summary>
+    /// <param name="provisionedSecrets">File secrets a locked start received with the key (NL-1352): their consumers
+    /// (LND gRPC, Tor onion service, Cashu processor, LN backend) use them from memory instead of their files.</param>
     public static IHostBuilder ConfigureNltgServices(this IHostBuilder hostBuilder, ISecureKeyManager secureKeyManager,
                                                      string configPath, RemoteSignerConnection? remoteConnection = null,
-                                                         VlsSignerConnection? vlsConnection = null)
+                                                         VlsSignerConnection? vlsConnection = null,
+                                                     ProvisionedSecrets? provisionedSecrets = null)
     {
         return hostBuilder.ConfigureServices((hostContext, services) =>
         {
             // The whole node graph, shared with the Docker integration tests
             services.AddNltgNodeServices(hostContext.Configuration, secureKeyManager, remoteConnection, vlsConnection);
+            services.AddProvisionedSecrets(provisionedSecrets ?? ProvisionedSecrets.None);
 
             // The gossip graph (ingress + pruner, BOLT 7 G2-T4/G2-T5) is registered first: it starts before the daemon
             // service (the pruner follows the chain monitor's first block) and stops after it (the graph is written
@@ -134,6 +139,22 @@ public static class NodeServiceExtensions
                 return new CookieFileAuthenticator(cookiePath, logger);
             });
         });
+    }
+
+    /// <summary>
+    /// Registers the file secrets a locked start received (NL-1352) for their consumers, and hands the TLS material
+    /// to the Cashu processor's and the LN backend's options (before their validation).
+    /// </summary>
+    public static IServiceCollection AddProvisionedSecrets(this IServiceCollection services,
+                                                           ProvisionedSecrets secrets)
+    {
+        services.RemoveAll<ProvisionedSecrets>();
+        services.AddSingleton(secrets);
+        if (secrets.CashuProcessorTls is { } cashuTls)
+            services.PostConfigure<CashuPaymentProcessorOptions>(o => o.UseProvisionedTls(cashuTls));
+        if (secrets.LnBackendTls is { } backendTls)
+            services.PostConfigure<LnBackendOptions>(o => o.UseProvisionedTls(backendTls));
+        return services;
     }
 
     /// <summary>

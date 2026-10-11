@@ -205,14 +205,17 @@ public class LoopPersistenceTests
         await Assert.ThrowsAsync<IOException>(() => restarted.SnapshotAsync(Ct));
         using (var checkpoint = database.CreateContext())
             Assert.Equal(2U, checkpoint.ImportedWatchIndexes.Single().Height);
+        // The block notice runs the update on a background worker: wait for its passes, not for a wall clock that a
+        // loaded run can outlast (NL-1353)
+        var passes = System.Threading.Channels.Channel.CreateUnbounded<bool>();
+        restarted.OnUpdatePassCompleted += () => passes.Writer.TryWrite(true);
+        restarted.OnObservationFailed += e => passes.Writer.TryComplete(e);
         monitor.Raise(m => m.OnWalletTransactionsProcessed += null!, new Domain.Bitcoin.Events.NewBlockEventArgs(3, blocks[3].GetHash().ToBytes()));
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(10));
         while (true)
         {
+            await passes.Reader.ReadAsync(Ct);
             using var context = database.CreateContext();
             if (context.ImportedWatchIndexes.Single().Height == 3) break;
-            await Task.Delay(10, deadline.Token);
         }
         Assert.Single((await restarted.SnapshotAsync(Ct)).Outputs);
         chain.Verify(c => c.GetBlockAsync(1), Times.Once());

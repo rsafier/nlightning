@@ -7,6 +7,7 @@ namespace NLightning.Infrastructure.Tests.Transport.Tor;
 
 using Domain.Gossip.Addresses;
 using Domain.Node.Options;
+using Domain.Node.Provisioning;
 using Infrastructure.Transport.Tor;
 
 public sealed class TorOnionServiceTests : IDisposable
@@ -305,6 +306,46 @@ public sealed class TorOnionServiceTests : IDisposable
         Assert.True(service.Loop.IsCompleted);
     }
 
+    [Fact]
+    public async Task Given_AProvisionedKey_When_Started_Then_ItIsUsedFromMemoryAndNoFileIsWritten()
+    {
+        // Arrange: the key delivered with the node key of a locked start (NL-1352)
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort();
+        var key = "ED25519-V3:" + Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(64));
+        var service = CreateService(tor, secrets: new ProvisionedSecrets { TorOnionServiceKey = key });
+
+        // Act
+        await service.StartAsync(ct);
+        await WaitUntilAsync(() => service.OnionHost is not null, ct);
+
+        // Assert: Tor got our key, nothing asked for a new one, and the key file was never created
+        Assert.Contains($"ADD_ONION {key} Port=9735,127.0.0.1:19735", tor.Commands);
+        Assert.DoesNotContain(tor.Commands, c => c.StartsWith("ADD_ONION NEW", StringComparison.Ordinal));
+        Assert.False(File.Exists(KeyFile));
+        Assert.False(Directory.Exists(_directory));
+        await service.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_RefusedGenerationAndNoKey_When_Started_Then_NoServiceIsCreatedAndNoFileWritten()
+    {
+        // Arrange: Node:Startup:RequireProvisionedSecrets, no key file and no delivered key
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort();
+        var service = CreateService(tor, secrets: new ProvisionedSecrets { RefuseGeneration = true });
+
+        // Act
+        await service.StartAsync(ct);
+        await service.Loop.WaitAsync(s_timeout, ct);
+
+        // Assert: the loop gave up before ADD_ONION
+        Assert.Null(service.OnionHost);
+        Assert.DoesNotContain(tor.Commands, c => c.StartsWith("ADD_ONION", StringComparison.Ordinal));
+        Assert.False(File.Exists(KeyFile));
+        await service.StopAsync();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory))
@@ -312,7 +353,7 @@ public sealed class TorOnionServiceTests : IDisposable
     }
 
     private TorOnionService CreateService(FakeTorControlPort tor, Action<TorOptions>? configure = null,
-                                          ILogger<TorOnionService>? logger = null)
+                                          ILogger<TorOnionService>? logger = null, ProvisionedSecrets? secrets = null)
     {
         var options = new NodeOptions
         {
@@ -325,7 +366,7 @@ public sealed class TorOnionServiceTests : IDisposable
             }
         };
         configure?.Invoke(options.Tor);
-        return new TorOnionService(logger ?? NullLogger<TorOnionService>.Instance, Options.Create(options))
+        return new TorOnionService(logger ?? NullLogger<TorOnionService>.Instance, Options.Create(options), secrets)
         {
             RetryInitialDelay = TimeSpan.FromMilliseconds(100)
         };

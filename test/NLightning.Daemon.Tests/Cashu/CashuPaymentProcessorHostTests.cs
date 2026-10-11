@@ -10,6 +10,7 @@ namespace NLightning.Daemon.Tests.Cashu;
 
 using Application.Payments.Events;
 using Domain.Node.Options;
+using Domain.Node.Provisioning;
 using Domain.Payments.Interfaces;
 using Domain.Protocol.ValueObjects;
 using NLightning.Cashu.PaymentProcessor;
@@ -84,6 +85,54 @@ public sealed class CashuPaymentProcessorHostTests
             await host.StopAsync(CancellationToken.None);
             Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public async Task Given_ProvisionedTls_When_ClientsConnect_Then_MutualTlsIsServedWithoutAnyFile()
+    {
+        // Arrange: the TLS material delivered with the key of a locked start (NL-1352), no TlsDirectory
+        using var ca = Authority("nltg-mint-ca");
+        using var server = Issue(ca, "127.0.0.1", ServerAuthentication, IPAddress.Loopback);
+        using var client = Issue(ca, "cdk-mintd", ClientAuthentication);
+        var options = new CashuPaymentProcessorOptions { Enabled = true, Port = 0, ListenAddress = "127.0.0.1" };
+        options.UseProvisionedTls(new ProvisionedTls(server.ExportCertificatePem(),
+                                                     server.GetECDsaPrivateKey()!.ExportPkcs8PrivateKeyPem(),
+                                                     ca.ExportCertificatePem()));
+        Assert.Empty(options.GetValidationErrors(isMainnet: false));
+        await using var provider = Provider(options);
+        var host = provider.GetRequiredService<CashuPaymentProcessorHost>();
+        await host.StartAsync(Ct);
+        try
+        {
+            // Act
+            var good = await GetSettingsAsync(host.BoundPort!.Value, client);
+            var none = await Assert.ThrowsAsync<RpcException>(() => GetSettingsAsync(host.BoundPort.Value, null));
+
+            // Assert
+            Assert.Equal("sat", good.Unit);
+            Assert.Equal(StatusCode.Unavailable, none.StatusCode);
+        }
+        finally
+        {
+            await host.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public void Given_ProvisionedTlsWithoutAClientCa_When_Validated_Then_ANonLoopbackListenerIsRefused()
+    {
+        // Arrange
+        using var ca = Authority("nltg-mint-ca");
+        using var server = Issue(ca, "server", ServerAuthentication);
+        var options = new CashuPaymentProcessorOptions { Enabled = true, ListenAddress = "0.0.0.0" };
+        options.UseProvisionedTls(new ProvisionedTls(server.ExportCertificatePem(),
+                                                     server.GetECDsaPrivateKey()!.ExportPkcs8PrivateKeyPem(), null));
+
+        // Act
+        var errors = options.GetValidationErrors(isMainnet: false);
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains("is not loopback", StringComparison.Ordinal));
     }
 
     [Fact]

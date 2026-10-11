@@ -88,11 +88,11 @@ public sealed class LnBackendHost : IHostedService, IAsyncDisposable
         }
 
         BoundPort = new Uri(addresses.First()).Port;
-        var mutualTls = !string.IsNullOrWhiteSpace(_options.TlsDirectory) && HasCa(_options.TlsDirectory);
+        var mutualTls = _options.AuthenticatesClients();
         _logger.LogInformation("LN backend (hold.Hold, cln.Node) listening on {Address}:{Port} ({Transport})",
                                _options.ListenAddress, BoundPort,
                                mutualTls ? "mTLS"
-                                         : string.IsNullOrWhiteSpace(_options.TlsDirectory)
+                                         : !_options.HasTls()
                                              ? "insecure loopback: h2c, no client authentication"
                                              : "insecure loopback: TLS without client authentication");
         if (!mutualTls)
@@ -123,15 +123,27 @@ public sealed class LnBackendHost : IHostedService, IAsyncDisposable
     private void ConfigureListener(ListenOptions listen)
     {
         listen.Protocols = HttpProtocols.Http2;
-        if (string.IsNullOrWhiteSpace(_options.TlsDirectory))
+        if (!_options.HasTls())
             return;
 
-        var directory = _options.TlsDirectory;
-        var certificate = X509Certificate2.CreateFromPemFile(Path.Combine(directory, "server.pem"),
+        X509Certificate2 certificate;
+        X509Certificate2? ca;
+        if (_options.GetProvisionedTls() is { } provisioned)
+        {
+            // Delivered with the key of a locked start (NL-1352): from memory, no file read
+            certificate = X509Certificate2.CreateFromPem(provisioned.CertificatePem, provisioned.KeyPem);
+            ca = provisioned.ClientCaPem is null ? null : X509Certificate2.CreateFromPem(provisioned.ClientCaPem);
+        }
+        else
+        {
+            var directory = _options.TlsDirectory!;
+            certificate = X509Certificate2.CreateFromPemFile(Path.Combine(directory, "server.pem"),
                                                              Path.Combine(directory, "server.key"));
-        var ca = HasCa(directory)
+            ca = HasCa(directory)
                      ? X509CertificateLoader.LoadCertificateFromFile(Path.Combine(directory, "ca.pem"))
                      : null;
+        }
+
         listen.UseHttps(https =>
         {
             https.ServerCertificate = certificate;

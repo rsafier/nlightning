@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Daemon.Provisioning;
 
 using Contracts.Provisioning;
+using Domain.Node.Provisioning;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Domain.Signing;
@@ -14,11 +15,14 @@ using Extensions;
 using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories.Database.Node;
+using LndGrpc.Macaroons;
 
 /// <summary>The key a locked start accepted, and the configuration the node starts with.</summary>
 /// <param name="KeyManager">The node key, in memory only.</param>
 /// <param name="Configuration">The node configuration with the delivered secrets (NL-1352) laid over it.</param>
-public sealed record UnlockedNode(SecureKeyManager KeyManager, IConfiguration Configuration);
+/// <param name="Secrets">The delivered file secrets (NL-1352), used from memory by their consumers.</param>
+public sealed record UnlockedNode(SecureKeyManager KeyManager, IConfiguration Configuration,
+                                  ProvisionedSecrets Secrets);
 
 /// <summary>
 /// The locked start (NL-1349, <c>docs/agents/LOCKED_START.md</c>): waits for key material from an
@@ -44,7 +48,8 @@ public sealed class LockedStartup(
     IKeyProvisioner provisioner,
     ILogger logger,
     TimeSpan failureDelay,
-    Action<IServiceCollection, IConfiguration, ISecureKeyManager>? addNodeServices = null)
+    Action<IServiceCollection, IConfiguration, ISecureKeyManager>? addNodeServices = null,
+    bool requireProvisionedSecrets = false)
 {
     /// <summary>The migration that creates <c>NodeSigningEnrollments</c> (its id per provider ends with it).</summary>
     private const string EnrollmentMigrationSuffix = "_AddNodeSigningEnrollment";
@@ -75,12 +80,14 @@ public sealed class LockedStartup(
                 return null;
             }
 
-            var (unlocked, error) = await TryUnlockAsync(attempt, cancellationToken);
+            var (unlocked, error, macaroons) = await TryUnlockAsync(attempt, cancellationToken);
             if (unlocked is not null)
             {
                 _nodeId = Convert.ToHexString((byte[])unlocked.KeyManager.GetNodePubKey()).ToLowerInvariant();
                 logger.LogInformation("Key accepted for node {NodeId}; starting the node", _nodeId);
-                await TryRespondAsync(attempt, Status(), cancellationToken);
+                var response = Status();
+                response.LndGrpcMacaroons = macaroons;
+                await TryRespondAsync(attempt, response, cancellationToken);
                 return unlocked;
             }
 
@@ -96,10 +103,22 @@ public sealed class LockedStartup(
         }
     }
 
-    private async Task<(UnlockedNode?, string?)> TryUnlockAsync(KeyProvisioningAttempt attempt,
-                                                               CancellationToken cancellationToken)
+    private async Task<(UnlockedNode?, string?, Dictionary<string, string>?)> TryUnlockAsync(
+        KeyProvisioningAttempt attempt, CancellationToken cancellationToken)
     {
         var nodeConfiguration = ApplySecrets(configuration, attempt.Secrets);
+
+        // The file secrets are checked before the key is opened: a malformed one keeps the node locked (NL-1352)
+        ProvisionedSecrets secrets;
+        try
+        {
+            secrets = ProvisionedSecretsReader.Read(attempt.Secrets, attempt.ReturnLndGrpcMacaroons,
+                                                    requireProvisionedSecrets, nodeConfiguration, configPath);
+        }
+        catch (InvalidDataException e)
+        {
+            return (null, e.Message, null);
+        }
 
         KeyIndexFile indexFile;
         try
@@ -108,7 +127,7 @@ public sealed class LockedStartup(
         }
         catch (InvalidDataException e)
         {
-            return (null, e.Message);
+            return (null, e.Message, null);
         }
 
         SecureKeyManager keyManager;
@@ -126,7 +145,7 @@ public sealed class LockedStartup(
                       || e.GetType() == typeof(Exception)
                              ? e.Message
                              : e.GetType().Name;
-            return (null, $"The key could not be opened: {reason}");
+            return (null, $"The key could not be opened: {reason}", null);
         }
 
         try
@@ -135,13 +154,16 @@ public sealed class LockedStartup(
                 throw new KeyRefusedException(
                     "The key does not match this node: its key index file belongs to another node key.");
 
-            await CheckIdentityAsync(nodeConfiguration, keyManager, cancellationToken);
-            return (new UnlockedNode(keyManager, nodeConfiguration), null);
+            var macaroons = await CheckIdentityAsync(nodeConfiguration, keyManager,
+                                                     attempt.ReturnLndGrpcMacaroons
+                                                         ? secrets.LndGrpcMacaroonRootKey
+                                                         : null, cancellationToken);
+            return (new UnlockedNode(keyManager, nodeConfiguration, secrets), null, macaroons);
         }
         catch (Exception e) when (e is KeyRefusedException or InvalidOperationException)
         {
             keyManager.Dispose();
-            return (null, e.Message);
+            return (null, e.Message, null);
         }
         catch
         {
@@ -166,8 +188,12 @@ public sealed class LockedStartup(
         }
     }
 
-    private async Task CheckIdentityAsync(IConfiguration nodeConfiguration, SecureKeyManager keyManager,
-                                          CancellationToken cancellationToken)
+    /// <returns>The default LND gRPC macaroons (base64) baked under <paramref name="macaroonRootKey"/>, when given.
+    /// </returns>
+    private async Task<Dictionary<string, string>?> CheckIdentityAsync(IConfiguration nodeConfiguration,
+                                                                     SecureKeyManager keyManager,
+                                                                     byte[]? macaroonRootKey,
+                                                                     CancellationToken cancellationToken)
     {
         var services = new ServiceCollection();
         // The check's own lines, and the framework's warnings and errors only (no SQL at Information)
@@ -198,6 +224,14 @@ public sealed class LockedStartup(
         // 2. As a normal start: migrations when configured, then the enrollment (enroll, adopt or validate)
         await DatabaseExtensions.MigrateDatabaseIfConfiguredAsync(provider);
         await NodeSigningEnrollmentExtensions.ValidateNodeSigningEnrollmentAsync(provider, cancellationToken);
+
+        // 3. The macaroons of a provisioned root key go back to the provisioner, which holds the root key already; the
+        // node writes none (NL-1352)
+        return macaroonRootKey is null
+                   ? null
+                   : LndMacaroonFiles.BakeDefaults(macaroonRootKey, provider)
+                                     .ToDictionary(m => m.Key, m => Convert.ToBase64String(m.Value),
+                                                   StringComparer.Ordinal);
     }
 
     private static void DefaultAddNodeServices(IServiceCollection services, IConfiguration nodeConfiguration,
@@ -217,6 +251,8 @@ public sealed class LockedStartup(
             values["Bitcoin:RpcUser"] = rpcUser;
         if (secrets.BitcoinRpcPassword is { Length: > 0 } rpcPassword)
             values["Bitcoin:RpcPassword"] = rpcPassword;
+        if (secrets.TorControlPassword is { Length: > 0 } torControlPassword)
+            values["Node:Tor:ControlPassword"] = torControlPassword;
         if (values.Count == 0)
             return configuration;
 

@@ -40,6 +40,10 @@ public sealed class ImportedTapscriptTracker : IDisposable
     public event EventHandler<WalletTransactionEventArgs>? OnTransactionObserved;
     public event Action<Exception>? OnObservationFailed;
 
+    /// <summary>Raised after each pass of the block-driven background update, succeeded or failed (tests, NL-1353).
+    /// </summary>
+    internal event Action? OnUpdatePassCompleted;
+
     public ImportedTapscriptTracker(IServiceScopeFactory scopes, IBitcoinChainService chain,
                                     IBlockchainMonitor monitor, ILogger<ImportedTapscriptTracker>? logger = null)
     {
@@ -478,6 +482,8 @@ public sealed class ImportedTapscriptTracker : IDisposable
                     _logger.LogWarning(e, "Imported history update failed; the next RPC or block will retry");
                     FailObservers(e);
                 }
+
+                OnUpdatePassCompleted?.Invoke();
             }
         }
         finally
