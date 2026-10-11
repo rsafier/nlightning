@@ -388,9 +388,16 @@ public sealed class AbcdNetwork : IAsyncDisposable
         Console.WriteLine($"[abcd] network ready: {AliceBob}; {BobCarol}; {CarolDavid}");
     }
 
-    private static async Task<AbcdChannel> OpenAsync(string name, NLightningTestNode funder, string peerAddress,
-                                                      LightningMoney? push, CancellationToken cancellationToken)
+    /// <summary>
+    /// Opens one channel once every node is at the chain tip. The previous open mined 6 blocks and returned at our
+    /// <c>channel_ready</c>, while LND may still be processing them; LND's fundee refuses an <c>open_channel</c> while
+    /// its wallet is not synced to the chain ("Synchronizing blockchain", sent as "funding failed due to internal
+    /// error"), which a loaded cluster turned into a lost ABCD build (NL-505).
+    /// </summary>
+    private async Task<AbcdChannel> OpenAsync(string name, NLightningTestNode funder, string peerAddress,
+                                              LightningMoney? push, CancellationToken cancellationToken)
     {
+        await ChainSync.WaitAllAtTipAsync(_fixture, Nodes, cancellationToken);
         var channel = await funder.OpenChannelAsync(new OpenChannelClientRequest(peerAddress, ChannelCapacity)
         {
             PushAmount = push,
