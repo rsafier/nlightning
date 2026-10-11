@@ -601,6 +601,9 @@ public sealed class ChannelCloseCoordinator
         {
             m.SetClosingTransaction(closingTransaction);
             m.SetCloseTerms(MutualCloseProtocol.Legacy, null); // NL-610: the funder pays the closing fee
+            if (decision.Reply) // our echo goes out after this save (NL-1377)
+                m.SetLastSentClosingSigned(new SentClosingSigned(decision.FeeSat, signed.Transaction.TxId,
+                                                                 ourSignature));
             if (m.State < ChannelState.Closing)
                 m.UpdateState(ChannelState.Closing);
         });
@@ -799,8 +802,10 @@ public sealed class ChannelCloseCoordinator
     }
 
     /// <summary>
-    /// Our <c>closing_signed</c> at <paramref name="feeSat"/>: our variant (our dust limit), signed. Through VLS the
-    /// signature's workflow is consumed in its own save before the message can go out (NL-1330).
+    /// Our <c>closing_signed</c> at <paramref name="feeSat"/>: our variant (our dust limit), signed, and saved on the
+    /// channel before the message can go out (NL-1377: with it the peer can broadcast that closing transaction, so a
+    /// process that takes the channel over from the same database sees what we signed, and a node write fence checks
+    /// the save before anything leaves). Through VLS the signature's workflow is consumed in the same save (NL-1330).
     /// </summary>
     private async Task<ClosingSignedMessage> CreateClosingSignedAsync(ChannelModel channel, CloseContext context,
                                                                       ulong feeSat, ClosingFeeRange? feeRange)
@@ -814,10 +819,9 @@ public sealed class ChannelCloseCoordinator
         workflow?.Activate();
         var signature = SignClosingModel(channel, model, unsigned);
         if (workflow is not null)
-        {
             await workflow.StageConsumeAsync(_unitOfWork);
-            await _unitOfWork.SaveChangesAsync();
-        }
+        var sent = new SentClosingSigned(feeSat, unsigned.TxId, signature);
+        await PersistAsync(channel, m => m.SetLastSentClosingSigned(sent));
 
         return CreateClosingSigned(channel.ChannelId, feeSat, feeRange, signature);
     }

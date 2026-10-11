@@ -213,6 +213,18 @@ public class ChannelEntity
     public bool? LocalIsCloser { get; set; }
 
     /// <summary>
+    /// Our latest legacy <c>closing_signed</c>: its <c>fee_satoshis</c>, the txid of the closing transaction we signed
+    /// and our signature, saved before it is sent, or null (migration <c>AddSentClosingSigned</c>, NL-1377).
+    /// </summary>
+    public long? LastSentClosingFeeSatoshis { get; set; }
+
+    /// <summary>The txid of the closing transaction of our latest legacy <c>closing_signed</c>, or null.</summary>
+    public TxId? LastSentClosingTxId { get; set; }
+
+    /// <summary>Our signature in our latest legacy <c>closing_signed</c>, or null.</summary>
+    public byte[]? LastSentClosingSignature { get; set; }
+
+    /// <summary>
     /// The peer's <c>announcement_signatures</c> node signature for the channel's current short channel id, or null
     /// (migration <c>AddGossipGraph</c>, BOLT 7 plan G1).
     /// </summary>

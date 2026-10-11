@@ -1429,6 +1429,15 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("LastReceivedSignature")
                         .HasColumnType("varbinary(64)");
 
+                    b.Property<long?>("LastSentClosingFeeSatoshis")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("LastSentClosingSignature")
+                        .HasColumnType("varbinary(64)");
+
+                    b.Property<byte[]>("LastSentClosingTxId")
+                        .HasColumnType("varbinary(32)");
+
                     b.Property<byte>("LastSentOrder")
                         .HasColumnType("tinyint");
 

@@ -1822,6 +1822,18 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("last_received_signature");
 
+                    b.Property<long?>("LastSentClosingFeeSatoshis")
+                        .HasColumnType("bigint")
+                        .HasColumnName("last_sent_closing_fee_satoshis");
+
+                    b.Property<byte[]>("LastSentClosingSignature")
+                        .HasColumnType("bytea")
+                        .HasColumnName("last_sent_closing_signature");
+
+                    b.Property<byte[]>("LastSentClosingTxId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("last_sent_closing_tx_id");
+
                     b.Property<byte>("LastSentOrder")
                         .HasColumnType("smallint")
                         .HasColumnName("last_sent_order");

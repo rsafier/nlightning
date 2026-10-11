@@ -82,6 +82,12 @@ public static class ChannelEntityConfiguration
             // NL-610 (migration AddMutualCloseTerms)
             entity.Property(e => e.CloseProtocol).IsRequired(false);
             entity.Property(e => e.LocalIsCloser).IsRequired(false);
+            // NL-1377 (migration AddSentClosingSigned)
+            entity.Property(e => e.LastSentClosingFeeSatoshis).IsRequired(false);
+            entity.Property(e => e.LastSentClosingTxId)
+                  .HasConversion<TxIdConverter>()
+                  .IsRequired(false);
+            entity.Property(e => e.LastSentClosingSignature).IsRequired(false);
             entity.Property(e => e.RemoteAnnouncementNodeSig).IsRequired(false);
             entity.Property(e => e.RemoteAnnouncementBitcoinSig).IsRequired(false);
             entity.Property(e => e.LocalAnnouncementSigsSentAt)
@@ -167,6 +173,9 @@ public static class ChannelEntityConfiguration
         entity.Property(e => e.RemoteShutdownScript).HasColumnType("varbinary(max)");
         entity.Property(e => e.ClosingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
         entity.Property(e => e.ClosingTransaction).HasColumnType("varbinary(max)");
+        entity.Property(e => e.LastSentClosingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
+        entity.Property(e => e.LastSentClosingSignature)
+              .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.RemoteAnnouncementNodeSig)
               .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.RemoteAnnouncementBitcoinSig)

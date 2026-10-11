@@ -12,6 +12,7 @@ using Bitcoin;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Closing;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -505,6 +506,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             ClosingTransaction = channelModel.ClosingTransaction?.RawTxBytes,
             CloseProtocol = (byte?)channelModel.CloseProtocol,
             LocalIsCloser = channelModel.LocalIsCloser,
+            LastSentClosingFeeSatoshis = channelModel.LastSentClosingSigned is { } sentClosing
+                                             ? checked((long)sentClosing.FeeSatoshis)
+                                             : null,
+            LastSentClosingTxId = channelModel.LastSentClosingSigned?.ClosingTxId,
+            LastSentClosingSignature = channelModel.LastSentClosingSigned?.Signature.Value,
 
             RemoteAnnouncementNodeSig = channelModel.RemoteAnnouncementSignatures?.NodeSignature.Value,
             RemoteAnnouncementBitcoinSig = channelModel.RemoteAnnouncementSignatures?.BitcoinSignature.Value,
@@ -614,6 +620,13 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             channelModel.SetClosingTransaction(new SignedTransaction(closingTxId, closingTx));
         if (channelEntity.CloseProtocol is { } closeProtocol)
             channelModel.SetCloseTerms((MutualCloseProtocol)closeProtocol, channelEntity.LocalIsCloser);
+        if (channelEntity is
+            {
+                LastSentClosingFeeSatoshis: { } sentFee, LastSentClosingTxId: { } sentTxId,
+                LastSentClosingSignature: { } sentSignature
+            })
+            channelModel.SetLastSentClosingSigned(new SentClosingSigned((ulong)sentFee, sentTxId,
+                                                                        new CompactSignature(sentSignature)));
         if (channelEntity is { RemoteAnnouncementNodeSig: { } nodeSig, RemoteAnnouncementBitcoinSig: { } bitcoinSig })
             channelModel.SetRemoteAnnouncementSignatures(
                 new ChannelAnnouncementSignatures(new CompactSignature(nodeSig), new CompactSignature(bitcoinSig)));

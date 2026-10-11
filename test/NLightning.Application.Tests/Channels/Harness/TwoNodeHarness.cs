@@ -22,6 +22,7 @@ using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Closing;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Commitments.Interfaces;
@@ -849,6 +850,7 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     private AnnouncementState? _stagedAnnouncement;
     private ulong? _stagedShutdownBoundary;
     private bool _shutdownBoundaryStaged;
+    private SentClosingSigned? _stagedClosingSigned;
 
     public ChannelCommitments? Committed { get; private set; }
 
@@ -869,7 +871,11 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
                                                     channel.LocalAnnouncementSignaturesSentAt);
         _stagedShutdownBoundary = channel.FirstRemoteHtlcIdAfterLocalShutdown;
         _shutdownBoundaryStaged = true;
+        _stagedClosingSigned = channel.LastSentClosingSigned;
     }
+
+    /// <summary>The channel row's latest legacy <c>closing_signed</c> of ours as last saved (NL-1377).</summary>
+    public SentClosingSigned? CommittedClosingSigned { get; private set; }
 
     /// <summary>
     /// The channel row's <c>FirstRemoteHtlcIdAfterLocalShutdown</c> as last saved (NL-279); null while the row was
@@ -993,7 +999,10 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         if (_stagedAnnouncement is not null)
             CommittedAnnouncement = _stagedAnnouncement;
         if (_shutdownBoundaryStaged)
+        {
             CommittedShutdownBoundary = _stagedShutdownBoundary;
+            CommittedClosingSigned = _stagedClosingSigned;
+        }
         DiscardStaged();
         Saves++;
     }
@@ -1009,6 +1018,7 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         _stagedAnnouncement = null;
         _stagedShutdownBoundary = null;
         _shutdownBoundaryStaged = false;
+        _stagedClosingSigned = null;
     }
 
     public Task InitializeAsync(ChannelCommitments snapshot, ChannelStateExtras? extras = null)

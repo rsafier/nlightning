@@ -36,7 +36,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 "NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity",
                 typeof(ChannelEntity),
                 baseEntityType,
-                propertyCount: 49,
+                propertyCount: 52,
                 navigationCount: 6,
                 foreignKeyCount: 1,
                 unnamedIndexCount: 1,
@@ -1053,6 +1053,163 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         lastReceivedSignature.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
         lastReceivedSignature.AddAnnotation("Relational:ColumnName", "last_received_signature");
 
+        var lastSentClosingFeeSatoshis = runtimeEntityType.AddProperty(
+            "LastSentClosingFeeSatoshis",
+            typeof(long?),
+            propertyInfo: typeof(ChannelEntity).GetProperty("LastSentClosingFeeSatoshis", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+            fieldInfo: typeof(ChannelEntity).GetField("<LastSentClosingFeeSatoshis>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+            nullable: true);
+        lastSentClosingFeeSatoshis.SetGetter(
+            long? (ChannelEntity instance) => ChannelEntityUnsafeAccessors.LastSentClosingFeeSatoshis(instance),
+            bool (ChannelEntity instance) => !(ChannelEntityUnsafeAccessors.LastSentClosingFeeSatoshis(instance).HasValue));
+        lastSentClosingFeeSatoshis.SetSetter(
+            ChannelEntity (ChannelEntity instance, long? value) =>
+            {
+                ChannelEntityUnsafeAccessors.LastSentClosingFeeSatoshis(instance) = value;
+                return instance;
+            });
+        lastSentClosingFeeSatoshis.SetMaterializationSetter(
+            ChannelEntity (ChannelEntity instance, long? value) =>
+            {
+                ChannelEntityUnsafeAccessors.LastSentClosingFeeSatoshis(instance) = value;
+                return instance;
+            });
+        lastSentClosingFeeSatoshis.SetAccessors(
+            long? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentClosingFeeSatoshis(((ChannelEntity)(entry.Entity))),
+            long? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentClosingFeeSatoshis(((ChannelEntity)(entry.Entity))),
+            long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(lastSentClosingFeeSatoshis, 19),
+            long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(lastSentClosingFeeSatoshis));
+        lastSentClosingFeeSatoshis.SetPropertyIndexes(
+            index: 19,
+            originalValueIndex: 19,
+            shadowIndex: -1,
+            relationshipIndex: -1,
+            storeGenerationIndex: -1);
+        lastSentClosingFeeSatoshis.TypeMapping = LongTypeMapping.Default.Clone(
+            comparer: new ValueComparer<long>(
+                bool (long v1, long v2) => v1 == v2,
+                int (long v) => ((object)v).GetHashCode(),
+                long (long v) => v),
+            keyComparer: new ValueComparer<long>(
+                bool (long v1, long v2) => v1 == v2,
+                int (long v) => ((object)v).GetHashCode(),
+                long (long v) => v),
+            providerValueComparer: new ValueComparer<long>(
+                bool (long v1, long v2) => v1 == v2,
+                int (long v) => ((object)v).GetHashCode(),
+                long (long v) => v));
+        lastSentClosingFeeSatoshis.SetComparer(new NullableValueComparer<long>(lastSentClosingFeeSatoshis.TypeMapping.Comparer));
+        lastSentClosingFeeSatoshis.SetKeyComparer(new NullableValueComparer<long>(lastSentClosingFeeSatoshis.TypeMapping.KeyComparer));
+        lastSentClosingFeeSatoshis.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+        lastSentClosingFeeSatoshis.AddAnnotation("Relational:ColumnName", "last_sent_closing_fee_satoshis");
+
+        var lastSentClosingSignature = runtimeEntityType.AddProperty(
+            "LastSentClosingSignature",
+            typeof(byte[]),
+            propertyInfo: typeof(ChannelEntity).GetProperty("LastSentClosingSignature", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+            fieldInfo: typeof(ChannelEntity).GetField("<LastSentClosingSignature>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+            nullable: true);
+        lastSentClosingSignature.SetGetter(
+            byte[] (ChannelEntity instance) => ChannelEntityUnsafeAccessors.LastSentClosingSignature(instance),
+            bool (ChannelEntity instance) => ChannelEntityUnsafeAccessors.LastSentClosingSignature(instance) == null);
+        lastSentClosingSignature.SetSetter(
+            ChannelEntity (ChannelEntity instance, byte[] value) =>
+            {
+                ChannelEntityUnsafeAccessors.LastSentClosingSignature(instance) = value;
+                return instance;
+            });
+        lastSentClosingSignature.SetMaterializationSetter(
+            ChannelEntity (ChannelEntity instance, byte[] value) =>
+            {
+                ChannelEntityUnsafeAccessors.LastSentClosingSignature(instance) = value;
+                return instance;
+            });
+        lastSentClosingSignature.SetAccessors(
+            byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentClosingSignature(((ChannelEntity)(entry.Entity))),
+            byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentClosingSignature(((ChannelEntity)(entry.Entity))),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(lastSentClosingSignature, 20),
+            byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(lastSentClosingSignature));
+        lastSentClosingSignature.SetPropertyIndexes(
+            index: 20,
+            originalValueIndex: 20,
+            shadowIndex: -1,
+            relationshipIndex: -1,
+            storeGenerationIndex: -1);
+        lastSentClosingSignature.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
+            comparer: new ValueComparer<byte[]>(
+                bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                int (byte[] v) => ((object)v).GetHashCode(),
+                byte[] (byte[] v) => v),
+            keyComparer: new ValueComparer<byte[]>(
+                bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                byte[] (byte[] source) => source.ToArray()),
+            providerValueComparer: new ValueComparer<byte[]>(
+                bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                byte[] (byte[] source) => source.ToArray()));
+        lastSentClosingSignature.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+        lastSentClosingSignature.AddAnnotation("Relational:ColumnName", "last_sent_closing_signature");
+
+        var lastSentClosingTxId = runtimeEntityType.AddProperty(
+            "LastSentClosingTxId",
+            typeof(TxId?),
+            propertyInfo: typeof(ChannelEntity).GetProperty("LastSentClosingTxId", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+            fieldInfo: typeof(ChannelEntity).GetField("<LastSentClosingTxId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+            nullable: true,
+            valueConverter: new TxIdConverter());
+        lastSentClosingTxId.SetGetter(
+            TxId? (ChannelEntity instance) => ChannelEntityUnsafeAccessors.LastSentClosingTxId(instance),
+            bool (ChannelEntity instance) => !(ChannelEntityUnsafeAccessors.LastSentClosingTxId(instance).HasValue));
+        lastSentClosingTxId.SetSetter(
+            ChannelEntity (ChannelEntity instance, TxId? value) =>
+            {
+                ChannelEntityUnsafeAccessors.LastSentClosingTxId(instance) = value;
+                return instance;
+            });
+        lastSentClosingTxId.SetMaterializationSetter(
+            ChannelEntity (ChannelEntity instance, TxId? value) =>
+            {
+                ChannelEntityUnsafeAccessors.LastSentClosingTxId(instance) = value;
+                return instance;
+            });
+        lastSentClosingTxId.SetAccessors(
+            TxId? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentClosingTxId(((ChannelEntity)(entry.Entity))),
+            TxId? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentClosingTxId(((ChannelEntity)(entry.Entity))),
+            TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(lastSentClosingTxId, 21),
+            TxId? (IInternalEntry entry) => entry.GetCurrentValue<TxId?>(lastSentClosingTxId));
+        lastSentClosingTxId.SetPropertyIndexes(
+            index: 21,
+            originalValueIndex: 21,
+            shadowIndex: -1,
+            relationshipIndex: -1,
+            storeGenerationIndex: -1);
+        lastSentClosingTxId.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
+            comparer: new ValueComparer<TxId>(
+                bool (TxId v1, TxId v2) => v1.Equals(v2),
+                int (TxId v) => ((object)v).GetHashCode(),
+                TxId (TxId v) => v),
+            keyComparer: new ValueComparer<TxId>(
+                bool (TxId v1, TxId v2) => v1.Equals(v2),
+                int (TxId v) => ((object)v).GetHashCode(),
+                TxId (TxId v) => v),
+            providerValueComparer: new ValueComparer<byte[]>(
+                bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                byte[] (byte[] source) => source.ToArray()),
+            converter: new ValueConverter<TxId, byte[]>(
+                byte[] (TxId txId) => ((byte[])txId),
+                TxId (byte[] bytes) => new TxId(bytes)),
+            jsonValueReaderWriter: new JsonConvertedValueReaderWriter<TxId, byte[]>(
+                JsonByteArrayReaderWriter.Instance,
+                new ValueConverter<TxId, byte[]>(
+                    byte[] (TxId txId) => ((byte[])txId),
+                    TxId (byte[] bytes) => new TxId(bytes))));
+        lastSentClosingTxId.SetComparer(new NullableValueComparer<TxId>(lastSentClosingTxId.TypeMapping.Comparer));
+        lastSentClosingTxId.SetKeyComparer(new NullableValueComparer<TxId>(lastSentClosingTxId.TypeMapping.KeyComparer));
+        lastSentClosingTxId.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+        lastSentClosingTxId.AddAnnotation("Relational:ColumnName", "last_sent_closing_tx_id");
+
         var lastSentOrder = runtimeEntityType.AddProperty(
             "LastSentOrder",
             typeof(byte),
@@ -1077,11 +1234,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         lastSentOrder.SetAccessors(
             byte (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentOrder(((ChannelEntity)(entry.Entity))),
             byte (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentOrder(((ChannelEntity)(entry.Entity))),
-            byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(lastSentOrder, 19),
+            byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(lastSentOrder, 22),
             byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(lastSentOrder));
         lastSentOrder.SetPropertyIndexes(
-            index: 19,
-            originalValueIndex: 19,
+            index: 22,
+            originalValueIndex: 22,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1127,11 +1284,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         lastSentSignature.SetAccessors(
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentSignature(((ChannelEntity)(entry.Entity))),
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LastSentSignature(((ChannelEntity)(entry.Entity))),
-            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(lastSentSignature, 20),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(lastSentSignature, 23),
             byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(lastSentSignature));
         lastSentSignature.SetPropertyIndexes(
-            index: 20,
-            originalValueIndex: 20,
+            index: 23,
+            originalValueIndex: 23,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1176,11 +1333,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         localAnnouncementSigsSentAt.SetAccessors(
             DateTimeOffset? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalAnnouncementSigsSentAt(((ChannelEntity)(entry.Entity))),
             DateTimeOffset? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalAnnouncementSigsSentAt(((ChannelEntity)(entry.Entity))),
-            DateTimeOffset? (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset?>(localAnnouncementSigsSentAt, 21),
+            DateTimeOffset? (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset?>(localAnnouncementSigsSentAt, 24),
             DateTimeOffset? (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset?>(localAnnouncementSigsSentAt));
         localAnnouncementSigsSentAt.SetPropertyIndexes(
-            index: 21,
-            originalValueIndex: 21,
+            index: 24,
+            originalValueIndex: 24,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1234,11 +1391,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         localBalanceMsat.SetAccessors(
             long (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalBalanceMsat(((ChannelEntity)(entry.Entity))),
             long (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalBalanceMsat(((ChannelEntity)(entry.Entity))),
-            long (IInternalEntry entry) => entry.ReadOriginalValue<long>(localBalanceMsat, 22),
+            long (IInternalEntry entry) => entry.ReadOriginalValue<long>(localBalanceMsat, 25),
             long (IInternalEntry entry) => entry.GetCurrentValue<long>(localBalanceMsat));
         localBalanceMsat.SetPropertyIndexes(
-            index: 22,
-            originalValueIndex: 22,
+            index: 25,
+            originalValueIndex: 25,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1281,11 +1438,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         localCommitmentNumber.SetAccessors(
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalCommitmentNumber(((ChannelEntity)(entry.Entity))),
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalCommitmentNumber(((ChannelEntity)(entry.Entity))),
-            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(localCommitmentNumber, 23),
+            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(localCommitmentNumber, 26),
             ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(localCommitmentNumber));
         localCommitmentNumber.SetPropertyIndexes(
-            index: 23,
-            originalValueIndex: 23,
+            index: 26,
+            originalValueIndex: 26,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1342,11 +1499,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         localFundingContributionSatoshis.SetAccessors(
             long? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalFundingContributionSatoshis(((ChannelEntity)(entry.Entity))),
             long? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalFundingContributionSatoshis(((ChannelEntity)(entry.Entity))),
-            long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(localFundingContributionSatoshis, 24),
+            long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(localFundingContributionSatoshis, 27),
             long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(localFundingContributionSatoshis));
         localFundingContributionSatoshis.SetPropertyIndexes(
-            index: 24,
-            originalValueIndex: 24,
+            index: 27,
+            originalValueIndex: 27,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1392,11 +1549,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         localIsCloser.SetAccessors(
             bool? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalIsCloser(((ChannelEntity)(entry.Entity))),
             bool? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalIsCloser(((ChannelEntity)(entry.Entity))),
-            bool? (IInternalEntry entry) => entry.ReadOriginalValue<bool?>(localIsCloser, 25),
+            bool? (IInternalEntry entry) => entry.ReadOriginalValue<bool?>(localIsCloser, 28),
             bool? (IInternalEntry entry) => entry.GetCurrentValue<bool?>(localIsCloser));
         localIsCloser.SetPropertyIndexes(
-            index: 25,
-            originalValueIndex: 25,
+            index: 28,
+            originalValueIndex: 28,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1441,11 +1598,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         localNextHtlcId.SetAccessors(
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalNextHtlcId(((ChannelEntity)(entry.Entity))),
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalNextHtlcId(((ChannelEntity)(entry.Entity))),
-            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(localNextHtlcId, 26),
+            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(localNextHtlcId, 29),
             ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(localNextHtlcId));
         localNextHtlcId.SetPropertyIndexes(
-            index: 26,
-            originalValueIndex: 26,
+            index: 29,
+            originalValueIndex: 29,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1501,11 +1658,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         localRevocationNumber.SetAccessors(
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalRevocationNumber(((ChannelEntity)(entry.Entity))),
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalRevocationNumber(((ChannelEntity)(entry.Entity))),
-            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(localRevocationNumber, 27),
+            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(localRevocationNumber, 30),
             ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(localRevocationNumber));
         localRevocationNumber.SetPropertyIndexes(
-            index: 27,
-            originalValueIndex: 27,
+            index: 30,
+            originalValueIndex: 30,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1562,11 +1719,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         localShutdownScript.SetAccessors(
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalShutdownScript(((ChannelEntity)(entry.Entity))),
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.LocalShutdownScript(((ChannelEntity)(entry.Entity))),
-            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(localShutdownScript, 28),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(localShutdownScript, 31),
             byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(localShutdownScript));
         localShutdownScript.SetPropertyIndexes(
-            index: 28,
-            originalValueIndex: 28,
+            index: 31,
+            originalValueIndex: 31,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1610,11 +1767,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         maxDustHtlcExposureMsat.SetAccessors(
             ulong? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.MaxDustHtlcExposureMsat(((ChannelEntity)(entry.Entity))),
             ulong? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.MaxDustHtlcExposureMsat(((ChannelEntity)(entry.Entity))),
-            ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(maxDustHtlcExposureMsat, 29),
+            ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(maxDustHtlcExposureMsat, 32),
             ulong? (IInternalEntry entry) => entry.GetCurrentValue<ulong?>(maxDustHtlcExposureMsat));
         maxDustHtlcExposureMsat.SetPropertyIndexes(
-            index: 29,
-            originalValueIndex: 29,
+            index: 32,
+            originalValueIndex: 32,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1672,11 +1829,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         pushAmountMsat.SetAccessors(
             long? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.PushAmountMsat(((ChannelEntity)(entry.Entity))),
             long? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.PushAmountMsat(((ChannelEntity)(entry.Entity))),
-            long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(pushAmountMsat, 30),
+            long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(pushAmountMsat, 33),
             long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(pushAmountMsat));
         pushAmountMsat.SetPropertyIndexes(
-            index: 30,
-            originalValueIndex: 30,
+            index: 33,
+            originalValueIndex: 33,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1723,11 +1880,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteAlias.SetAccessors(
             ShortChannelId? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteAlias(((ChannelEntity)(entry.Entity))),
             ShortChannelId? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteAlias(((ChannelEntity)(entry.Entity))),
-            ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(remoteAlias, 31),
+            ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(remoteAlias, 34),
             ShortChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ShortChannelId?>(remoteAlias));
         remoteAlias.SetPropertyIndexes(
-            index: 31,
-            originalValueIndex: 31,
+            index: 34,
+            originalValueIndex: 34,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1781,11 +1938,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteAnnouncementBitcoinSig.SetAccessors(
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteAnnouncementBitcoinSig(((ChannelEntity)(entry.Entity))),
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteAnnouncementBitcoinSig(((ChannelEntity)(entry.Entity))),
-            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteAnnouncementBitcoinSig, 32),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteAnnouncementBitcoinSig, 35),
             byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(remoteAnnouncementBitcoinSig));
         remoteAnnouncementBitcoinSig.SetPropertyIndexes(
-            index: 32,
-            originalValueIndex: 32,
+            index: 35,
+            originalValueIndex: 35,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1829,11 +1986,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteAnnouncementNodeSig.SetAccessors(
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteAnnouncementNodeSig(((ChannelEntity)(entry.Entity))),
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteAnnouncementNodeSig(((ChannelEntity)(entry.Entity))),
-            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteAnnouncementNodeSig, 33),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteAnnouncementNodeSig, 36),
             byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(remoteAnnouncementNodeSig));
         remoteAnnouncementNodeSig.SetPropertyIndexes(
-            index: 33,
-            originalValueIndex: 33,
+            index: 36,
+            originalValueIndex: 36,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1877,11 +2034,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteBalanceMsat.SetAccessors(
             long (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteBalanceMsat(((ChannelEntity)(entry.Entity))),
             long (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteBalanceMsat(((ChannelEntity)(entry.Entity))),
-            long (IInternalEntry entry) => entry.ReadOriginalValue<long>(remoteBalanceMsat, 34),
+            long (IInternalEntry entry) => entry.ReadOriginalValue<long>(remoteBalanceMsat, 37),
             long (IInternalEntry entry) => entry.GetCurrentValue<long>(remoteBalanceMsat));
         remoteBalanceMsat.SetPropertyIndexes(
-            index: 34,
-            originalValueIndex: 34,
+            index: 37,
+            originalValueIndex: 37,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1924,11 +2081,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteCommitmentNumber.SetAccessors(
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteCommitmentNumber(((ChannelEntity)(entry.Entity))),
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteCommitmentNumber(((ChannelEntity)(entry.Entity))),
-            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteCommitmentNumber, 35),
+            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteCommitmentNumber, 38),
             ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(remoteCommitmentNumber));
         remoteCommitmentNumber.SetPropertyIndexes(
-            index: 35,
-            originalValueIndex: 35,
+            index: 38,
+            originalValueIndex: 38,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1985,11 +2142,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteFundingContributionSatoshis.SetAccessors(
             long? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteFundingContributionSatoshis(((ChannelEntity)(entry.Entity))),
             long? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteFundingContributionSatoshis(((ChannelEntity)(entry.Entity))),
-            long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(remoteFundingContributionSatoshis, 36),
+            long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(remoteFundingContributionSatoshis, 39),
             long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(remoteFundingContributionSatoshis));
         remoteFundingContributionSatoshis.SetPropertyIndexes(
-            index: 36,
-            originalValueIndex: 36,
+            index: 39,
+            originalValueIndex: 39,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2034,11 +2191,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteNextHtlcId.SetAccessors(
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteNextHtlcId(((ChannelEntity)(entry.Entity))),
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteNextHtlcId(((ChannelEntity)(entry.Entity))),
-            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteNextHtlcId, 37),
+            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteNextHtlcId, 40),
             ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(remoteNextHtlcId));
         remoteNextHtlcId.SetPropertyIndexes(
-            index: 37,
-            originalValueIndex: 37,
+            index: 40,
+            originalValueIndex: 40,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2095,11 +2252,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteNextNonces.SetAccessors(
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteNextNonces(((ChannelEntity)(entry.Entity))),
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteNextNonces(((ChannelEntity)(entry.Entity))),
-            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteNextNonces, 38),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteNextNonces, 41),
             byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(remoteNextNonces));
         remoteNextNonces.SetPropertyIndexes(
-            index: 38,
-            originalValueIndex: 38,
+            index: 41,
+            originalValueIndex: 41,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2144,11 +2301,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteNextPerCommitmentPoint.SetAccessors(
             CompactPubKey? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteNextPerCommitmentPoint(((ChannelEntity)(entry.Entity))),
             CompactPubKey? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteNextPerCommitmentPoint(((ChannelEntity)(entry.Entity))),
-            CompactPubKey? (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey?>(remoteNextPerCommitmentPoint, 39),
+            CompactPubKey? (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey?>(remoteNextPerCommitmentPoint, 42),
             CompactPubKey? (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey?>(remoteNextPerCommitmentPoint));
         remoteNextPerCommitmentPoint.SetPropertyIndexes(
-            index: 39,
-            originalValueIndex: 39,
+            index: 42,
+            originalValueIndex: 42,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2202,11 +2359,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteNodeId.SetAccessors(
             CompactPubKey (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteNodeId(((ChannelEntity)(entry.Entity))),
             CompactPubKey (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteNodeId(((ChannelEntity)(entry.Entity))),
-            CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(remoteNodeId, 40),
+            CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(remoteNodeId, 43),
             CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(remoteNodeId));
         remoteNodeId.SetPropertyIndexes(
-            index: 40,
-            originalValueIndex: 40,
+            index: 43,
+            originalValueIndex: 43,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2258,11 +2415,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteRevocationNumber.SetAccessors(
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteRevocationNumber(((ChannelEntity)(entry.Entity))),
             ulong (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteRevocationNumber(((ChannelEntity)(entry.Entity))),
-            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteRevocationNumber, 41),
+            ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteRevocationNumber, 44),
             ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(remoteRevocationNumber));
         remoteRevocationNumber.SetPropertyIndexes(
-            index: 41,
-            originalValueIndex: 41,
+            index: 44,
+            originalValueIndex: 44,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2319,11 +2476,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         remoteShutdownScript.SetAccessors(
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteShutdownScript(((ChannelEntity)(entry.Entity))),
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RemoteShutdownScript(((ChannelEntity)(entry.Entity))),
-            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteShutdownScript, 42),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteShutdownScript, 45),
             byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(remoteShutdownScript));
         remoteShutdownScript.SetPropertyIndexes(
-            index: 42,
-            originalValueIndex: 42,
+            index: 45,
+            originalValueIndex: 45,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2367,11 +2524,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         revocationLogFromNumber.SetAccessors(
             ulong? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RevocationLogFromNumber(((ChannelEntity)(entry.Entity))),
             ulong? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.RevocationLogFromNumber(((ChannelEntity)(entry.Entity))),
-            ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(revocationLogFromNumber, 43),
+            ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(revocationLogFromNumber, 46),
             ulong? (IInternalEntry entry) => entry.GetCurrentValue<ulong?>(revocationLogFromNumber));
         revocationLogFromNumber.SetPropertyIndexes(
-            index: 43,
-            originalValueIndex: 43,
+            index: 46,
+            originalValueIndex: 46,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2429,11 +2586,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         sentCommitDiff.SetAccessors(
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.SentCommitDiff(((ChannelEntity)(entry.Entity))),
             byte[] (IInternalEntry entry) => ChannelEntityUnsafeAccessors.SentCommitDiff(((ChannelEntity)(entry.Entity))),
-            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(sentCommitDiff, 44),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(sentCommitDiff, 47),
             byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(sentCommitDiff));
         sentCommitDiff.SetPropertyIndexes(
-            index: 44,
-            originalValueIndex: 44,
+            index: 47,
+            originalValueIndex: 47,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2478,11 +2635,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         shortChannelId.SetAccessors(
             ShortChannelId? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.ShortChannelId(((ChannelEntity)(entry.Entity))),
             ShortChannelId? (IInternalEntry entry) => ChannelEntityUnsafeAccessors.ShortChannelId(((ChannelEntity)(entry.Entity))),
-            ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(shortChannelId, 45),
+            ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(shortChannelId, 48),
             ShortChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ShortChannelId?>(shortChannelId));
         shortChannelId.SetPropertyIndexes(
-            index: 45,
-            originalValueIndex: 45,
+            index: 48,
+            originalValueIndex: 48,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2536,11 +2693,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         state.SetAccessors(
             byte (IInternalEntry entry) => ChannelEntityUnsafeAccessors.State(((ChannelEntity)(entry.Entity))),
             byte (IInternalEntry entry) => ChannelEntityUnsafeAccessors.State(((ChannelEntity)(entry.Entity))),
-            byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(state, 46),
+            byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(state, 49),
             byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(state));
         state.SetPropertyIndexes(
-            index: 46,
-            originalValueIndex: 46,
+            index: 49,
+            originalValueIndex: 49,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2587,11 +2744,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         tags.SetAccessors(
             string (IInternalEntry entry) => ChannelEntityUnsafeAccessors.Tags(((ChannelEntity)(entry.Entity))),
             string (IInternalEntry entry) => ChannelEntityUnsafeAccessors.Tags(((ChannelEntity)(entry.Entity))),
-            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(tags, 47),
+            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(tags, 50),
             string (IInternalEntry entry) => entry.GetCurrentValue<string>(tags));
         tags.SetPropertyIndexes(
-            index: 47,
-            originalValueIndex: 47,
+            index: 50,
+            originalValueIndex: 50,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -2639,11 +2796,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     version.SetAccessors(
         byte (IInternalEntry entry) => ChannelEntityUnsafeAccessors.Version(((ChannelEntity)(entry.Entity))),
         byte (IInternalEntry entry) => ChannelEntityUnsafeAccessors.Version(((ChannelEntity)(entry.Entity))),
-        byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(version, 48),
+        byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(version, 51),
         byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(version));
     version.SetPropertyIndexes(
-        index: 48,
-        originalValueIndex: 48,
+        index: 51,
+        originalValueIndex: 51,
         shadowIndex: -1,
         relationshipIndex: -1,
         storeGenerationIndex: -1);
@@ -2741,6 +2898,9 @@ public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
     var label = runtimeEntityType.FindProperty("Label");
     var lastReceivedPartialSignature = runtimeEntityType.FindProperty("LastReceivedPartialSignature");
     var lastReceivedSignature = runtimeEntityType.FindProperty("LastReceivedSignature");
+    var lastSentClosingFeeSatoshis = runtimeEntityType.FindProperty("LastSentClosingFeeSatoshis");
+    var lastSentClosingSignature = runtimeEntityType.FindProperty("LastSentClosingSignature");
+    var lastSentClosingTxId = runtimeEntityType.FindProperty("LastSentClosingTxId");
     var lastSentOrder = runtimeEntityType.FindProperty("LastSentOrder");
     var lastSentSignature = runtimeEntityType.FindProperty("LastSentSignature");
     var localAnnouncementSigsSentAt = runtimeEntityType.FindProperty("LocalAnnouncementSigsSentAt");
@@ -2784,9 +2944,9 @@ public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
         ISnapshot (IInternalEntry source) =>
         {
             var structuralType = ((ChannelEntity)(source.Entity));
-            var liftedArg = ((ISnapshot)(new Snapshot<ChannelId, AddressType?, uint?, bool?, byte?, byte[], TxId?, bool, byte[], ulong?, long, uint, ushort, TxId, bool, bool, string, byte[], byte[], byte, byte[], DateTimeOffset?, long, ulong, long?, bool?, ulong, ulong, byte[], ulong?>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), (source.GetCurrentValue<AddressType?>(changeAddressAddressType) == null ? null : ((ValueComparer<AddressType?>)(((IProperty)changeAddressAddressType).GetValueComparer())).Snapshot(source.GetCurrentValue<AddressType?>(changeAddressAddressType))), (source.GetCurrentValue<uint?>(changeAddressIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)changeAddressIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(changeAddressIndex))), (source.GetCurrentValue<bool?>(changeAddressIsChange) == null ? null : ((ValueComparer<bool?>)(((IProperty)changeAddressIsChange).GetValueComparer())).Snapshot(source.GetCurrentValue<bool?>(changeAddressIsChange))), (source.GetCurrentValue<byte?>(closeProtocol) == null ? null : ((ValueComparer<byte?>)(((IProperty)closeProtocol).GetValueComparer())).Snapshot(source.GetCurrentValue<byte?>(closeProtocol))), (source.GetCurrentValue<byte[]>(closingTransaction) == null ? null : ((ValueComparer<byte[]>)(((IProperty)closingTransaction).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(closingTransaction))), (source.GetCurrentValue<TxId?>(closingTxId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)closingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(closingTxId))), ((ValueComparer<bool>)(((IProperty)dataLossDetected).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(dataLossDetected)), (source.GetCurrentValue<byte[]>(errorSent) == null ? null : ((ValueComparer<byte[]>)(((IProperty)errorSent).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(errorSent))), (source.GetCurrentValue<ulong?>(firstRemoteHtlcIdAfterLocalShutdown) == null ? null : ((ValueComparer<ulong?>)(((IProperty)firstRemoteHtlcIdAfterLocalShutdown).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(firstRemoteHtlcIdAfterLocalShutdown))), ((ValueComparer<long>)(((IProperty)fundingAmountSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(fundingAmountSatoshis)), ((ValueComparer<uint>)(((IProperty)fundingCreatedAtBlockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(fundingCreatedAtBlockHeight)), ((ValueComparer<ushort>)(((IProperty)fundingOutputIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(fundingOutputIndex)), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)), ((ValueComparer<bool>)(((IProperty)isDualFunded).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isDualFunded)), ((ValueComparer<bool>)(((IProperty)isInitiator).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isInitiator)), (source.GetCurrentValue<string>(label) == null ? null : ((ValueComparer<string>)(((IProperty)label).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(label))), (source.GetCurrentValue<byte[]>(lastReceivedPartialSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)lastReceivedPartialSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(lastReceivedPartialSignature))), (source.GetCurrentValue<byte[]>(lastReceivedSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)lastReceivedSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(lastReceivedSignature))), ((ValueComparer<byte>)(((IProperty)lastSentOrder).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(lastSentOrder)), (source.GetCurrentValue<byte[]>(lastSentSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)lastSentSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(lastSentSignature))), (source.GetCurrentValue<DateTimeOffset?>(localAnnouncementSigsSentAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)localAnnouncementSigsSentAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(localAnnouncementSigsSentAt))), ((ValueComparer<long>)(((IProperty)localBalanceMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(localBalanceMsat)), ((ValueComparer<ulong>)(((IProperty)localCommitmentNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localCommitmentNumber)), (source.GetCurrentValue<long?>(localFundingContributionSatoshis) == null ? null : ((ValueComparer<long?>)(((IProperty)localFundingContributionSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(localFundingContributionSatoshis))), (source.GetCurrentValue<bool?>(localIsCloser) == null ? null : ((ValueComparer<bool?>)(((IProperty)localIsCloser).GetValueComparer())).Snapshot(source.GetCurrentValue<bool?>(localIsCloser))), ((ValueComparer<ulong>)(((IProperty)localNextHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localNextHtlcId)), ((ValueComparer<ulong>)(((IProperty)localRevocationNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localRevocationNumber)), (source.GetCurrentValue<byte[]>(localShutdownScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)localShutdownScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(localShutdownScript))), (source.GetCurrentValue<ulong?>(maxDustHtlcExposureMsat) == null ? null : ((ValueComparer<ulong?>)(((IProperty)maxDustHtlcExposureMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(maxDustHtlcExposureMsat))))));
+            var liftedArg = ((ISnapshot)(new Snapshot<ChannelId, AddressType?, uint?, bool?, byte?, byte[], TxId?, bool, byte[], ulong?, long, uint, ushort, TxId, bool, bool, string, byte[], byte[], long?, byte[], TxId?, byte, byte[], DateTimeOffset?, long, ulong, long?, bool?, ulong>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), (source.GetCurrentValue<AddressType?>(changeAddressAddressType) == null ? null : ((ValueComparer<AddressType?>)(((IProperty)changeAddressAddressType).GetValueComparer())).Snapshot(source.GetCurrentValue<AddressType?>(changeAddressAddressType))), (source.GetCurrentValue<uint?>(changeAddressIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)changeAddressIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(changeAddressIndex))), (source.GetCurrentValue<bool?>(changeAddressIsChange) == null ? null : ((ValueComparer<bool?>)(((IProperty)changeAddressIsChange).GetValueComparer())).Snapshot(source.GetCurrentValue<bool?>(changeAddressIsChange))), (source.GetCurrentValue<byte?>(closeProtocol) == null ? null : ((ValueComparer<byte?>)(((IProperty)closeProtocol).GetValueComparer())).Snapshot(source.GetCurrentValue<byte?>(closeProtocol))), (source.GetCurrentValue<byte[]>(closingTransaction) == null ? null : ((ValueComparer<byte[]>)(((IProperty)closingTransaction).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(closingTransaction))), (source.GetCurrentValue<TxId?>(closingTxId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)closingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(closingTxId))), ((ValueComparer<bool>)(((IProperty)dataLossDetected).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(dataLossDetected)), (source.GetCurrentValue<byte[]>(errorSent) == null ? null : ((ValueComparer<byte[]>)(((IProperty)errorSent).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(errorSent))), (source.GetCurrentValue<ulong?>(firstRemoteHtlcIdAfterLocalShutdown) == null ? null : ((ValueComparer<ulong?>)(((IProperty)firstRemoteHtlcIdAfterLocalShutdown).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(firstRemoteHtlcIdAfterLocalShutdown))), ((ValueComparer<long>)(((IProperty)fundingAmountSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(fundingAmountSatoshis)), ((ValueComparer<uint>)(((IProperty)fundingCreatedAtBlockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(fundingCreatedAtBlockHeight)), ((ValueComparer<ushort>)(((IProperty)fundingOutputIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(fundingOutputIndex)), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)), ((ValueComparer<bool>)(((IProperty)isDualFunded).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isDualFunded)), ((ValueComparer<bool>)(((IProperty)isInitiator).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isInitiator)), (source.GetCurrentValue<string>(label) == null ? null : ((ValueComparer<string>)(((IProperty)label).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(label))), (source.GetCurrentValue<byte[]>(lastReceivedPartialSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)lastReceivedPartialSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(lastReceivedPartialSignature))), (source.GetCurrentValue<byte[]>(lastReceivedSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)lastReceivedSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(lastReceivedSignature))), (source.GetCurrentValue<long?>(lastSentClosingFeeSatoshis) == null ? null : ((ValueComparer<long?>)(((IProperty)lastSentClosingFeeSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(lastSentClosingFeeSatoshis))), (source.GetCurrentValue<byte[]>(lastSentClosingSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)lastSentClosingSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(lastSentClosingSignature))), (source.GetCurrentValue<TxId?>(lastSentClosingTxId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)lastSentClosingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(lastSentClosingTxId))), ((ValueComparer<byte>)(((IProperty)lastSentOrder).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(lastSentOrder)), (source.GetCurrentValue<byte[]>(lastSentSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)lastSentSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(lastSentSignature))), (source.GetCurrentValue<DateTimeOffset?>(localAnnouncementSigsSentAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)localAnnouncementSigsSentAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(localAnnouncementSigsSentAt))), ((ValueComparer<long>)(((IProperty)localBalanceMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(localBalanceMsat)), ((ValueComparer<ulong>)(((IProperty)localCommitmentNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localCommitmentNumber)), (source.GetCurrentValue<long?>(localFundingContributionSatoshis) == null ? null : ((ValueComparer<long?>)(((IProperty)localFundingContributionSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(localFundingContributionSatoshis))), (source.GetCurrentValue<bool?>(localIsCloser) == null ? null : ((ValueComparer<bool?>)(((IProperty)localIsCloser).GetValueComparer())).Snapshot(source.GetCurrentValue<bool?>(localIsCloser))), ((ValueComparer<ulong>)(((IProperty)localNextHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localNextHtlcId)))));
             var structuralType0 = ((ChannelEntity)(source.Entity));
-            return ((ISnapshot)(new MultiSnapshot(new ISnapshot[] { liftedArg, ((ISnapshot)(new Snapshot<long?, ShortChannelId?, byte[], byte[], long, ulong, long?, ulong, byte[], CompactPubKey?, CompactPubKey, ulong, byte[], ulong?, byte[], ShortChannelId?, byte, string, byte>((source.GetCurrentValue<long?>(pushAmountMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)pushAmountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(pushAmountMsat))), (source.GetCurrentValue<ShortChannelId?>(remoteAlias) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)remoteAlias).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(remoteAlias))), (source.GetCurrentValue<byte[]>(remoteAnnouncementBitcoinSig) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteAnnouncementBitcoinSig).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteAnnouncementBitcoinSig))), (source.GetCurrentValue<byte[]>(remoteAnnouncementNodeSig) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteAnnouncementNodeSig).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteAnnouncementNodeSig))), ((ValueComparer<long>)(((IProperty)remoteBalanceMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(remoteBalanceMsat)), ((ValueComparer<ulong>)(((IProperty)remoteCommitmentNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteCommitmentNumber)), (source.GetCurrentValue<long?>(remoteFundingContributionSatoshis) == null ? null : ((ValueComparer<long?>)(((IProperty)remoteFundingContributionSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(remoteFundingContributionSatoshis))), ((ValueComparer<ulong>)(((IProperty)remoteNextHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteNextHtlcId)), (source.GetCurrentValue<byte[]>(remoteNextNonces) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteNextNonces).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteNextNonces))), (source.GetCurrentValue<CompactPubKey?>(remoteNextPerCommitmentPoint) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)remoteNextPerCommitmentPoint).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(remoteNextPerCommitmentPoint))), ((ValueComparer<CompactPubKey>)(((IProperty)remoteNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(remoteNodeId)), ((ValueComparer<ulong>)(((IProperty)remoteRevocationNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteRevocationNumber)), (source.GetCurrentValue<byte[]>(remoteShutdownScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteShutdownScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteShutdownScript))), (source.GetCurrentValue<ulong?>(revocationLogFromNumber) == null ? null : ((ValueComparer<ulong?>)(((IProperty)revocationLogFromNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(revocationLogFromNumber))), (source.GetCurrentValue<byte[]>(sentCommitDiff) == null ? null : ((ValueComparer<byte[]>)(((IProperty)sentCommitDiff).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(sentCommitDiff))), (source.GetCurrentValue<ShortChannelId?>(shortChannelId) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(shortChannelId))), ((ValueComparer<byte>)(((IProperty)state).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(state)), (source.GetCurrentValue<string>(tags) == null ? null : ((ValueComparer<string>)(((IProperty)tags).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(tags))), ((ValueComparer<byte>)(((IProperty)version).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(version))))) })));
+            return ((ISnapshot)(new MultiSnapshot(new ISnapshot[] { liftedArg, ((ISnapshot)(new Snapshot<ulong, byte[], ulong?, long?, ShortChannelId?, byte[], byte[], long, ulong, long?, ulong, byte[], CompactPubKey?, CompactPubKey, ulong, byte[], ulong?, byte[], ShortChannelId?, byte, string, byte>(((ValueComparer<ulong>)(((IProperty)localRevocationNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localRevocationNumber)), (source.GetCurrentValue<byte[]>(localShutdownScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)localShutdownScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(localShutdownScript))), (source.GetCurrentValue<ulong?>(maxDustHtlcExposureMsat) == null ? null : ((ValueComparer<ulong?>)(((IProperty)maxDustHtlcExposureMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(maxDustHtlcExposureMsat))), (source.GetCurrentValue<long?>(pushAmountMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)pushAmountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(pushAmountMsat))), (source.GetCurrentValue<ShortChannelId?>(remoteAlias) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)remoteAlias).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(remoteAlias))), (source.GetCurrentValue<byte[]>(remoteAnnouncementBitcoinSig) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteAnnouncementBitcoinSig).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteAnnouncementBitcoinSig))), (source.GetCurrentValue<byte[]>(remoteAnnouncementNodeSig) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteAnnouncementNodeSig).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteAnnouncementNodeSig))), ((ValueComparer<long>)(((IProperty)remoteBalanceMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(remoteBalanceMsat)), ((ValueComparer<ulong>)(((IProperty)remoteCommitmentNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteCommitmentNumber)), (source.GetCurrentValue<long?>(remoteFundingContributionSatoshis) == null ? null : ((ValueComparer<long?>)(((IProperty)remoteFundingContributionSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(remoteFundingContributionSatoshis))), ((ValueComparer<ulong>)(((IProperty)remoteNextHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteNextHtlcId)), (source.GetCurrentValue<byte[]>(remoteNextNonces) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteNextNonces).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteNextNonces))), (source.GetCurrentValue<CompactPubKey?>(remoteNextPerCommitmentPoint) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)remoteNextPerCommitmentPoint).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(remoteNextPerCommitmentPoint))), ((ValueComparer<CompactPubKey>)(((IProperty)remoteNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(remoteNodeId)), ((ValueComparer<ulong>)(((IProperty)remoteRevocationNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteRevocationNumber)), (source.GetCurrentValue<byte[]>(remoteShutdownScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteShutdownScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteShutdownScript))), (source.GetCurrentValue<ulong?>(revocationLogFromNumber) == null ? null : ((ValueComparer<ulong?>)(((IProperty)revocationLogFromNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(revocationLogFromNumber))), (source.GetCurrentValue<byte[]>(sentCommitDiff) == null ? null : ((ValueComparer<byte[]>)(((IProperty)sentCommitDiff).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(sentCommitDiff))), (source.GetCurrentValue<ShortChannelId?>(shortChannelId) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(shortChannelId))), ((ValueComparer<byte>)(((IProperty)state).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(state)), (source.GetCurrentValue<string>(tags) == null ? null : ((ValueComparer<string>)(((IProperty)tags).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(tags))), ((ValueComparer<byte>)(((IProperty)version).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(version))))) })));
         });
     runtimeEntityType.SetStoreGeneratedValuesFactory(
         ISnapshot () => ((ISnapshot)(new Snapshot<AddressType?, uint?, bool?>((default(AddressType? ) == null ? null : ((ValueComparer<AddressType?>)(((IProperty)changeAddressAddressType).GetValueComparer())).Snapshot(default(AddressType? ))), (default(uint? ) == null ? null : ((ValueComparer<uint?>)(((IProperty)changeAddressIndex).GetValueComparer())).Snapshot(default(uint? ))), (default(bool? ) == null ? null : ((ValueComparer<bool?>)(((IProperty)changeAddressIsChange).GetValueComparer())).Snapshot(default(bool? )))))));
@@ -2803,11 +2963,11 @@ public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
             return ((ISnapshot)(new Snapshot<ChannelId, AddressType?, uint?, bool?, object, object, object, object, object, object>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), (source.GetCurrentValue<AddressType?>(changeAddressAddressType) == null ? null : ((ValueComparer<AddressType?>)(((IProperty)changeAddressAddressType).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<AddressType?>(changeAddressAddressType))), (source.GetCurrentValue<uint?>(changeAddressIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)changeAddressIndex).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<uint?>(changeAddressIndex))), (source.GetCurrentValue<bool?>(changeAddressIsChange) == null ? null : ((ValueComparer<bool?>)(((IProperty)changeAddressIsChange).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<bool?>(changeAddressIsChange))), source.GetCurrentValue<WalletAddressEntity>(changeAddress), source.GetCurrentValue<ChannelConfigEntity>(config), SnapshotFactoryFactory.SnapshotCollection(source.GetCurrentValue<ICollection<HtlcEntity>>(htlcs)), SnapshotFactoryFactory.SnapshotCollection(source.GetCurrentValue<ICollection<ChannelKeySetEntity>>(keySets)), SnapshotFactoryFactory.SnapshotCollection(source.GetCurrentValue<ICollection<ChannelLocalAliasEntity>>(localAliases)), SnapshotFactoryFactory.SnapshotCollection(source.GetCurrentValue<ICollection<WatchedTransactionEntity>>(watchedTransactions)))));
         });
     runtimeEntityType.SetCounts(new PropertyCounts(
-        propertyCount: 49,
+        propertyCount: 52,
         navigationCount: 6,
         complexPropertyCount: 0,
         complexCollectionCount: 0,
-        originalValueCount: 49,
+        originalValueCount: 52,
         shadowCount: 0,
         relationshipCount: 10,
         storeGeneratedCount: 3));

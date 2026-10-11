@@ -16,7 +16,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("5ac9b60d-b25a-485c-850d-8b241e2602e5"), entityTypeCount: 74)
+            : base(skipDetectChanges: false, modelId: new Guid("3c22f31a-5404-43bc-93d4-25b721302952"), entityTypeCount: 74)
         {
         }
 
@@ -4261,6 +4261,21 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("LastReceivedSignature", lastReceivedSignatureColumnBase);
+            var lastSentClosingFeeSatoshisColumnBase = new ColumnBase<ColumnMappingBase>("LastSentClosingFeeSatoshis", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("LastSentClosingFeeSatoshis", lastSentClosingFeeSatoshisColumnBase);
+            var lastSentClosingSignatureColumnBase = new ColumnBase<ColumnMappingBase>("LastSentClosingSignature", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("LastSentClosingSignature", lastSentClosingSignatureColumnBase);
+            var lastSentClosingTxIdColumnBase = new ColumnBase<ColumnMappingBase>("LastSentClosingTxId", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("LastSentClosingTxId", lastSentClosingTxIdColumnBase);
             var lastSentOrderColumnBase = new ColumnBase<ColumnMappingBase>("LastSentOrder", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("LastSentOrder", lastSentOrderColumnBase);
             var lastSentSignatureColumnBase = new ColumnBase<ColumnMappingBase>("LastSentSignature", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
@@ -4398,6 +4413,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase2, channelEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastReceivedPartialSignatureColumnBase, channelEntity.FindProperty("LastReceivedPartialSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastReceivedSignatureColumnBase, channelEntity.FindProperty("LastReceivedSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastSentClosingFeeSatoshisColumnBase, channelEntity.FindProperty("LastSentClosingFeeSatoshis")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastSentClosingSignatureColumnBase, channelEntity.FindProperty("LastSentClosingSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastSentClosingTxIdColumnBase, channelEntity.FindProperty("LastSentClosingTxId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastSentOrderColumnBase, channelEntity.FindProperty("LastSentOrder")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastSentSignatureColumnBase, channelEntity.FindProperty("LastSentSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)localAnnouncementSigsSentAtColumnBase, channelEntity.FindProperty("LocalAnnouncementSigsSentAt")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
@@ -4522,6 +4540,24 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             };
             channelsTable.Columns.Add("LastReceivedSignature", lastReceivedSignatureColumn);
             lastReceivedSignatureColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(lastReceivedSignatureColumn);
+            var lastSentClosingFeeSatoshisColumn = new Column("LastSentClosingFeeSatoshis", "INTEGER", channelsTable)
+            {
+                IsNullable = true
+            };
+            channelsTable.Columns.Add("LastSentClosingFeeSatoshis", lastSentClosingFeeSatoshisColumn);
+            lastSentClosingFeeSatoshisColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(lastSentClosingFeeSatoshisColumn);
+            var lastSentClosingSignatureColumn = new Column("LastSentClosingSignature", "BLOB", channelsTable)
+            {
+                IsNullable = true
+            };
+            channelsTable.Columns.Add("LastSentClosingSignature", lastSentClosingSignatureColumn);
+            lastSentClosingSignatureColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(lastSentClosingSignatureColumn);
+            var lastSentClosingTxIdColumn = new Column("LastSentClosingTxId", "BLOB", channelsTable)
+            {
+                IsNullable = true
+            };
+            channelsTable.Columns.Add("LastSentClosingTxId", lastSentClosingTxIdColumn);
+            lastSentClosingTxIdColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(lastSentClosingTxIdColumn);
             var lastSentOrderColumn = new Column("LastSentOrder", "INTEGER", channelsTable);
             channelsTable.Columns.Add("LastSentOrder", lastSentOrderColumn);
             lastSentOrderColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(lastSentOrderColumn);
@@ -4689,6 +4725,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(labelColumn2, channelEntity.FindProperty("Label")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastReceivedPartialSignatureColumn, channelEntity.FindProperty("LastReceivedPartialSignature")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastReceivedSignatureColumn, channelEntity.FindProperty("LastReceivedSignature")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(lastSentClosingFeeSatoshisColumn, channelEntity.FindProperty("LastSentClosingFeeSatoshis")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(lastSentClosingSignatureColumn, channelEntity.FindProperty("LastSentClosingSignature")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(lastSentClosingTxIdColumn, channelEntity.FindProperty("LastSentClosingTxId")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastSentOrderColumn, channelEntity.FindProperty("LastSentOrder")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastSentSignatureColumn, channelEntity.FindProperty("LastSentSignature")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(localAnnouncementSigsSentAtColumn, channelEntity.FindProperty("LocalAnnouncementSigsSentAt")!, channelsTableMapping);

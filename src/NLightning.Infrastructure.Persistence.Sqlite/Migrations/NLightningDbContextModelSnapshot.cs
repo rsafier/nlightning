@@ -1407,6 +1407,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte[]>("LastReceivedSignature")
                         .HasColumnType("BLOB");
 
+                    b.Property<long?>("LastSentClosingFeeSatoshis")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("LastSentClosingSignature")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("LastSentClosingTxId")
+                        .HasColumnType("BLOB");
+
                     b.Property<byte>("LastSentOrder")
                         .HasColumnType("INTEGER");
 

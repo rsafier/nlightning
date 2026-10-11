@@ -2,6 +2,7 @@ namespace NLightning.Domain.Channels.Models;
 
 using Bitcoin.Transactions.Outputs;
 using Bitcoin.ValueObjects;
+using Closing;
 using Commitments;
 using Crypto.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
@@ -142,6 +143,11 @@ public class ChannelModel
     /// so we paid the fee), false when the peer was; null when not recorded or for a legacy close (NL-610).
     /// </summary>
     public bool? LocalIsCloser { get; private set; }
+
+    /// <summary>
+    /// Our latest legacy <c>closing_signed</c>, persisted before it is sent (NL-1377), or null while we sent none.
+    /// </summary>
+    public SentClosingSigned? LastSentClosingSigned { get; private set; }
 
     #endregion
 
@@ -565,6 +571,13 @@ public class ChannelModel
     {
         CloseProtocol = protocol;
         LocalIsCloser = protocol == MutualCloseProtocol.Simple ? localIsCloser : null;
+    }
+
+    /// <summary>Records our latest legacy <c>closing_signed</c> (persisted before it is sent, NL-1377).</summary>
+    public void SetLastSentClosingSigned(SentClosingSigned closingSigned)
+    {
+        ArgumentNullException.ThrowIfNull(closingSigned);
+        LastSentClosingSigned = closingSigned;
     }
 
     /// <summary>Records the agreed, fully signed mutual close transaction.</summary>

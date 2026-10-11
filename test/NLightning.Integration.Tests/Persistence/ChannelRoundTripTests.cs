@@ -4,6 +4,7 @@ using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Closing;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
@@ -477,6 +478,9 @@ public class ChannelRoundTripTests
         channel.SetClosingTransaction(new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x5c, 32).ToArray()),
                                                             [0x02, 0x00, 0x00, 0x00, 0x01]));
         channel.SetCloseTerms(MutualCloseProtocol.Simple, true); // NL-610
+        channel.SetLastSentClosingSigned(new SentClosingSigned(
+                                             0x1_0000_0123UL, new TxId(Enumerable.Repeat((byte)0x6d, 32).ToArray()),
+                                             new CompactSignature(Enumerable.Repeat((byte)0x43, 64).ToArray()))); // NL-1377
         // Announcement state (BOLT 7 plan G1, migration AddGossipGraph)
         channel.SetRemoteAnnouncementSignatures(
             new ChannelAnnouncementSignatures(new CompactSignature(Enumerable.Repeat((byte)0x41, 64).ToArray()),
@@ -556,6 +560,7 @@ public class ChannelRoundTripTests
         Assert.Equal(expected.ClosingTransaction.RawTxBytes, actual.ClosingTransaction.RawTxBytes);
         Assert.Equal(expected.CloseProtocol, actual.CloseProtocol);
         Assert.Equal(expected.LocalIsCloser, actual.LocalIsCloser);
+        Assert.Equal(expected.LastSentClosingSigned, actual.LastSentClosingSigned);
 
         // Announcement state (BOLT 7 plan G1)
         Assert.Equal(expected.AnnounceChannel, actual.AnnounceChannel);

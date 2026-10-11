@@ -464,6 +464,11 @@ public class ChannelCloseCoordinatorTests
                      proposal.Payload.FeeAmount);
         Assert.True((ulong)proposal.Payload.FeeAmount.Satoshi * 3 < 5_000);
 
+        // Our proposal was saved before it was returned (NL-1377)
+        Assert.Equal("save", _calls[^1]);
+        Assert.Equal((ulong)proposal.Payload.FeeAmount.Satoshi, channel.LastSentClosingSigned!.FeeSatoshis);
+        _calls.Clear();
+
         // Act
         var replies = await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(5_000));
 

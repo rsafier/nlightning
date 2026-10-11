@@ -73,6 +73,27 @@ public class CooperativeCloseHarnessTests
     }
 
     [Fact]
+    public async Task Given_OurClosingSigned_When_ItIsSent_Then_ItWasSavedFirstWithTheTransactionItSigns()
+    {
+        // Arrange: Alice's closing_signed is taken off the link once she sent it
+        using var close = new CloseHarness();
+        var held = (ClosingSignedMessage)await close.CloseHoldingAsync(close.Alice, close.Alice,
+                                                                       m => m is ClosingSignedMessage);
+
+        // Act: what the channel row holds while the message is on its way (NL-1377)
+        var saved = close.Alice.Store.CommittedClosingSigned;
+
+        // Assert: the fee and the signature that went out, for the closing transaction both end with
+        Assert.NotNull(saved);
+        Assert.Equal((ulong)held.Payload.FeeAmount.Satoshi, saved.FeeSatoshis);
+        Assert.Equal(held.Payload.Signature, saved.Signature);
+        await CloseHarness.DeliverLateAsync(close.Alice, held);
+        await close.Harness.PumpAsync();
+        var tx = close.AssertClosedTogether();
+        Assert.Equal(new TxId(tx.GetHash().ToBytes()), saved.ClosingTxId);
+    }
+
+    [Fact]
     public async Task Given_OpenChannel_When_NonFunderCloses_Then_FunderRepliesAndProposes()
     {
         // Arrange

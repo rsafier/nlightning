@@ -73,6 +73,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LastReceivedSignature>k__BackingField")]
         public static extern ref byte[] LastReceivedSignature(ChannelEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LastSentClosingFeeSatoshis>k__BackingField")]
+        public static extern ref long? LastSentClosingFeeSatoshis(ChannelEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LastSentClosingSignature>k__BackingField")]
+        public static extern ref byte[] LastSentClosingSignature(ChannelEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LastSentClosingTxId>k__BackingField")]
+        public static extern ref TxId? LastSentClosingTxId(ChannelEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LastSentOrder>k__BackingField")]
         public static extern ref byte LastSentOrder(ChannelEntity @this);
 

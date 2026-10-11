@@ -17,7 +17,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("c7b67e0f-6cd1-4320-b6c5-708f3553937e"), entityTypeCount: 74)
+            : base(skipDetectChanges: false, modelId: new Guid("83ac999b-6ab2-4b13-928d-0a2e83356a5b"), entityTypeCount: 74)
         {
         }
 
@@ -4270,6 +4270,21 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("last_received_signature", last_received_signatureColumnBase);
+            var last_sent_closing_fee_satoshisColumnBase = new ColumnBase<ColumnMappingBase>("last_sent_closing_fee_satoshis", "bigint", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("last_sent_closing_fee_satoshis", last_sent_closing_fee_satoshisColumnBase);
+            var last_sent_closing_signatureColumnBase = new ColumnBase<ColumnMappingBase>("last_sent_closing_signature", "bytea", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("last_sent_closing_signature", last_sent_closing_signatureColumnBase);
+            var last_sent_closing_tx_idColumnBase = new ColumnBase<ColumnMappingBase>("last_sent_closing_tx_id", "bytea", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("last_sent_closing_tx_id", last_sent_closing_tx_idColumnBase);
             var last_sent_orderColumnBase = new ColumnBase<ColumnMappingBase>("last_sent_order", "smallint", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("last_sent_order", last_sent_orderColumnBase);
             var last_sent_signatureColumnBase = new ColumnBase<ColumnMappingBase>("last_sent_signature", "bytea", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
@@ -4407,6 +4422,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase2, channelEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)last_received_partial_signatureColumnBase, channelEntity.FindProperty("LastReceivedPartialSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)last_received_signatureColumnBase, channelEntity.FindProperty("LastReceivedSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)last_sent_closing_fee_satoshisColumnBase, channelEntity.FindProperty("LastSentClosingFeeSatoshis")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)last_sent_closing_signatureColumnBase, channelEntity.FindProperty("LastSentClosingSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)last_sent_closing_tx_idColumnBase, channelEntity.FindProperty("LastSentClosingTxId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)last_sent_orderColumnBase, channelEntity.FindProperty("LastSentOrder")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)last_sent_signatureColumnBase, channelEntity.FindProperty("LastSentSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)local_announcement_sigs_sent_atColumnBase, channelEntity.FindProperty("LocalAnnouncementSigsSentAt")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
@@ -4531,6 +4549,24 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             };
             channelsTable.Columns.Add("last_received_signature", last_received_signatureColumn);
             last_received_signatureColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(last_received_signatureColumn);
+            var last_sent_closing_fee_satoshisColumn = new Column("last_sent_closing_fee_satoshis", "bigint", channelsTable)
+            {
+                IsNullable = true
+            };
+            channelsTable.Columns.Add("last_sent_closing_fee_satoshis", last_sent_closing_fee_satoshisColumn);
+            last_sent_closing_fee_satoshisColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(last_sent_closing_fee_satoshisColumn);
+            var last_sent_closing_signatureColumn = new Column("last_sent_closing_signature", "bytea", channelsTable)
+            {
+                IsNullable = true
+            };
+            channelsTable.Columns.Add("last_sent_closing_signature", last_sent_closing_signatureColumn);
+            last_sent_closing_signatureColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(last_sent_closing_signatureColumn);
+            var last_sent_closing_tx_idColumn = new Column("last_sent_closing_tx_id", "bytea", channelsTable)
+            {
+                IsNullable = true
+            };
+            channelsTable.Columns.Add("last_sent_closing_tx_id", last_sent_closing_tx_idColumn);
+            last_sent_closing_tx_idColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(last_sent_closing_tx_idColumn);
             var last_sent_orderColumn = new Column("last_sent_order", "smallint", channelsTable);
             channelsTable.Columns.Add("last_sent_order", last_sent_orderColumn);
             last_sent_orderColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(last_sent_orderColumn);
@@ -4698,6 +4734,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(labelColumn2, channelEntity.FindProperty("Label")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(last_received_partial_signatureColumn, channelEntity.FindProperty("LastReceivedPartialSignature")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(last_received_signatureColumn, channelEntity.FindProperty("LastReceivedSignature")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(last_sent_closing_fee_satoshisColumn, channelEntity.FindProperty("LastSentClosingFeeSatoshis")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(last_sent_closing_signatureColumn, channelEntity.FindProperty("LastSentClosingSignature")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(last_sent_closing_tx_idColumn, channelEntity.FindProperty("LastSentClosingTxId")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(last_sent_orderColumn, channelEntity.FindProperty("LastSentOrder")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(last_sent_signatureColumn, channelEntity.FindProperty("LastSentSignature")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(local_announcement_sigs_sent_atColumn, channelEntity.FindProperty("LocalAnnouncementSigsSentAt")!, channelsTableMapping);
