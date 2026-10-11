@@ -101,8 +101,10 @@ public partial class LocalLightningSigner
 
         ArgumentNullException.ThrowIfNull(unsignedSpliceTransaction);
 
-        // A channel that is not registered is loaded (a database read) before the lock is taken
+        // A channel that is not registered is loaded (a database read) before the lock is taken, and so is the durable
+        // guard: a broadcast mark or data loss another process persisted refuses the splice (NL-1375)
         _ = GetRegisteredSigningInfo(channelId);
+        RefreshDurableGuard(channelId);
 
         lock (GetCommitmentLock(channelId))
         {
@@ -184,7 +186,7 @@ public partial class LocalLightningSigner
 
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
         var registered = GetRegisteredSigningInfo(channelId);
-        var remoteNumber = GetCommitmentNumber(registered, unsignedTransaction);
+        var remoteNumber = GetCommitmentNumber(channelId, registered, unsignedTransaction);
         RefreshDurableGuard(channelId);
 
         CompactSignature signature;

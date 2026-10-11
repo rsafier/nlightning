@@ -61,6 +61,7 @@ public class NLightningDbContext : DbContext
     public DbSet<InteractiveTxSessionEntity> InteractiveTxSessions { get; set; }
     public DbSet<ChannelFundingEntity> ChannelFundings { get; set; }
     public DbSet<ChannelSignerGuardEntity> ChannelSignerGuards { get; set; }
+    public DbSet<ChannelSignerBroadcastSessionEntity> ChannelSignerBroadcastSessions { get; set; }
     public DbSet<ChannelPolicyEntity> ChannelPolicies { get; set; }
 
     // On-chain resolution DbSets
@@ -160,6 +161,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureInteractiveTxSessionEntity(_databaseType);
         modelBuilder.ConfigureChannelFundingEntity(_databaseType);
         modelBuilder.ConfigureChannelSignerGuardEntity(_databaseType);
+        modelBuilder.ConfigureChannelSignerBroadcastSessionEntity(_databaseType);
         modelBuilder.ConfigureChannelPolicyEntity(_databaseType);
 
         // On-chain resolution entities

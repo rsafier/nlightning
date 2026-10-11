@@ -75,7 +75,10 @@ internal sealed class TaprootSignerKit
             dataLossDetected)
         {
             IsSimpleTaproot = isSimpleTaproot,
-            IsDualFunded = IsDualFunded
+            IsDualFunded = IsDualFunded,
+
+            // The stand-in commitments carry their number unobscured
+            CommitmentObscuringFactor = 0
         };
 
     /// <summary>A transaction spending the funding output (a stand-in commitment or closing transaction).</summary>
@@ -116,7 +119,9 @@ internal sealed class TaprootSignerKit
 
     /// <param name="seedByte">The channel key seed.</param>
     /// <param name="handedOut">Collects every extended channel key array the key manager hands out (NL-911).</param>
-    public static LocalLightningSigner CreateSigner(byte seedByte, List<byte[]>? handedOut = null)
+    /// <param name="guardStore">The durable guard store (NL-1345); none by default.</param>
+    public static LocalLightningSigner CreateSigner(byte seedByte, List<byte[]>? handedOut = null,
+                                                    IChannelSignerGuardStore? guardStore = null)
     {
         var seed = Enumerable.Repeat(seedByte, 32).ToArray();
         var keyManager = new Mock<ISecureKeyManager>();
@@ -131,7 +136,7 @@ internal sealed class TaprootSignerKit
         utxos.Setup(u => u.GetLockedUtxosForChannel(It.IsAny<ChannelId>())).Returns([]);
         return new LocalLightningSigner(new FundingOutputBuilder(), new KeyDerivationService(new Secp256K1Math()),
                                         NullLogger<LocalLightningSigner>.Instance, new NodeOptions(),
-                                        keyManager.Object, utxos.Object);
+                                        keyManager.Object, utxos.Object, guardStore: guardStore);
     }
 
     private static ChannelFunding Funding(TxId txId, Domain.Crypto.ValueObjects.CompactPubKey local,

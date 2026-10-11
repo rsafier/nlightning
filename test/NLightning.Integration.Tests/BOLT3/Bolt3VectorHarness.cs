@@ -98,7 +98,11 @@ internal sealed class Bolt3VectorHarness
                                                       Bolt3AppendixBVectors.FundingSatoshis,
                                                       localFundingPubKey.ToBytes(), remoteFundingPubKey.ToBytes(), 0,
                                                       remoteHtlcBasepoint.ToBytes(),
-                                                      asNodeB ? 0 : Bolt3AppendixCVectors.CommitmentNumber));
+                                                      asNodeB ? 0 : Bolt3AppendixCVectors.CommitmentNumber)
+                               {
+                                   // Appendix C's commitment number obscuring factor
+                                   CommitmentObscuringFactor = 0x2bb038521914
+                               });
         Factory = new CommitmentTransactionModelFactory(new Bolt3TestCommitmentKeyDerivationService(), Signer);
         CommitmentBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
         HtlcBuilder = new HtlcTransactionBuilder(Options.Create(nodeOptions));

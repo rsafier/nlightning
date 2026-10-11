@@ -15,8 +15,9 @@ using Infrastructure.Bitcoin.Signers;
 
 /// <summary>
 /// NL-1341: <see cref="LocalLightningSigner"/> asks the node write fence before every signature. Every public
-/// <c>Sign*</c>/<c>Aggregate*</c> method checks it first, so a refusal makes no signature (whatever the arguments); a
-/// fence that allows it changes no signature.
+/// <c>Sign*</c>/<c>Aggregate*</c> method, and the release of a per-commitment secret (NL-1373), checks it first, so a
+/// refusal makes no signature and releases no secret (whatever the arguments); a fence that allows it changes no
+/// signature.
 /// </summary>
 public class LocalLightningSignerWriteFenceTests
 {
@@ -56,7 +57,8 @@ public class LocalLightningSignerWriteFenceTests
             "SignLocalHtlcTransaction", "SignLocalCommitmentForBroadcast", "SignSweepInput", "SignWalletTransaction",
             "SignFundingTransaction", "SignChannelTransaction", "SignAnchorInput", "SignTaprootAnchorInput",
             "SignRemoteCommitmentPartial", "SignClosingAsCloser", "SignClosingAsClosee", "AggregateClosingSignature",
-            "SignSpliceSharedInput", "SignSpliceSharedInputPartial", "AggregateSpliceSharedInputSignature", "SignBolt12"
+            "SignSpliceSharedInput", "SignSpliceSharedInputPartial", "AggregateSpliceSharedInputSignature", "SignBolt12",
+            "RevealPerCommitmentSecret"
         }, names);
     }
 
@@ -113,11 +115,13 @@ public class LocalLightningSignerWriteFenceTests
             new Mock<ILogger<LocalLightningSigner>>().Object, new NodeOptions(), _secureKeyManager.Object,
             new Mock<IUtxoMemoryRepository>().Object, writeFence: fence);
 
-    // Methods with a by-ref-like parameter (a span) cannot be invoked by reflection; they have their own test
+    // Methods with a by-ref-like parameter (a span) cannot be invoked by reflection; they have their own test. A
+    // released per-commitment secret is held to the same rule as a signature (NL-1373)
     private static IEnumerable<MethodInfo> GetSigningMethods() =>
         typeof(LocalLightningSigner).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
                                     .Where(m => m.Name.StartsWith("Sign", StringComparison.Ordinal)
-                                             || m.Name.StartsWith("Aggregate", StringComparison.Ordinal))
+                                             || m.Name.StartsWith("Aggregate", StringComparison.Ordinal)
+                                             || m.Name == nameof(LocalLightningSigner.RevealPerCommitmentSecret))
                                     .Where(m => m.GetParameters().All(p => !p.ParameterType.IsByRefLike
                                                                         && !p.ParameterType.IsByRef));
 

@@ -164,10 +164,12 @@ public sealed class DurableSignerGuardTests : IDisposable
         var channel = await PersistChannelAsync();
         await using var node = BuildNode(failRaises: true);
         var signer = node.GetRequiredService<ILightningSigner>();
-        signer.AdvanceLocalCommitment(channel.ChannelId, RowsCommitmentNumber + 1);
         var current = CreateCommitment(channel, RowsCommitmentNumber + 1);
 
-        // Act & Assert: no secret, no commitment signature for the peer, no broadcast signature
+        // Act & Assert: the registration could not persist its guard, so even the advance is refused (NL-1375); no
+        // secret, no commitment signature for the peer, no broadcast signature
+        Assert.Throws<SignerException>(() => signer.AdvanceLocalCommitment(channel.ChannelId,
+                                                                          RowsCommitmentNumber + 1));
         Assert.Throws<SignerException>(() => signer.RevealPerCommitmentSecret(channel.ChannelId,
                                                                              RowsCommitmentNumber));
         Assert.Throws<SignerException>(() => signer.SignChannelTransaction(channel.ChannelId,
@@ -282,6 +284,44 @@ public sealed class DurableSignerGuardTests : IDisposable
         Assert.Equal(channel.CommitmentNumber.ObscuringFactor, channel.GetSigningInfo().CommitmentObscuringFactor);
     }
 
+    [Fact]
+    public async Task Given_ARegistrationThatCouldNotPersistTheGuard_When_HtlcsAreSigned_Then_RefusedUntilARetryPersistsIt()
+    {
+        // Arrange: the channel is loaded (registered) while the store cannot be written (NL-1375)
+        var channel = await PersistChannelAsync();
+        await using var node = BuildNode(failRaises: true);
+        var signer = node.GetRequiredService<ILightningSigner>();
+        var store = (FailingGuardStore)node.GetRequiredService<IChannelSignerGuardStore>();
+
+        // Act & Assert: the registration's failed synchronization refuses even an operation that writes nothing
+        Assert.Throws<SignerException>(() => signer.SignRemoteHtlcTransactions(channel.ChannelId, []));
+        Assert.Null(await ReadGuardAsync(channel.ChannelId));
+
+        // The next operation retries it: once it is written, the channel is guarded again
+        store.FailRaises = false;
+        Assert.Empty(signer.SignRemoteHtlcTransactions(channel.ChannelId, []));
+        var guard = await ReadGuardAsync(channel.ChannelId);
+        Assert.Equal(RowsCommitmentNumber, guard!.Value.LocalCommitmentNumber);
+    }
+
+    [Fact]
+    public async Task Given_AnotherProcessSignedForBroadcast_When_HtlcSignaturesOfANewCommitmentAreAsked_Then_Refused()
+    {
+        // Arrange: both processes loaded the channel; B signs our current commitment for broadcast (S1)
+        var channel = await PersistChannelAsync();
+        await using var processA = BuildNode();
+        await using var processB = BuildNode();
+        var signerA = processA.GetRequiredService<ILightningSigner>();
+        var signerB = processB.GetRequiredService<ILightningSigner>();
+        Assert.Empty(signerA.SignRemoteHtlcTransactions(channel.ChannelId, []));
+        var current = CreateCommitment(channel, RowsCommitmentNumber);
+        _ = signerB.SignLocalCommitmentForBroadcast(channel.ChannelId, RowsCommitmentNumber, current,
+                                                    SignAsRemote(channel, current));
+
+        // Act & Assert (NL-1375): A reads the durable mark first
+        Assert.Throws<SignerException>(() => signerA.SignRemoteHtlcTransactions(channel.ChannelId, []));
+    }
+
     private async Task RaiseAsync(ChannelId channelId, ChannelSignerGuard guard)
     {
         await using var context = _database.CreateContext();
@@ -393,14 +433,24 @@ public sealed class DurableSignerGuardTests : IDisposable
     private sealed class FailingGuardStore(IChannelSignerGuardStore inner, bool failLoads, bool failRaises)
         : IChannelSignerGuardStore
     {
+        public bool FailLoads { get; set; } = failLoads;
+        public bool FailRaises { get; set; } = failRaises;
+
         public ChannelSignerGuard? Load(ChannelId channelId) =>
-            failLoads ? throw new InvalidOperationException("The database is unavailable") : inner.Load(channelId);
+            FailLoads ? throw new InvalidOperationException("The database is unavailable") : inner.Load(channelId);
 
         public void Raise(ChannelId channelId, ChannelSignerGuard guard)
         {
-            if (failRaises)
+            if (FailRaises)
                 throw new InvalidOperationException("The process died before the write");
             inner.Raise(channelId, guard);
+        }
+
+        public bool ClaimBroadcastSession(ChannelId channelId, ChannelBroadcastSession session)
+        {
+            if (FailRaises)
+                throw new InvalidOperationException("The process died before the write");
+            return inner.ClaimBroadcastSession(channelId, session);
         }
     }
 }

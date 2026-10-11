@@ -1687,6 +1687,26 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("ChannelPolicies");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelSignerBroadcastSessionEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("NonceFundingTxId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("CommitmentNumber")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("SessionDigest")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.HasKey("ChannelId", "NonceFundingTxId", "CommitmentNumber");
+
+                    b.ToTable("ChannelSignerBroadcastSessions");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelSignerGuardEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")

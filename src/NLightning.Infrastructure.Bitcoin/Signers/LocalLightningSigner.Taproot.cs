@@ -32,9 +32,9 @@ using Taproot;
 /// txid). Commitment 0 of a splice or of an attempt of a dual-funded open binds its txid (NL-972): those attempts are
 /// different transactions, and any of them may be the one we have to broadcast.</para>
 /// <para>A verification nonce signs only when we broadcast our commitment. Its secret half is re-derived then, and the
-/// signer also refuses a second broadcast signature with the same nonce over another session. That record is memory
-/// only (as the S1 mark before it is restored); the txid binding above is what keeps one nonce on one transaction
-/// across restarts.</para>
+/// signer also refuses a second broadcast signature with the same nonce over another session: in memory under the
+/// commitment lock, and, with a durable guard store, by a claim of the nonce for its session that every process over
+/// the same database (a restart, a standby) sees before its signature leaves (NL-1376).</para>
 /// <para><b>Signing nonces</b> (our partial signature of the peer's commitment, the closer's nonce) are just in time:
 /// fresh randomness, our funding key, the output key and the sighash, used once and never stored. Closee nonces live
 /// in the signer-owned nonce journal when configured, and otherwise in memory, until they sign one
@@ -112,7 +112,7 @@ public partial class LocalLightningSigner
 
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
         var registered = GetRegisteredSigningInfo(channelId);
-        var remoteNumber = GetCommitmentNumber(registered, unsignedCommitment);
+        var remoteNumber = GetCommitmentNumber(channelId, registered, unsignedCommitment);
         RefreshDurableGuard(channelId);
 
         MusigPartialSignatureWithNonce partial;
@@ -189,6 +189,8 @@ public partial class LocalLightningSigner
 
         // The same lock as the ECDSA broadcast, AdvanceLocalCommitment and RevealPerCommitmentSecret (S1, SP-I4)
         SignedTransaction signed;
+        ChannelBroadcastSession claim;
+        bool addedInMemory;
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
@@ -212,7 +214,7 @@ public partial class LocalLightningSigner
 
                 // One verification nonce never signs two sessions: the same commitment again (a rebroadcast) gives
                 // the same partial signature, anything else would reveal our funding key
-                RecordBroadcastSession(channelId, context, commitmentNumber, session);
+                (claim, addedInMemory) = RecordBroadcastSession(channelId, context, commitmentNumber, session);
 
                 var ourPartial = SignAndCheck(channelId, signingInfo.ChannelKeyIndex, funding, ourNonce, session);
                 var signature = AggregateAndCheck(channelId, aggregate, session,
@@ -236,6 +238,9 @@ public partial class LocalLightningSigner
             }
         }
 
+        // The nonce's session is claimed for every process, then the S1 mark is durable, before the signed commitment
+        // leaves the signer (NL-1345, NL-1376)
+        ClaimBroadcastSessionDurably(channelId, claim, addedInMemory);
         PersistBroadcastGuard(channelId, commitmentNumber);
         return signed;
     }
@@ -604,12 +609,16 @@ public partial class LocalLightningSigner
     /// <summary>
     /// Records that the verification nonce of <paramref name="context"/>/<paramref name="commitmentNumber"/> signs
     /// <paramref name="session"/> for broadcast; refuses another session with that nonce. Under the commitment lock.
+    /// The record is memory only: <see cref="ClaimBroadcastSessionDurably"/> makes it hold for every process.
     /// </summary>
-    private void RecordBroadcastSession(ChannelId channelId, TxId? context, ulong commitmentNumber,
-                                        MusigSigningSession session)
+    /// <returns>The session to claim durably, and whether this call added the memory record.</returns>
+    private (ChannelBroadcastSession Session, bool Added) RecordBroadcastSession(ChannelId channelId, TxId? context,
+                                                                                ulong commitmentNumber,
+                                                                                MusigSigningSession session)
     {
-        var key = $"{(context is { } txId ? txId.ToString() : "-")}:{commitmentNumber}";
+        var key = BroadcastSessionKey(context, commitmentNumber);
         var digest = SHA256.HashData([.. session.Message.Span, .. (byte[])session.AggregateNonce]);
+        var claim = new ChannelBroadcastSession(context, commitmentNumber, digest);
         var sessions = _taprootBroadcastSessions.GetOrAdd(channelId, static _ => new Dictionary<string, byte[]>());
         if (sessions.TryGetValue(key, out var known))
         {
@@ -618,11 +627,65 @@ public partial class LocalLightningSigner
                     $"Refusing to sign local commitment {commitmentNumber} for broadcast again over another transaction "
                   + "or nonce: its verification nonce already signed (nonce reuse would reveal the funding key)",
                     channelId, "Internal error");
-            return;
+            return (claim, false);
         }
 
         sessions[key] = digest;
+        return (claim, true);
     }
+
+    /// <summary>
+    /// Durably claims the verification nonce for the session <see cref="RecordBroadcastSession"/> recorded (NL-1376),
+    /// after the commitment lock and before the signed commitment leaves the signer: the nonce is derived the same way
+    /// in every process (and after a restart), so the memory record alone would let two of them sign it over different
+    /// sessions. Every call claims, also when this process recorded the session before, so a concurrent call never
+    /// returns ahead of a claim that fails.
+    /// </summary>
+    /// <exception cref="SignerException">Another session holds the nonce, or the claim could not be written; the
+    /// memory record this call added is removed again.</exception>
+    private void ClaimBroadcastSessionDurably(ChannelId channelId, ChannelBroadcastSession claim, bool addedInMemory)
+    {
+        if (_guardStore is null)
+            return;
+
+        bool claimed;
+        try
+        {
+            claimed = _guardStore.ClaimBroadcastSession(channelId, claim);
+        }
+        catch (Exception e)
+        {
+            ForgetBroadcastSession(channelId, claim, addedInMemory);
+            throw new SignerException("The signer's durable broadcast session could not be written", channelId, e,
+                                      "Internal error");
+        }
+
+        if (claimed)
+            return;
+
+        ForgetBroadcastSession(channelId, claim, addedInMemory);
+        throw new SignerException(
+            $"Refusing to sign local commitment {claim.CommitmentNumber} for broadcast: its verification nonce already "
+          + "signed another session in a process over the same database (nonce reuse would reveal the funding key)",
+            channelId, "Internal error");
+    }
+
+    /// <summary>Removes the memory record of a session whose durable claim failed, if this call added it.</summary>
+    private void ForgetBroadcastSession(ChannelId channelId, ChannelBroadcastSession claim, bool addedInMemory)
+    {
+        if (!addedInMemory)
+            return;
+
+        lock (GetCommitmentLock(channelId))
+            if (_taprootBroadcastSessions.TryGetValue(channelId, out var sessions)
+             && sessions.TryGetValue(BroadcastSessionKey(claim.NonceFundingTxId, claim.CommitmentNumber),
+                                     out var known)
+             && known.AsSpan().SequenceEqual((byte[])claim.SessionDigest))
+                sessions.Remove(BroadcastSessionKey(claim.NonceFundingTxId, claim.CommitmentNumber));
+    }
+
+    private static string BroadcastSessionKey(TxId? context, ulong commitmentNumber) =>
+        $"{(context is { } txId ? txId.ToString() : "-")}:{commitmentNumber}";
 
     /// <summary>Takes (removes) the secret half of our closee nonce <paramref name="publicNonce"/>; null if unknown.</summary>
     private MusigSecretNonce? TakeClosingNonce(ChannelId channelId, MusigPublicNonce publicNonce)

@@ -373,7 +373,11 @@ public partial class LocalLightningSigner : ILightningSigner
                 {
                     LocalFundingKeyIndex = current.LocalFundingKeyIndex,
                     Fundings = null,
-                    PersistedSpliceCommitments = null
+                    PersistedSpliceCommitments = null,
+
+                    // A registration from data that lacks the factor never turns the remote-commitment guard off
+                    CommitmentObscuringFactor = signingInfo.CommitmentObscuringFactor
+                                             ?? current.CommitmentObscuringFactor
                 };
             }
 
@@ -386,7 +390,9 @@ public partial class LocalLightningSigner : ILightningSigner
                        {
                            RemoteHtlcBasepoint = signingInfo.RemoteHtlcBasepoint ?? current.RemoteHtlcBasepoint,
                            RemoteNodeId = signingInfo.RemoteNodeId ?? current.RemoteNodeId,
-                           AnnounceChannel = signingInfo.AnnounceChannel
+                           AnnounceChannel = signingInfo.AnnounceChannel,
+                           CommitmentObscuringFactor = current.CommitmentObscuringFactor
+                                                    ?? signingInfo.CommitmentObscuringFactor
                        };
         });
         if (mismatch)
@@ -432,6 +438,7 @@ public partial class LocalLightningSigner : ILightningSigner
             _broadcastSignedNumbers.TryRemove(channelId, out _);
             _remoteSignedNumbers.TryRemove(channelId, out _);
             _durableGuards.TryRemove(channelId, out _);
+            _unsyncedDurableGuards.TryRemove(channelId, out _);
             _spliceFundings.TryRemove(channelId, out _);
             _taprootBroadcastSessions.TryRemove(channelId, out _);
         }
@@ -665,6 +672,10 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public Secret RevealPerCommitmentSecret(ChannelId channelId, ulong commitmentNumber)
     {
+        // A released secret is as final as a signature: a fenced instance releases none (NL-1373), whether or not the
+        // durable guard below has to be written
+        CheckSignFence();
+
         var signingInfo = GetRegisteredSigningInfo(channelId);
         RefreshDurableGuard(channelId);
 
@@ -733,6 +744,9 @@ public partial class LocalLightningSigner : ILightningSigner
 
         ArgumentNullException.ThrowIfNull(htlcTransactions);
         var signingInfo = GetRegisteredSigningInfo(channelId);
+
+        // The durable guard first (NL-1375): a broadcast mark or data loss another process persisted refuses them too
+        RefreshDurableGuard(channelId);
         ThrowIfDataLoss(channelId, "sign HTLC transactions of a new commitment");
         ThrowIfBroadcastSigned(channelId, "sign HTLC transactions of a new commitment");
 
@@ -1167,7 +1181,7 @@ public partial class LocalLightningSigner : ILightningSigner
         ThrowIfTaproot(channelId, signingInfo, "sign a channel transaction with an ECDSA signature");
 
         // The peer's commitment is never signed below one already signed, by this process or an earlier one (NL-1345)
-        var remoteNumber = GetCommitmentNumber(signingInfo, unsignedTransaction);
+        var remoteNumber = GetCommitmentNumber(channelId, signingInfo, unsignedTransaction);
         RefreshDurableGuard(channelId);
         if (remoteNumber is { } number)
             lock (GetCommitmentLock(channelId))

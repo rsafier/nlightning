@@ -33,36 +33,42 @@ public partial class LocalLightningSigner
     // The highest commitment number of the peer's commitment signed per channel, on any funding (NL-1345)
     private readonly ConcurrentDictionary<ChannelId, ulong> _remoteSignedNumbers = new();
 
+    // Channels whose registration could not synchronize the durable guard: the next guarded operation does it first
+    // and refuses while it cannot (NL-1375). The value is the registration's token, so a synchronization never clears
+    // the mark of a later registration it did not persist
+    private readonly ConcurrentDictionary<ChannelId, object> _unsyncedDurableGuards = new();
+
     /// <summary>
     /// At registration: applies the persisted guard and persists what the registration brought (the channel rows of a
-    /// database from before the store, or a newer row). A failure is logged; every guarded operation reads the store
-    /// again and refuses while it cannot.
+    /// database from before the store, or a newer row). A failure is logged and leaves the channel unsynchronized:
+    /// every guarded operation (each reads the store first, <see cref="RefreshDurableGuard"/>) retries the whole
+    /// synchronization and refuses while it fails (NL-1375).
     /// </summary>
     private void SyncDurableGuardAtRegistration(ChannelId channelId)
     {
         if (_guardStore is null)
             return;
 
+        _unsyncedDurableGuards[channelId] = new object();
         try
         {
             RefreshDurableGuard(channelId);
-            ChannelSignerGuard current;
-            lock (GetCommitmentLock(channelId))
-                current = GetMemoryGuard(channelId);
-            PersistDurableGuard(channelId, current);
         }
         catch (SignerException e)
         {
             _logger.LogWarning(e, "Could not synchronize the durable signer guard of channel {ChannelId} at "
-                                + "registration; guarded operations read it again", channelId);
+                                + "registration; its guarded operations are refused until a retry succeeds",
+                               channelId);
         }
     }
 
     /// <summary>
-    /// Reads the persisted guard of <paramref name="channelId"/> and applies it to memory. Called outside the
+    /// Reads the persisted guard of <paramref name="channelId"/> and applies it to memory; for a channel whose
+    /// registration could not synchronize it, also persists what the registration brought. Called outside the
     /// commitment lock, before a guarded operation takes it.
     /// </summary>
-    /// <exception cref="SignerException">The store could not be read (fail closed).</exception>
+    /// <exception cref="SignerException">The store could not be read, or an unsynchronized registration could not be
+    /// persisted (fail closed).</exception>
     private void RefreshDurableGuard(ChannelId channelId)
     {
         if (_guardStore is null)
@@ -81,6 +87,17 @@ public partial class LocalLightningSigner
 
         if (loaded is { } guard)
             ApplyDurableGuard(channelId, guard);
+
+        if (!_unsyncedDurableGuards.TryGetValue(channelId, out var registration))
+            return;
+
+        // What a registration brought (rows newer than the store, or a database from before it) is durable before the
+        // channel's first guarded operation
+        ChannelSignerGuard current;
+        lock (GetCommitmentLock(channelId))
+            current = GetMemoryGuard(channelId);
+        PersistDurableGuard(channelId, current);
+        _unsyncedDurableGuards.TryRemove(new KeyValuePair<ChannelId, object>(channelId, registration));
     }
 
     /// <summary>Moves the in-memory guard to at least <paramref name="guard"/>; it never moves back.</summary>
@@ -139,27 +156,34 @@ public partial class LocalLightningSigner
     /// <summary>
     /// The commitment number of <paramref name="unsignedTransaction"/> when it is a commitment transaction of the
     /// channel (BOLT 3 locktime and sequence form, decoded with the channel's obscuring factor); null for any other
-    /// transaction (a closing transaction) or when the obscuring factor is not known.
+    /// transaction (a closing transaction, whose locktime and sequence never have the commitment form).
     /// </summary>
-    private ulong? GetCommitmentNumber(ChannelSigningInfo signingInfo, SignedTransaction unsignedTransaction)
+    /// <exception cref="SignerException">The transaction does not parse, or it has the commitment form and the
+    /// channel's obscuring factor is not known: its number cannot be checked against the remote-commitment guard, so
+    /// it is not signed (fail closed, NL-1374).</exception>
+    private ulong? GetCommitmentNumber(ChannelId channelId, ChannelSigningInfo signingInfo,
+                                       SignedTransaction unsignedTransaction)
     {
-        if (signingInfo.CommitmentObscuringFactor is not { } factor)
-            return null;
-
         Transaction tx;
         try
         {
             tx = Transaction.Load(unsignedTransaction.RawTxBytes, _network);
         }
-        catch (Exception)
+        catch (Exception e)
         {
-            // The signature path refuses a transaction that does not parse
-            return null;
+            throw new SignerException("Failed to load the transaction to sign", channelId, e, "Internal error");
         }
 
         if (tx.Inputs.Count != 1
          || !CommitmentNumber.TryGetObscured(tx.LockTime.Value, tx.Inputs[0].Sequence.Value, out var obscured))
             return null;
+
+        // Every source of signing data carries the factor (the channel rows, the channel model once the peer's
+        // payment basepoint is known), so a commitment without it is a registration that cannot be guarded
+        if (signingInfo.CommitmentObscuringFactor is not { } factor)
+            throw new SignerException(
+                "Refusing to sign a commitment transaction: the channel's commitment number obscuring factor is not "
+              + "known, so the remote-commitment guard cannot check it", channelId, "Internal error");
 
         return obscured ^ factor;
     }

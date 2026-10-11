@@ -387,6 +387,52 @@ public class LocalLightningSignerBroadcastTests
         Assert.Equal(32, ((byte[])signer.RevealPerCommitmentSecret(s_channelId, 1)).Length);
     }
 
+    [Fact]
+    public void Given_AnUnknownObscuringFactor_When_SigningACommitment_Then_ItIsRefusedAndAClosingTransactionIsSigned()
+    {
+        // Arrange: a registration whose data lacks the factor (the remote-commitment guard could not check it)
+        var signer = new NodeASigner();
+        signer.RegisterChannel(s_channelId, SigningInfo(false) with { CommitmentObscuringFactor = null });
+        var commitment = CommitmentWithNumber(50);
+
+        // Act / Assert (NL-1374): no commitment-shaped transaction is signed, on the current funding or by its txid
+        Assert.Throws<SignerException>(() => signer.SignChannelTransaction(s_channelId, commitment));
+        Assert.Throws<SignerException>(() => signer.SignChannelTransaction(
+                                           s_channelId, Bolt3AppendixBVectors.ExpectedTxId.ToBytes(), commitment));
+
+        // A closing transaction (no commitment locktime or sequence form) needs no number and is signed
+        Assert.Null(Record.Exception(() => signer.SignChannelTransaction(s_channelId, ClosingTransaction())));
+    }
+
+    [Fact]
+    public void Given_ATransactionThatDoesNotParse_When_SigningAChannelTransaction_Then_ItIsRefused()
+    {
+        // Arrange
+        var signer = CreateNodeASigner();
+        var garbage = new SignedTransaction(new byte[32], [0x02, 0x00, 0x01]);
+
+        // Act / Assert (NL-1374): refused before any guard is skipped
+        Assert.Throws<SignerException>(() => signer.SignChannelTransaction(s_channelId, garbage));
+        Assert.Throws<SignerException>(() => signer.SignChannelTransaction(
+                                           s_channelId, Bolt3AppendixBVectors.ExpectedTxId.ToBytes(), garbage));
+    }
+
+    [Fact]
+    public void Given_ARegistrationWithoutTheFactor_When_TheChannelHasIt_Then_TheRemoteCommitmentGuardStaysOn()
+    {
+        // Arrange: commitment 50 of the peer is signed, then the channel is registered again from data without the
+        // factor (a model of a channel whose opening never set it)
+        var signer = CreateNodeASigner();
+        _ = signer.SignChannelTransaction(s_channelId, CommitmentWithNumber(50));
+
+        // Act
+        signer.RegisterChannel(s_channelId, SigningInfo(false) with { CommitmentObscuringFactor = null });
+
+        // Assert: still decoded, so the peer's commitment 45 is refused and 50 again (a retransmission) is signed
+        Assert.Throws<SignerException>(() => signer.SignChannelTransaction(s_channelId, CommitmentWithNumber(45)));
+        Assert.Null(Record.Exception(() => signer.SignChannelTransaction(s_channelId, CommitmentWithNumber(50))));
+    }
+
     private static NodeASigner CreateNodeASigner(bool dataLossDetected = false, bool withChannelKey = false)
     {
         var signer = new NodeASigner(withChannelKey);
@@ -397,7 +443,11 @@ public class LocalLightningSignerBroadcastTests
     private static ChannelSigningInfo SigningInfo(bool dataLossDetected, ulong localCommitmentNumber = 0) =>
         new(Bolt3AppendixBVectors.ExpectedTxId.ToBytes(), 0, Bolt3AppendixBVectors.FundingSatoshis,
             Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(), Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(), 0,
-            localCommitmentNumber: localCommitmentNumber, dataLossDetected: dataLossDetected);
+            localCommitmentNumber: localCommitmentNumber, dataLossDetected: dataLossDetected)
+        {
+            // BOLT 3 Appendix C's commitment number obscuring factor
+            CommitmentObscuringFactor = 0x2bb038521914
+        };
 
     private static (SignedTransaction Unsigned, Domain.Crypto.ValueObjects.CompactSignature Remote) UnsignedCommitTx0()
     {
@@ -405,6 +455,27 @@ public class LocalLightningSignerBroadcastTests
         tx.Inputs[0].WitScript = WitScript.Empty;
         return (new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes()),
                 Bolt3AppendixCVectors.NodeBSignature0.ToCompact());
+    }
+
+    /// <summary>Appendix C's commitment with its locktime and sequence carrying <paramref name="number"/>.</summary>
+    private static SignedTransaction CommitmentWithNumber(ulong number)
+    {
+        var tx = Transaction.Parse(SignedCommitTx0Hex, Network.Main);
+        tx.Inputs[0].WitScript = WitScript.Empty;
+        var obscured = number ^ 0x2bb038521914;
+        tx.LockTime = new LockTime((0x20u << 24) | (uint)(obscured & 0xFFFFFF));
+        tx.Inputs[0].Sequence = new Sequence((0x80u << 24) | (uint)((obscured >> 24) & 0xFFFFFF));
+        return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
+    }
+
+    /// <summary>A closing transaction of the channel: locktime 0, final sequence (BOLT 3).</summary>
+    private static SignedTransaction ClosingTransaction()
+    {
+        var tx = Transaction.Parse(SignedCommitTx0Hex, Network.Main);
+        tx.Inputs[0].WitScript = WitScript.Empty;
+        tx.LockTime = LockTime.Zero;
+        tx.Inputs[0].Sequence = Sequence.Final;
+        return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
     }
 
     private static ISecureKeyManager KeyManager(bool withChannelKey)

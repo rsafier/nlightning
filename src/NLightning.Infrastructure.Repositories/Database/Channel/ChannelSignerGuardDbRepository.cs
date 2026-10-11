@@ -2,15 +2,18 @@ using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Node.Fencing;
 using Helpers;
 using Persistence.Contexts;
 using Persistence.Entities.Channel;
 
 /// <summary>
-/// The local signer's durable guard rows (NL-1345, table <c>ChannelSignerGuards</c>).
+/// The local signer's durable guard rows (NL-1345, table <c>ChannelSignerGuards</c>) and the broadcast sessions of its
+/// taproot verification nonces (NL-1376, table <c>ChannelSignerBroadcastSessions</c>).
 /// </summary>
 /// <remarks>
 /// A raise is one conditional <c>UPDATE</c> (higher numbers, a lower broadcast mark, a set data-loss flag), atomic per
@@ -74,6 +77,56 @@ public class ChannelSignerGuardDbRepository : IChannelSignerGuardDbRepository
             if (_context.Entry(entity).State != EntityState.Detached)
                 _context.Entry(entity).State = EntityState.Detached;
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>One insert keyed by the nonce (channel, context, number); a key conflict means another session's claim
+    /// (or this one's) was committed first, and the stored digest decides. Under the fence like a raise.</remarks>
+    public Task<bool> ClaimBroadcastSessionAsync(ChannelId channelId, ChannelBroadcastSession session) =>
+        FencedWrite.RunAsync(_context, _writeFence, () => ClaimBroadcastSessionCoreAsync(channelId, session));
+
+    private async Task<bool> ClaimBroadcastSessionCoreAsync(ChannelId channelId, ChannelBroadcastSession session)
+    {
+        var nonceFundingTxId = session.NonceFundingTxId ?? TxId.Zero;
+        var number = checked((long)session.CommitmentNumber);
+        if (await GetBroadcastSessionDigestAsync(channelId, nonceFundingTxId, number) is { } stored)
+            return stored == session.SessionDigest;
+
+        var entity = new ChannelSignerBroadcastSessionEntity
+        {
+            ChannelId = channelId,
+            NonceFundingTxId = nonceFundingTxId,
+            CommitmentNumber = number,
+            SessionDigest = session.SessionDigest
+        };
+        _context.ChannelSignerBroadcastSessions.Add(entity);
+        try
+        {
+            await _context.SaveChangesAsync();
+            return true;
+        }
+        catch (DbUpdateException)
+        {
+            // Another writer claimed the nonce first: its session decides
+            _context.Entry(entity).State = EntityState.Detached;
+            return await GetBroadcastSessionDigestAsync(channelId, nonceFundingTxId, number) is { } winner
+                       ? winner == session.SessionDigest
+                       : throw new InvalidOperationException("The broadcast session claim failed without a winner");
+        }
+        finally
+        {
+            if (_context.Entry(entity).State != EntityState.Detached)
+                _context.Entry(entity).State = EntityState.Detached;
+        }
+    }
+
+    private async Task<Hash?> GetBroadcastSessionDigestAsync(ChannelId channelId, TxId nonceFundingTxId, long number)
+    {
+        var row = await _context.ChannelSignerBroadcastSessions.AsNoTracking()
+                                .SingleOrDefaultAsync(s => s.ChannelId == channelId
+                                                        && s.NonceFundingTxId == nonceFundingTxId
+                                                        && s.CommitmentNumber == number);
+        return row?.SessionDigest;
     }
 
     private Task<int> UpdateAsync(ChannelId channelId, ChannelSignerGuard guard)

@@ -2157,6 +2157,31 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.ToTable("channel_policies", (string)null);
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelSignerBroadcastSessionEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("channel_id");
+
+                    b.Property<byte[]>("NonceFundingTxId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("nonce_funding_tx_id");
+
+                    b.Property<long>("CommitmentNumber")
+                        .HasColumnType("bigint")
+                        .HasColumnName("commitment_number");
+
+                    b.Property<byte[]>("SessionDigest")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("session_digest");
+
+                    b.HasKey("ChannelId", "NonceFundingTxId", "CommitmentNumber")
+                        .HasName("pk_channel_signer_broadcast_sessions");
+
+                    b.ToTable("channel_signer_broadcast_sessions", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelSignerGuardEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")

@@ -42,4 +42,13 @@ public sealed class ChannelSignerGuardStore : IChannelSignerGuardStore
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             await unitOfWork.ChannelSignerGuardDbRepository.RaiseAsync(channelId, guard);
         }).GetAwaiter().GetResult();
+
+    /// <inheritdoc />
+    public bool ClaimBroadcastSession(ChannelId channelId, ChannelBroadcastSession session) =>
+        Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            return await unitOfWork.ChannelSignerGuardDbRepository.ClaimBroadcastSessionAsync(channelId, session);
+        }).GetAwaiter().GetResult();
 }

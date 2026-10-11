@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 using NBitcoin.Crypto;
+using NLightning.Tests.Utils.Mocks;
 using NLightning.Tests.Utils.Vectors;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Signers;
@@ -628,13 +629,53 @@ public class LocalLightningSignerSplicingTests
         }));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_AnotherProcessPersistedABroadcastOrDataLoss_When_SigningTheSharedInput_Then_Refused(bool dataLoss)
+    {
+        // Arrange: a splice ready to sign, then another process over the same database marks the channel (NL-1375)
+        var store = new InMemoryChannelSignerGuardStore();
+        var signer = CreateSigner(guardStore: store);
+        var (splice, funding) = BuildSplice(signer);
+        signer.RegisterFunding(s_channelId, funding);
+        signer.MarkSpliceCommitmentPersisted(s_channelId, funding.FundingTxId, 0);
+        store.Raise(s_channelId, dataLoss
+                                     ? new ChannelSignerGuard(0, DataLossDetected: true)
+                                     : new ChannelSignerGuard(0, BroadcastSignedCommitmentNumber: 0));
+
+        // Act / Assert: the shared input is never signed away from under a commitment signed for broadcast
+        Assert.Throws<SignerException>(() => signer.SignSpliceSharedInput(s_channelId, funding.FundingTxId,
+                                                                          Wrap(splice), 0));
+    }
+
+    [Fact]
+    public void Given_TheGuardCannotBeRead_When_SigningTheSharedInput_Then_Refused()
+    {
+        // Arrange
+        var store = new InMemoryChannelSignerGuardStore();
+        var signer = CreateSigner(guardStore: store);
+        var (splice, funding) = BuildSplice(signer);
+        signer.RegisterFunding(s_channelId, funding);
+        signer.MarkSpliceCommitmentPersisted(s_channelId, funding.FundingTxId, 0);
+        store.FailLoads = true;
+
+        // Act / Assert (NL-1375: fail closed)
+        Assert.Throws<SignerException>(() => signer.SignSpliceSharedInput(s_channelId, funding.FundingTxId,
+                                                                          Wrap(splice), 0));
+        store.FailLoads = false;
+        Assert.Null(Record.Exception(() => signer.SignSpliceSharedInput(s_channelId, funding.FundingTxId,
+                                                                        Wrap(splice), 0)));
+    }
+
     #endregion
 
     #region Helpers
 
-    private static SplicingSigner CreateSigner(bool withChannelKey = true)
+    private static SplicingSigner CreateSigner(bool withChannelKey = true,
+                                               IChannelSignerGuardStore? guardStore = null)
     {
-        var signer = new SplicingSigner(withChannelKey);
+        var signer = new SplicingSigner(withChannelKey, guardStore);
         signer.RegisterChannel(s_channelId, SigningInfo());
         return signer;
     }
@@ -642,7 +683,11 @@ public class LocalLightningSignerSplicingTests
     private static ChannelSigningInfo SigningInfo(ulong localCommitmentNumber = 0) =>
         new(Bolt3AppendixBVectors.ExpectedTxId.ToBytes(), 0, Bolt3AppendixBVectors.FundingSatoshis,
             Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(), Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(), 0,
-            localCommitmentNumber: localCommitmentNumber);
+            localCommitmentNumber: localCommitmentNumber)
+        {
+            // BOLT 3 Appendix C's commitment number obscuring factor
+            CommitmentObscuringFactor = 0x2bb038521914
+        };
 
     private static TxId CurrentTxId() => Bolt3AppendixBVectors.ExpectedTxId.ToBytes();
 
@@ -762,10 +807,10 @@ public class LocalLightningSignerSplicingTests
     /// A <see cref="LocalLightningSigner"/> whose original funding key (index 0) is Appendix C's node A funding key;
     /// rotated keys come from the real derivation over a fixed seed.
     /// </summary>
-    private sealed class SplicingSigner(bool withChannelKey = true)
+    private sealed class SplicingSigner(bool withChannelKey = true, IChannelSignerGuardStore? guardStore = null)
         : LocalLightningSigner(new FundingOutputBuilder(), new KeyDerivationService(new Secp256K1Math()),
                                NullLogger<LocalLightningSigner>.Instance, new NodeOptions(), KeyManager(withChannelKey),
-                               new Mock<IUtxoMemoryRepository>().Object)
+                               new Mock<IUtxoMemoryRepository>().Object, guardStore: guardStore)
     {
         protected override Key GenerateFundingPrivateKey(uint channelKeyIndex) =>
             new(Bolt3AppendixCVectors.NodeAFundingPrivkey.ToBytes());

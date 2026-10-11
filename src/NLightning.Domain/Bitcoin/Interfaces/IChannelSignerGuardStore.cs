@@ -23,4 +23,12 @@ public interface IChannelSignerGuardStore
     /// it) and returns once the write is committed.
     /// </summary>
     void Raise(ChannelId channelId, ChannelSignerGuard guard);
+
+    /// <summary>
+    /// Durably claims the verification nonce of <paramref name="session"/>'s commitment and context for its session
+    /// (NL-1376), atomically against other writers, and returns once the claim is committed: true when the nonce is
+    /// now (or already was) claimed by this session, false when another session holds it (the signature must then not
+    /// leave the signer).
+    /// </summary>
+    bool ClaimBroadcastSession(ChannelId channelId, ChannelBroadcastSession session);
 }
