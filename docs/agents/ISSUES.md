@@ -200,9 +200,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 105 | 107 |
+| open | 0 | 0 | 2 | 104 | 106 |
 | in-progress | 0 | 1 | 8 | 1 | 10 |
-| fixed | 15 | 74 | 272 | 539 | 900 |
+| fixed | 15 | 74 | 272 | 540 | 901 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **75** | **291** | **667** | **1048** |
@@ -11034,12 +11034,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1353 `LoopPersistenceTests.Given_ADurableImportedHistory_*` times out in loaded full Integration runs
-- **Status:** open
+- **Status:** fixed
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests` `LoopPersistenceTests`
 - **Evidence:** failed with `TaskCanceledException` in two full net10.0 Integration runs on 2026-10-10 (the locked-start and node-fence lanes, neither touching the class); the class passed alone (8/8) both times.
 - **Fix sketch:** find the wall-clock wait in the durable imported-history case and make it event-driven or give it a stepped clock.
+- **Fix:** the case polled the database for the block-3 checkpoint under a 10 s `CancelAfter` while the block notice runs `ImportedTapscriptTracker`'s update on a background `Task.Run` worker, which a loaded full run can start late. The tracker now raises an internal `OnUpdatePassCompleted` after each background pass (succeeded or failed); the test waits for those passes (and fails at once on `OnObservationFailed`) with only the test's own token, no wall clock. Class 10/10 alone (8/8 each), full net10.0 Integration run 1307/1307.
 
 ### NL-1354 Startup reads every channel three times
 - **Status:** open
