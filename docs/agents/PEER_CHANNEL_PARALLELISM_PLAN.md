@@ -425,3 +425,8 @@ while `accept_channel2` is still handled, a fence refusal in one lane with other
 circular rebalances forwarded by the peer's switch between two lanes and an MPP payment over several lanes (SQLite and
 Postgres). Re-measured with server GC (`CHANNEL_SCALE.md`): 85.6 / 106.9 / 140.4 payments/s at 16 / 32 / 64 at once
 with lanes, 34.2 / 38.4 / 48.2 without.
+
+**Review-fix gates** (at `a18ee4bc`): Release `--no-incremental` build 0 code warnings; `dotnet format --verify-no-changes`
+clean; net11.0 compile check of the daemon clean; net10.0 tests (no Docker, no SQL Server) 19,182 passed, 6 skipped, 0
+failed (no flake this run); cluster matrix `lnd,cln,eclair,abcd,postgres -j 8` with `NLTG_CHANNEL_LANES=true`: 5 suites
+green, none rerun (`mx-20261011230554`: lnd 69, cln 91, eclair 31, abcd 11, postgres 45 passed, 1,479 s).
