@@ -11054,7 +11054,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1356 The CLN suite failed 40 of 95 in some worktrees: bitcoind's fallback fee raised CLN's minimum feerate
-- **Status:** fixed (FIXSHA)
+- **Status:** fixed (130b20d1)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Fixtures/ClnFixture.cs` (`FundClnWalletAsync`, `SendAtOneSatPerVbyteAsync`), `Docker/Interop/Cln/ClnSpliceReestablishTests.cs` (the dedicated CLN's deposit)
