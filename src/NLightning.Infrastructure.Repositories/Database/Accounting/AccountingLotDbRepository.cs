@@ -5,6 +5,8 @@ namespace NLightning.Infrastructure.Repositories.Database.Accounting;
 using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Financial;
+using Domain.Node.Fencing;
+using Helpers;
 using Persistence.Contexts;
 using Persistence.Entities.Accounting;
 
@@ -19,16 +21,22 @@ using Persistence.Entities.Accounting;
 /// <para>The fiat columns are <c>decimal</c>, which SQLite stores as TEXT: nothing here orders or sums them in SQL
 /// (HIFO orders the open lots in memory).</para>
 /// <para><see cref="ClearAsync"/> deletes at once (bulk deletes, which the change tracker does not see), like
-/// <see cref="AccountingBooksDbRepository.ClearAsync(AccountingBook, CancellationToken)"/>.</para>
+/// <see cref="AccountingBooksDbRepository.ClearAsync(AccountingBook, CancellationToken)"/>: both deletes in one
+/// transaction checked by the node write fence before the commit (<see cref="FencedWrite"/>, NL-1342).</para>
 /// </remarks>
 public class AccountingLotDbRepository : IAccountingLotDbRepository
 {
     private readonly NLightningDbContext _context;
+    private readonly INodeWriteFence? _writeFence;
 
-    public AccountingLotDbRepository(NLightningDbContext context)
+    /// <param name="context">The unit of work's context.</param>
+    /// <param name="writeFence">The node write fence <see cref="ClearAsync"/> is checked against (NL-1342); null checks
+    /// nothing.</param>
+    public AccountingLotDbRepository(NLightningDbContext context, INodeWriteFence? writeFence = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         _context = context;
+        _writeFence = writeFence;
     }
 
     /// <inheritdoc />
@@ -315,8 +323,11 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
                                         .ToList())
             tracked.State = EntityState.Detached;
 
-        await _context.AccountingLotReliefs.ExecuteDeleteAsync(cancellationToken);
-        await _context.AccountingLots.ExecuteDeleteAsync(cancellationToken);
+        await FencedWrite.RunAsync(_context, _writeFence, async () =>
+        {
+            await _context.AccountingLotReliefs.ExecuteDeleteAsync(cancellationToken);
+            await _context.AccountingLots.ExecuteDeleteAsync(cancellationToken);
+        }, transactional: true, cancellationToken: cancellationToken);
     }
 
     private async Task<AccountingLotEntity?> FindTrackedAsync(long id, CancellationToken cancellationToken) =>

@@ -4,13 +4,20 @@ using Microsoft.EntityFrameworkCore;
 namespace NLightning.Infrastructure.Repositories.Database.Node;
 
 using Domain.Channels.ValueObjects;
+using Domain.Node.Fencing;
 using Domain.Protocol.ValueObjects;
 using Domain.Signing;
+using Helpers;
 using Persistence.Contexts;
 using Persistence.Entities.Node;
 
 /// <summary>Immutable database enrollment is checked before runtime services can create key-bearing state.</summary>
-public sealed class NodeSigningEnrollmentStore(NLightningDbContext database)
+/// <remarks>
+/// The first enrollment is written in the validation's transaction, which the node write fence (when one is registered)
+/// checks before the commit (NL-1342): a fenced instance cannot enroll a database. A validation that writes nothing (the
+/// enrollment is already there) is not checked, so a standby can still validate its database.
+/// </remarks>
+public sealed class NodeSigningEnrollmentStore(NLightningDbContext database, INodeWriteFence? writeFence = null)
 {
     public Task ValidateAsync(NodeSigningContext context, CancellationToken cancellationToken = default)
         => ValidateAsync(context, null, cancellationToken);
@@ -54,6 +61,7 @@ public sealed class NodeSigningEnrollmentStore(NLightningDbContext database)
                 CreatedAtTicks = DateTime.UtcNow.Ticks
             });
             await database.SaveChangesAsync(cancellationToken);
+            await FencedWrite.CheckAsync(database.Database, transaction, writeFence, cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
     }

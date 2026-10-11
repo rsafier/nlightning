@@ -8,7 +8,7 @@ using Models;
 /// </summary>
 /// <remarks>
 /// <see cref="Add"/> is staged (committed by <c>IUnitOfWork.SaveChangesAsync</c>); <see cref="DeleteExpiredAsync"/>
-/// runs at once, outside the unit of work's save.
+/// runs at once, outside the unit of work's save, checked by the node write fence when one is registered (NL-1342).
 /// </remarks>
 public interface IOnionReplayDbRepository
 {
