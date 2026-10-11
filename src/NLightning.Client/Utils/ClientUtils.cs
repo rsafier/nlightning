@@ -173,6 +173,9 @@ public static class ClientUtils
         Console.WriteLine("  pendingsweeps [channel_id] [all]");
         Console.WriteLine("                               Show the on-chain resolution of closed channels (alias:");
         Console.WriteLine("                               pending-sweeps); all includes the closed ones");
+        Console.WriteLine("  rotatemacaroonrootkey        Replace the LND gRPC macaroon root key: every macaroon");
+        Console.WriteLine("                               baked before stops working and new default macaroons are");
+        Console.WriteLine("                               written (alias: rotate-macaroon-root-key)");
         Console.WriteLine("  chainstatus                  Show whether chain processing is halted and what is refused");
         Console.WriteLine("                               meanwhile (alias: chain-status); exit code 1 if halted");
         Console.WriteLine("  listnodes [node_id]          List the announced nodes of the gossip graph (alias:");

@@ -8,7 +8,6 @@ using Contracts.Provisioning;
 using Domain.Node.Options;
 using Domain.Node.Provisioning;
 using LndGrpc;
-using LndGrpc.Macaroons;
 using LndGrpc.Tls;
 
 /// <summary>
@@ -180,9 +179,9 @@ public static class ProvisionedSecretsReader
              && (!File.Exists(Path.Combine(directory, LndTlsFiles.CertificateFileName))
               || !File.Exists(Path.Combine(directory, LndTlsFiles.KeyFileName))))
                 missing.Add("lndGrpcTls");
-            if (!lnd.AllowNoMacaroons && secrets.LndGrpcMacaroonRootKey is null
-                                      && !File.Exists(Path.Combine(directory, LndMacaroonFiles.RootKeyFileName)))
-                missing.Add("lndGrpcMacaroonRootKey");
+            // The macaroon root key needs no file: a locked start signs locally, so the root keys live in the node's
+            // database (NL-1389), and a start that finds neither a stored nor a delivered root key 0 fails closed
+            // there (it may not generate one)
         }
 
         var tor = configuration.GetSection("Node:Tor").Get<TorOptions>() ?? new TorOptions();

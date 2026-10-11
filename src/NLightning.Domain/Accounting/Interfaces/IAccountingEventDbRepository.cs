@@ -36,6 +36,13 @@ public interface IAccountingEventDbRepository
     /// <summary>Stages the sealer's decisions.</summary>
     Task ApplySealsAsync(IReadOnlyList<AccountingSeal> seals, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Whether <paramref name="exception"/>, thrown by the save of staged seals, means another sealer over the same
+    /// database committed first (NL-1390): a seal of a row no longer unsealed, or a ledger sequence already taken. Any
+    /// other failure (a fence refusal, the database unavailable) is not.
+    /// </summary>
+    bool IsSealConflict(Exception exception) => false;
+
     /// <summary>Sealed events in ledger order.</summary>
     Task<IReadOnlyList<AccountingEventModel>> ListAsync(AccountingEventQuery query,
                                                         CancellationToken cancellationToken = default);

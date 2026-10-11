@@ -93,11 +93,12 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
                         && registered.IsProvisioned == (secrets.LndGrpcMacaroonRootKey is not null)
                                ? registered
                                : new LndRootKeyStore(DataDirectory, context, secrets);
+            // The root keys live in the node's database when it can hold them (NL-1389); the default macaroons stay
+            // files, baked from root key 0. A delivered root key is checked against the stored one
+            var created = rootKeys.Initialize(allowGenerate && _options.RequireExistingRootKey != true,
+                                              _options.RequireExistingRootKey != false);
             if (secrets.LndGrpcMacaroonRootKey is null)
             {
-                // The root keys live in the node's database when it can hold them (NL-1389); the default macaroons
-                // stay files, baked from root key 0
-                var created = rootKeys.Initialize(allowGenerate && !_options.RequireExistingRootKey);
                 if (rootKeys.UsesDatabase)
                 {
                     if (allowGenerate)
@@ -106,7 +107,7 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
                 else
                 {
                     LndMacaroonFiles.EnsureCreated(DataDirectory, _logger, context, allowGenerate,
-                                                   !_options.RequireExistingRootKey);
+                                                   _options.RequireExistingRootKey != true);
                 }
             }
 

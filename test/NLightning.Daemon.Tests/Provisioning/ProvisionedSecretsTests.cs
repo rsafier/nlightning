@@ -222,7 +222,8 @@ public sealed class ProvisionedSecretsTests : IDisposable
 
         // Assert
         Assert.Contains("secrets.lndGrpcTls", e.Message);
-        Assert.Contains("secrets.lndGrpcMacaroonRootKey", e.Message);
+        // The macaroon root key needs no file since NL-1389: the database holds it, and the start fails closed
+        Assert.DoesNotContain("secrets.lndGrpcMacaroonRootKey", e.Message);
         Assert.Contains("secrets.torOnionServiceKey", e.Message);
     }
 

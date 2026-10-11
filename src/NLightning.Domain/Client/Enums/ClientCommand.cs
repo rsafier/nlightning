@@ -156,4 +156,10 @@ public enum ClientCommand
 
     /// <summary>Explicit bounded durable wallet history rescan and status.</summary>
     WalletHistory = 57,
+
+    /// <summary>
+    /// Replaces the LND gRPC macaroon root key 0 (NL-1389): every macaroon baked with the old one stops working and the
+    /// three default macaroons are baked again.
+    /// </summary>
+    RotateMacaroonRootKey = 58,
 }

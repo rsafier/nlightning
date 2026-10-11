@@ -10,6 +10,14 @@ public interface IMacaroonRootKeyDbRepository
     /// <summary>Every stored root key.</summary>
     Task<IReadOnlyList<StoredMacaroonRootKey>> GetAllAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>The stored root key of <paramref name="rootKeyId"/>, or null when it has none.</summary>
+    Task<StoredMacaroonRootKey?> GetAsync(ulong rootKeyId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Replaces the stored root key of <paramref name="key"/>'s id and commits (a rotation); false when it had none.
+    /// </summary>
+    Task<bool> ReplaceAsync(StoredMacaroonRootKey key, CancellationToken cancellationToken = default);
+
     /// <summary>Stages a new root key (written by the unit of work's save; an existing id fails that save).</summary>
     void Add(StoredMacaroonRootKey key);
 

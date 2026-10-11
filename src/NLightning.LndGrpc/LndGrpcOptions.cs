@@ -59,12 +59,14 @@ public sealed class LndGrpcOptions
     public bool AllowNoMacaroons { get; set; }
 
     /// <summary>
-    /// Refuse to make a new macaroon root key 0 (NL-1389): when neither the node's database nor
-    /// <c>macaroons.key</c> holds one (and none was delivered with the key of a locked start), the server does not start
-    /// instead of minting a key that would silently replace the one every client's macaroons were baked with (a
-    /// replacement host started against the wrong database). Off by default (the first start makes the key).
+    /// Whether a new macaroon root key 0 may be made (NL-1389) when neither the node's database nor
+    /// <c>macaroons.key</c> holds one (and none was delivered with the key of a locked start). <c>true</c>: never, the
+    /// server does not start (fail closed). Unset (the default): only on a first use, refused once the database shows an
+    /// earlier one (it holds other root keys), since a new key would silently replace the one every client's macaroons
+    /// were baked with (a replacement host started against the wrong directory or database). <c>false</c>: always (a
+    /// deliberate reset).
     /// </summary>
-    public bool RequireExistingRootKey { get; set; }
+    public bool? RequireExistingRootKey { get; set; }
 
     /// <summary>Allow the server on mainnet: an admin macaroon moves real funds. Off by default.</summary>
     public bool AllowMainnet { get; set; }

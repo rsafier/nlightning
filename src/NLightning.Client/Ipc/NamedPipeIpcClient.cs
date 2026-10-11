@@ -830,6 +830,10 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <summary>
     /// Whether the node's chain processing is halted and what it refuses meanwhile (ClientCommand 16, NL-216).
     /// </summary>
+    public Task<RotateMacaroonRootKeyIpcResponse> RotateMacaroonRootKeyAsync(CancellationToken ct = default) =>
+        SendRequestAsync<RotateMacaroonRootKeyIpcRequest, RotateMacaroonRootKeyIpcResponse>(
+            ClientCommand.RotateMacaroonRootKey, new RotateMacaroonRootKeyIpcRequest(), ct);
+
     public Task<ChainStatusIpcResponse> ChainStatusAsync(CancellationToken ct = default) =>
         SendRequestAsync<ChainStatusIpcRequest, ChainStatusIpcResponse>(ClientCommand.ChainStatus,
                                                                          new ChainStatusIpcRequest(), ct);

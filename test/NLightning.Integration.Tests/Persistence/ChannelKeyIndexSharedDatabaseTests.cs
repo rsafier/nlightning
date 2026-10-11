@@ -81,6 +81,23 @@ public sealed class ChannelKeyIndexSharedDatabaseTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ConcurrentOpensInOneProcess_When_TheyClaim_Then_NoIndexIsSkipped()
+    {
+        // Arrange (one process: its reservations and claims must not overtake each other)
+        await using var process = BuildProcess(out var keys);
+        var signer = process.GetRequiredService<ILightningSigner>();
+
+        // Act
+        var indexes = await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => Task.Run(
+                                             () => signer.CreateNewChannel(out var _, out var _),
+                                             TestContext.Current.CancellationToken)));
+
+        // Assert: 1..16, none refused as if another process had taken it
+        Assert.Equal(Enumerable.Range(1, 16).Select(i => (uint)i), indexes.Order());
+        Assert.Equal(16u, keys.LastUsedChannelKeyIndex);
+    }
+
+    [Fact]
     public async Task Given_AFencedProcess_When_ItOpensAChannel_Then_ItIsRefusedAndClaimsNothing()
     {
         // Arrange

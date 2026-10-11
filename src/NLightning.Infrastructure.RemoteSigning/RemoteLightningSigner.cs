@@ -19,13 +19,48 @@ public sealed class RemoteLightningSigner : ILightningSigner
     private readonly RemoteSignerConnection _connection;
     private readonly IChannelSigningInfoSource? _source;
     private readonly IUtxoMemoryRepository? _wallet;
-    public RemoteLightningSigner(RemoteSignerConnection connection, IChannelSigningInfoSource? source = null, IUtxoMemoryRepository? wallet = null) { _connection = connection; _source = source; _wallet = wallet; }
+    private readonly IChannelKeyIndexStore? _keyIndexStore;
+    private readonly Lock _keyIndexLock = new();
+
+    public RemoteLightningSigner(RemoteSignerConnection connection, IChannelSigningInfoSource? source = null, IUtxoMemoryRepository? wallet = null,
+                                 IChannelKeyIndexStore? keyIndexStore = null)
+    { _connection = connection; _source = source; _wallet = wallet; _keyIndexStore = keyIndexStore; }
+
+    /// <summary>
+    /// The remote signer allocates the index (its own journal is authoritative); with a key index store the node then
+    /// claims it in the database's high-water mark (NL-1388) before anything goes to the peer, so an index the database
+    /// already saw (a signer whose state was rolled back, a second process) refuses the channel instead of reusing it.
+    /// </summary>
     public uint CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
     {
-        var result = _connection.Invoke(SignerOperations.CreateNewChannel);
-        basepoints = SignerWire.Read<ChannelBasepoints>(result[1]);
-        firstPerCommitmentPoint = SignerWire.Read<CompactPubKey>(result[2]);
-        return SignerWire.Read<uint>(result[0]);
+        // One allocation and claim at a time, so two opens of this process never claim out of order
+        lock (_keyIndexLock)
+        {
+            var result = _connection.Invoke(SignerOperations.CreateNewChannel);
+            basepoints = SignerWire.Read<ChannelBasepoints>(result[1]);
+            firstPerCommitmentPoint = SignerWire.Read<CompactPubKey>(result[2]);
+            var index = SignerWire.Read<uint>(result[0]);
+            if (_keyIndexStore is null)
+                return index;
+
+            bool claimed;
+            try
+            {
+                claimed = _keyIndexStore.TryClaim(index);
+            }
+            catch (Exception e)
+            {
+                throw new NLightning.Domain.Exceptions.SignerException(
+                    "Could not claim the remote signer's channel key index in the database", e, "Internal signer error");
+            }
+
+            if (!claimed)
+                throw new NLightning.Domain.Exceptions.SignerException(
+                    $"The remote signer handed out channel key index {index}, which this database already saw (high-water "
+                  + $"mark {_keyIndexStore.GetHighWater()}): the signer's state is older than the database's",
+                    "Internal signer error");
+            return index;
+        }
     }
     public ChannelBasepoints GetChannelBasepoints(uint channelKeyIndex)
     {

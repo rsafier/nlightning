@@ -66,7 +66,11 @@ macaroon we bake accepted by the bakery checker (same program, `verify` mode).
   never overwritten). Unlike LND it is not encrypted by a wallet password (our node key is protected by the
   key file password, but the gRPC must work unattended); the file has the protection of the key-file
   directory. Rotation = delete it: the next start makes a new key and re-bakes the three macaroons, which
-  invalidates every macaroon baked before. Only storage id `0` exists (no `bakemacaroon`/
+  invalidates every macaroon baked before. (Superseded by NL-1389: the root keys live in the node's database,
+  encrypted with the node data key; `macaroons.key` is imported once and no longer read, a different one left
+  beside the stored key refuses the start, and rotation is `nltg rotatemacaroonrootkey` (ClientCommand 58),
+  which replaces root key 0 under the node write fence and re-bakes the three macaroons. Deleting the file
+  rotates only on a key manager that cannot encrypt node data, VLS, where the keys stay files.) Only storage id `0` exists (no `bakemacaroon`/
   `ListMacaroonIDs` yet).
 - **Default macaroons** baked at the start when missing (all 0600; LND writes the read-only and invoice
   ones 0644, we do not): `admin.macaroon` = LND's `readPermissions + writePermissions`, `readonly.macaroon`

@@ -184,7 +184,8 @@ public sealed class ProvisionedLockedStartTests : IDisposable
         var refused = await attempt.Response;
         Assert.False(refused.Ok);
         Assert.Contains("secrets.lndGrpcTls", refused.Error);
-        Assert.Contains("secrets.lndGrpcMacaroonRootKey", refused.Error);
+        // The macaroon root key needs no file since NL-1389: the database holds it, and the start fails closed
+        Assert.DoesNotContain("secrets.lndGrpcMacaroonRootKey", refused.Error);
         Assert.Equal(before, _files.SnapshotConfigDirectory());
     }
 

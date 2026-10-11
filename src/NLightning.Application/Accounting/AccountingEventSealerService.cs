@@ -217,11 +217,8 @@ public sealed class AccountingEventSealerService : IAccountingEventSealer, IAsyn
                 {
                     await unitOfWork.SaveChangesAsync();
                 }
-                catch (Exception e) when (e is not OperationCanceledException)
+                catch (Exception e) when (repository.IsSealConflict(e))
                 {
-                    if (!await TipMovedPastAsync(currentTip, cancellationToken))
-                        throw;
-
                     // Another sealer over this database committed first (NL-1390): the unique ledger sequence and the
                     // unsealed-row check refused this batch whole, so the chain did not fork. Seal again from the new
                     // tip
@@ -271,23 +268,6 @@ public sealed class AccountingEventSealerService : IAccountingEventSealer, IAsyn
         }
 
         return new AccountingSealRoundResult(sealedCount, duplicateCount, tip);
-    }
-
-    /// <summary>Whether the sealed chain's tip is past <paramref name="tip"/> (read in a scope of its own).</summary>
-    private async Task<bool> TipMovedPastAsync(AccountingChainTip tip, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var scope = _scopeFactory.CreateScope();
-            var repository = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingEventDbRepository;
-            var now = await repository.GetChainTipAsync(cancellationToken);
-            return now.LedgerSeq > tip.LedgerSeq;
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            // The database is unavailable: the save's own failure is reported
-            return false;
-        }
     }
 
     private async Task RunAsync()

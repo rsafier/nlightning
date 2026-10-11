@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -9,6 +10,7 @@ using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
+using Domain.Node.Fencing;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Repositories;
@@ -114,6 +116,38 @@ public sealed class AccountingConcurrentSealerTests : IDisposable
         await AssertChainAsync(events, cancellationToken);
     }
 
+    [Fact]
+    public async Task Given_AFencedSealer_When_ItSaves_Then_TheRefusalIsNotTakenForAConflict()
+    {
+        // Arrange: a process the node write fence refuses
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await AddEventsAsync(0, 3);
+        var fence = new FakeNodeWriteFence { Refuse = true };
+        await using var process = BuildProcess(fence);
+        await using var sealer = new AccountingEventSealerService(process.GetRequiredService<IServiceScopeFactory>(),
+                                                                  NullLogger<AccountingEventSealerService>.Instance);
+
+        // Act & Assert: the refusal propagates (the round is retried later), nothing is sealed or counted
+        await Assert.ThrowsAsync<NodeFencedException>(() => sealer.SealNowAsync(cancellationToken));
+        Assert.Equal(0, sealer.TotalConflicts);
+        using var read = CreateUnitOfWork();
+        Assert.Equal(3, (await read.AccountingEventDbRepository.GetUnsealedAsync(10, cancellationToken)).Count);
+    }
+
+    [Fact]
+    public void Given_SaveFailures_When_Classified_Then_OnlyTheSealConflictsAre()
+    {
+        // Arrange
+        using var unitOfWork = CreateUnitOfWork();
+        var repository = unitOfWork.AccountingEventDbRepository;
+
+        // Act & Assert
+        Assert.True(repository.IsSealConflict(new DbUpdateConcurrencyException("0 rows")));
+        Assert.False(repository.IsSealConflict(new DbUpdateException("other")));
+        Assert.False(repository.IsSealConflict(new NodeFencedException("fenced")));
+        Assert.False(repository.IsSealConflict(new InvalidOperationException("down")));
+    }
+
     private async Task AssertChainAsync(int sealedCount, CancellationToken cancellationToken)
     {
         using var unitOfWork = CreateUnitOfWork();
@@ -153,14 +187,15 @@ public sealed class AccountingConcurrentSealerTests : IDisposable
     private UnitOfWork CreateUnitOfWork() =>
         new(_database.CreateContext(), NullLogger<UnitOfWork>.Instance, new Sha256(), new UtxoMemoryRepository());
 
-    private ServiceProvider BuildProcess()
+    private ServiceProvider BuildProcess(INodeWriteFence? writeFence = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IUtxoMemoryRepository, UtxoMemoryRepository>();
         services.AddScoped<IUnitOfWork>(sp => new UnitOfWork(_database.CreateContext(), NullLogger<UnitOfWork>.Instance,
                                                              new Sha256(),
-                                                             sp.GetRequiredService<IUtxoMemoryRepository>()));
+                                                             sp.GetRequiredService<IUtxoMemoryRepository>(),
+                                                             writeFence: writeFence));
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 }

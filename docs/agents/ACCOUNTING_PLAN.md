@@ -543,3 +543,31 @@ failed against the original implementation before their fixes. Final validation:
   both financial balance sheets balanced in msat and fiat with zero unvalued postings. All owned namespaces cleaned.
 - Retained proof log: `TestResults/cluster/accounting-review-proof1/accounting-review-proof1-1/output.log.gz`.
   SQL Server runtime, optional external-ledger tool checks and manual live-database replay are not exercised here.
+
+## 13. Forked ledger repair (NL-1390)
+
+Since migration `AddSharedDatabaseHardening` the ledger sequence is unique, so two sealers over one database (two
+processes, for example an old and a new host started over the same database) can no longer fork the hash chain. A
+database where that already happened has some `LedgerSeq` on two rows; the migration then refuses with
+"AddSharedDatabaseHardening refused: AccountingEvents holds a ledger sequence twice" (on SQLite the failed CHECK
+constraint is named `AddSharedDatabaseHardening_refused_..._Forked_ledger_repair_NL_1390`). Repair the feed with the
+previous binary's schema, then upgrade:
+
+1. Stop every process that uses the database and take a backup of it.
+2. Find the fork point F, the lowest ledger sequence held twice:
+   `SELECT MIN("LedgerSeq") FROM (SELECT "LedgerSeq" FROM "AccountingEvents" WHERE "LedgerSeq" IS NOT NULL GROUP BY "LedgerSeq" HAVING COUNT(*) > 1) AS f;`
+   (Postgres names are snake_case: `accounting_events`, `ledger_seq`.)
+3. Unseal everything from F on, so both branches are sealed again on one chain:
+   `UPDATE "AccountingEvents" SET "LedgerSeq" = NULL, "Hash" = NULL WHERE "LedgerSeq" >= F;`
+4. Clear the duplicate mark (flag 2) of rows whose key has no sealed row any more (a branch may have marked a row a
+   duplicate of a row the other branch sealed):
+   `UPDATE "AccountingEvents" SET "Flags" = "Flags" & ~2 WHERE "LedgerSeq" IS NULL AND ("Flags" & 2) <> 0 AND "EventKey" NOT IN (SELECT "EventKey" FROM "AccountingEvents" WHERE "LedgerSeq" IS NOT NULL);`
+   (SQL Server has no `~` on int in every version used: write `"Flags" - 2`.)
+5. Start the upgraded node, one process only. The sealer reseals from the tip before F; `nltg accounting verify` must
+   report an intact chain.
+6. Rebuild the books, which were projected from the forked sequences: `nltg accounting rebuild` and, with the financial
+   profile, `nltg accounting rebuild --book financial`. A signed period close whose range reaches F or later
+   (`nltg accounting close list`) was signed over the forked chain: close the period again (`--force` if needed).
+
+Never run two node processes, or an older and a newer binary, over one database at the same time: the fence
+(`INodeWriteFence`) is what keeps a second process from writing, and without one only these database constraints do.

@@ -284,6 +284,8 @@ public static class NodeServiceExtensions
         // NL-216: whether chain processing is halted and what is refused meanwhile (ClientCommand 16)
         services.AddScoped<IClientCommandHandler<ChainStatusClientRequest, ChainStatusClientResponse>,
             ChainStatusClientHandler>();
+        services.AddScoped<IClientCommandHandler<RotateMacaroonRootKeyClientRequest,
+            RotateMacaroonRootKeyClientResponse>, RotateMacaroonRootKeyClientHandler>();
 
         // BOLT 7 G2-T6: the gossip graph's nodes (ClientCommand 17) and channels (18)
         services.AddScoped<IClientCommandHandler<ListNodesClientRequest, ListNodesClientResponse>,
@@ -328,6 +330,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, ForceCloseChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, PendingSweepsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ChainStatusIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, RotateMacaroonRootKeyIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListNodesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListGraphChannelsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, GetRouteIpcHandler>();
@@ -442,7 +445,8 @@ public static class NodeServiceExtensions
             services.AddSingleton<NLightning.Application.Channels.Services.NativeV1FundedInboundOpening>();
             services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
                 new RemoteLightningSigner(remoteConnection, sp.GetRequiredService<IChannelSigningInfoSource>(),
-                                           sp.GetRequiredService<IUtxoMemoryRepository>())));
+                                           sp.GetRequiredService<IUtxoMemoryRepository>(),
+                                           sp.GetService<IChannelKeyIndexStore>())));
         }
 
         if (vlsConnection is not null)

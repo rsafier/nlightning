@@ -27,6 +27,7 @@ using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Client.Interfaces;
 using Domain.Gossip.Addresses;
+using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
@@ -426,14 +427,29 @@ public class NltgDaemonService : BackgroundService
         var keyIndexStore = _secureKeyManager is SecureKeyManager
                                 ? scope.ServiceProvider.GetService<IChannelKeyIndexStore>()
                                 : null;
-        if (keyIndexStore?.GetHighWater() is { } stored && stored > highest)
-            highest = stored;
+        var stored = keyIndexStore?.GetHighWater();
+        if (stored > highest)
+            highest = stored.Value;
 
         if (_secureKeyManager.EnsureLastUsedChannelIndexAtLeast(highest))
             _logger.LogWarning("The signer's last used channel key index was below the database's highest ({Index}); "
                              + "raised it", highest);
 
-        if (keyIndexStore is not null && _secureKeyManager is SecureKeyManager localKeys)
-            keyIndexStore.Raise(Math.Max(highest, localKeys.LastUsedChannelKeyIndex));
+        // Seed or raise the mark only when it is below the key file (a node that upgrades in place); a fenced process
+        // cannot write it, which is only a warning here: its claims refuse every new channel anyway
+        if (keyIndexStore is null || _secureKeyManager is not SecureKeyManager localKeys)
+            return;
+        var target = Math.Max(highest, localKeys.LastUsedChannelKeyIndex);
+        if (stored >= target)
+            return;
+        try
+        {
+            keyIndexStore.Raise(target);
+        }
+        catch (NodeFencedException e)
+        {
+            _logger.LogWarning(e, "Could not raise the database's channel key index high-water mark to {Index}: the "
+                                + "node write fence refused it", target);
+        }
     }
 }

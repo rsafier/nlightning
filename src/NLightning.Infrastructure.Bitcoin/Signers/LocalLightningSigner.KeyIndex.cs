@@ -25,6 +25,10 @@ public partial class LocalLightningSigner
 
     private readonly IChannelKeyIndexStore? _keyIndexStore;
 
+    // One reservation and claim at a time in this process: two opens racing would otherwise claim out of order and the
+    // lower index would be refused as if another process had handed it out
+    private readonly Lock _keyIndexLock = new();
+
     /// <summary>Reserves a channel key index the database has not seen yet and claims it there.</summary>
     /// <exception cref="SignerException">The store could not be written, or kept refusing.</exception>
     private uint ReserveClaimedChannelKeyIndex()
@@ -32,6 +36,12 @@ public partial class LocalLightningSigner
         if (_keyIndexStore is null)
             throw new InvalidOperationException("No channel key index store");
 
+        lock (_keyIndexLock)
+            return ReserveClaimedChannelKeyIndexLocked(_keyIndexStore);
+    }
+
+    private uint ReserveClaimedChannelKeyIndexLocked(IChannelKeyIndexStore keyIndexStore)
+    {
         for (var attempt = 0; attempt < MaxKeyIndexClaims; attempt++)
         {
             var index = _secureKeyManager.ReserveChannelKeyIndex();
@@ -39,8 +49,8 @@ public partial class LocalLightningSigner
             uint? stored;
             try
             {
-                claimed = _keyIndexStore.TryClaim(index);
-                stored = claimed ? null : _keyIndexStore.GetHighWater();
+                claimed = keyIndexStore.TryClaim(index);
+                stored = claimed ? null : keyIndexStore.GetHighWater();
             }
             catch (Exception e)
             {
@@ -51,11 +61,11 @@ public partial class LocalLightningSigner
             if (claimed)
                 return index;
 
-            // Another process over this database (or an older key file of this node) handed it out already
-            _logger.LogWarning("Channel key index {Index} was already handed out by a process over this database "
-                             + "(high-water mark {Stored}); skipping past it", index, stored);
             if (stored is { } mark && mark > index)
             {
+                // Another process over this database (or an older key file of this node) handed it out already
+                _logger.LogWarning("Channel key index {Index} was already handed out by another process over this "
+                                 + "database (high-water mark {Stored}); skipping past it", index, stored);
                 try
                 {
                     _secureKeyManager.EnsureLastUsedChannelIndexAtLeast(mark);
@@ -64,6 +74,11 @@ public partial class LocalLightningSigner
                 {
                     // The next reservations advance one by one
                 }
+            }
+            else
+            {
+                _logger.LogDebug("Channel key index {Index} is at the database's high-water mark {Stored}; trying the "
+                               + "next one", index, stored);
             }
         }
 

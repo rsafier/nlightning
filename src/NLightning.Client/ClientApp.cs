@@ -249,6 +249,10 @@ internal static class ClientApp
                                                                          cancellationToken);
                     new ForceCloseChannelPrinter().Print(forceClose);
                     break;
+                case "rotatemacaroonrootkey":
+                case "rotate-macaroon-root-key":
+                    new RotateMacaroonRootKeyPrinter().Print(await client.RotateMacaroonRootKeyAsync(cancellationToken));
+                    break;
                 case "chainstatus":
                 case "chain-status":
                     var chainStatus = await client.ChainStatusAsync(cancellationToken);
@@ -460,6 +464,8 @@ internal static class ClientApp
             case "wallet-balance":
             case "chainstatus":
             case "chain-status":
+            case "rotatemacaroonrootkey":
+            case "rotate-macaroon-root-key":
                 return null;
             case "shutdown":
             case "stop":

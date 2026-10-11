@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using NLightning.Cashu.PaymentProcessor;
 using NLightning.LnBackend;
@@ -41,6 +42,10 @@ internal static class HostedAdministrativeApiIsolation
                 AddResource(directory, true, owner);
                 foreach (var file in ExistingRootKeys(directory))
                     AddAuthority(roots, SHA256.HashData(File.ReadAllBytes(file)), owner, "macaroon roots");
+                // Root keys kept in the private database (NL-1389) are encrypted with each node's key under a random
+                // nonce, so the same stored row in two owners' databases can only be a copied database
+                foreach (var row in StoredRootKeys(launch.Enrollment.PrivateDatabasePath))
+                    AddAuthority(roots, row, owner, "macaroon roots");
             }
             var cashu = configuration.GetSection(CashuPaymentProcessorOptions.SectionName)
                                      .Get<CashuPaymentProcessorOptions>() ?? new();
@@ -91,6 +96,43 @@ internal static class HostedAdministrativeApiIsolation
                 throw new ArgumentException("Hosted administrative credential storage overlaps another owner's private resources.");
             resources.Add((normalized, directory, owner));
         }
+    }
+
+    /// <summary>Fingerprints of the encrypted root key rows of a private SQLite database (none when it does not exist
+    /// yet or has no such table).</summary>
+    private static List<byte[]> StoredRootKeys(string databasePath)
+    {
+        var rows = new List<byte[]>();
+        if (!File.Exists(databasePath))
+            return rows;
+
+        RequireCanonicalPath(databasePath);
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString();
+        using var connection = new SqliteConnection(connectionString);
+        connection.Open();
+        using (var exists = connection.CreateCommand())
+        {
+            exists.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'MacaroonRootKeys'";
+            if (Convert.ToInt64(exists.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 0)
+                return rows;
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT Nonce, Ciphertext FROM MacaroonRootKeys";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var nonce = (byte[])reader[0];
+            var ciphertext = (byte[])reader[1];
+            rows.Add(SHA256.HashData([.. nonce, .. ciphertext]));
+        }
+
+        return rows;
     }
 
     private static IEnumerable<string> ExistingRootKeys(string directory)

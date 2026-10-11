@@ -28,9 +28,33 @@ public class MacaroonRootKeyDbRepository : IMacaroonRootKeyDbRepository
     public async Task<IReadOnlyList<StoredMacaroonRootKey>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         var entities = await _context.MacaroonRootKeys.AsNoTracking().ToListAsync(cancellationToken);
-        return entities.Select(e => new StoredMacaroonRootKey(unchecked((ulong)e.RootKeyId), e.Nonce, e.Ciphertext,
-                                                              new DateTimeOffset(e.CreatedAt, TimeSpan.Zero)))
-                       .ToList();
+        return entities.Select(MapToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<StoredMacaroonRootKey?> GetAsync(ulong rootKeyId, CancellationToken cancellationToken = default)
+    {
+        var id = unchecked((long)rootKeyId);
+        var entity = await _context.MacaroonRootKeys.AsNoTracking()
+                                   .SingleOrDefaultAsync(e => e.RootKeyId == id, cancellationToken);
+        return entity is null ? null : MapToDomain(entity);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ReplaceAsync(StoredMacaroonRootKey key, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        var id = unchecked((long)key.RootKeyId);
+        var createdAt = key.CreatedAt.UtcTicks;
+        var updated = await FencedWrite.RunAsync(_context, _writeFence,
+                                                 () => _context.MacaroonRootKeys.Where(e => e.RootKeyId == id)
+                                                               .ExecuteUpdateAsync(s => s
+                                                                   .SetProperty(e => e.Nonce, key.Nonce)
+                                                                   .SetProperty(e => e.Ciphertext, key.Ciphertext)
+                                                                   .SetProperty(e => e.CreatedAt, createdAt),
+                                                                   cancellationToken),
+                                                 cancellationToken: cancellationToken);
+        return updated > 0;
     }
 
     /// <inheritdoc />
@@ -56,4 +80,8 @@ public class MacaroonRootKeyDbRepository : IMacaroonRootKeyDbRepository
                                                  cancellationToken: cancellationToken);
         return deleted > 0;
     }
+
+    private static StoredMacaroonRootKey MapToDomain(MacaroonRootKeyEntity entity) =>
+        new(unchecked((ulong)entity.RootKeyId), entity.Nonce, entity.Ciphertext,
+            new DateTimeOffset(entity.CreatedAt, TimeSpan.Zero));
 }

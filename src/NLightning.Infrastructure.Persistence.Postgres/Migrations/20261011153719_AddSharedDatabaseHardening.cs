@@ -10,6 +10,11 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            // ---- Hand-written guard (NL-1390): a ledger sequence held twice (two sealers forked the chain) would fail the
+            // unique index below with a bare constraint error; refuse with the repair procedure instead ----
+            migrationBuilder.Sql("DO $$ BEGIN IF EXISTS (SELECT 1 FROM accounting_events WHERE ledger_seq IS NOT NULL GROUP BY ledger_seq HAVING COUNT(*) > 1) THEN RAISE EXCEPTION 'AddSharedDatabaseHardening refused: AccountingEvents holds a ledger sequence twice (two sealers forked the hash chain); repair it first, see docs/agents/ACCOUNTING_PLAN.md section Forked ledger repair (NL-1390)'; END IF; END $$;");
+            // ---- End of the hand-written guard ----
+
             migrationBuilder.DropIndex(
                 name: "ix_accounting_events_ledger_seq",
                 table: "accounting_events");

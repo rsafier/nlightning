@@ -437,4 +437,29 @@ public sealed class RemoteSignerProcessTests(SignerDaemonFixture daemon) : IClas
         Assert.NotNull(exception);
         Assert.IsNotType<SignerException>(exception);
     }
+
+    [Fact]
+    public void Given_AKeyIndexStore_When_TheRemoteSignerAllocatesAChannel_Then_TheIndexIsClaimedBeforeItIsUsed()
+    {
+        // Arrange (NL-1388): the first allocation is claimed, the second is one the database already saw
+        using var connection = new RemoteSignerConnection(daemon.Options());
+        var store = new Moq.Mock<NLightning.Domain.Bitcoin.Interfaces.IChannelKeyIndexStore>();
+        uint? claimed = null;
+        store.Setup(s => s.TryClaim(Moq.It.IsAny<uint>()))
+             .Returns((uint index) =>
+              {
+                  if (claimed is not null)
+                      return false;
+                  claimed = index;
+                  return true;
+              });
+        var signer = new RemoteLightningSigner(connection, keyIndexStore: store.Object);
+
+        // Act
+        var first = signer.CreateNewChannel(out _, out _);
+
+        // Assert: the claimed index is the one returned; a refused claim refuses the channel
+        Assert.Equal(claimed, first);
+        Assert.Throws<NLightning.Domain.Exceptions.SignerException>(() => signer.CreateNewChannel(out _, out _));
+    }
 }

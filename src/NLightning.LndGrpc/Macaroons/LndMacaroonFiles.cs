@@ -8,7 +8,9 @@ namespace NLightning.LndGrpc.Macaroons;
 /// The root key and the default macaroons in the data directory: <c>macaroons.key</c> (32 random bytes, LND's root key
 /// for storage id <c>0</c>) and <c>admin.macaroon</c>, <c>readonly.macaroon</c>, <c>invoice.macaroon</c> baked from it
 /// with LND's operation sets. Every file is created 0600 and exclusively; an existing file is never overwritten except
-/// the macaroons after the root key was replaced (deleting <c>macaroons.key</c> rotates every macaroon).
+/// the macaroons after the root key was replaced. Root key 0 is a file only when the root keys are not in the node's
+/// database (NL-1389, <see cref="LndRootKeyStore"/>): then deleting <c>macaroons.key</c> rotates every macaroon. With
+/// the database the file is imported once and no longer read, and <c>nltg rotatemacaroonrootkey</c> rotates.
 /// </summary>
 public static class LndMacaroonFiles
 {

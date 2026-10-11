@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Accounting;
@@ -135,6 +136,28 @@ public class AccountingEventDbRepository : BaseDbRepository<AccountingEventEntit
             entity.LedgerSeq = seal.LedgerSeq;
             entity.Hash = seal.Hash;
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>A concurrency failure (the seal's <c>LedgerSeq IS NULL</c> condition matched no row), or a unique
+    /// violation of the ledger sequence index as each provider reports it (SQLite "UNIQUE constraint failed:
+    /// AccountingEvents.LedgerSeq", Postgres SQLSTATE 23505 on <c>ix_accounting_events_ledger_seq</c>, SQL Server
+    /// "duplicate key ... IX_AccountingEvents_LedgerSeq").</remarks>
+    public bool IsSealConflict(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        if (exception is DbUpdateConcurrencyException)
+            return true;
+        if (exception is not DbUpdateException { InnerException: DbException inner })
+            return false;
+
+        var message = inner.Message;
+        var namesIndex = message.Contains("LedgerSeq", StringComparison.OrdinalIgnoreCase)
+                      || message.Contains("ledger_seq", StringComparison.OrdinalIgnoreCase);
+        var isUnique = inner.SqlState == "23505"
+                    || message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase);
+        return namesIndex && isUnique;
     }
 
     /// <inheritdoc />

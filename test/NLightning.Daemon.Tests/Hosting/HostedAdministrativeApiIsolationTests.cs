@@ -13,6 +13,7 @@ public sealed class HostedAdministrativeApiIsolationTests
     [Theory]
     [InlineData("shared-directory")]
     [InlineData("copied-root")]
+    [InlineData("copied-database-root")]
     [InlineData("unauthenticated")]
     [InlineData("listener")]
     public async Task LndMisconfigurationFailsBeforeAnyHostedProcessStarts(string change)
@@ -33,6 +34,13 @@ public sealed class HostedAdministrativeApiIsolationTests
                 File.WriteAllBytes(Path.Combine(aDirectory, "macaroons.key"), bytes);
                 File.WriteAllBytes(Path.Combine(bDirectory, "macaroons.key"), bytes);
                 break;
+            case "copied-database-root":
+                // The same encrypted root key row in both private databases (NL-1389): a copied database
+                var row = RandomNumberGenerator.GetBytes(48);
+                var nonce = RandomNumberGenerator.GetBytes(24);
+                StoreRootKeyRow(a.Launch.Enrollment.PrivateDatabasePath, nonce, row);
+                StoreRootKeyRow(b.Launch.Enrollment.PrivateDatabasePath, nonce, row);
+                break;
             case "unauthenticated": b.Document["LndGrpc"]!["AllowNoMacaroons"] = true; break;
             case "listener": b.Document["LndGrpc"]!["Port"] = 19735; break;
         }
@@ -45,6 +53,23 @@ public sealed class HostedAdministrativeApiIsolationTests
         Assert.Empty(supervisor.Nodes);
         Assert.False(File.Exists(a.Launch.Enrollment.NodeCredentialPath));
         Assert.False(File.Exists(b.Launch.Enrollment.NodeCredentialPath));
+    }
+
+    private static void StoreRootKeyRow(string databasePath, byte[] nonce, byte[] ciphertext)
+    {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection(
+            new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false }
+               .ToString());
+        connection.Open();
+        using var create = connection.CreateCommand();
+        create.CommandText = "CREATE TABLE \"MacaroonRootKeys\" (\"RootKeyId\" INTEGER NOT NULL PRIMARY KEY, "
+                           + "\"Nonce\" BLOB NOT NULL, \"Ciphertext\" BLOB NOT NULL, \"CreatedAt\" INTEGER NOT NULL)";
+        create.ExecuteNonQuery();
+        using var insert = connection.CreateCommand();
+        insert.CommandText = "INSERT INTO \"MacaroonRootKeys\" VALUES (0, $nonce, $ciphertext, 0)";
+        insert.Parameters.AddWithValue("$nonce", nonce);
+        insert.Parameters.AddWithValue("$ciphertext", ciphertext);
+        insert.ExecuteNonQuery();
     }
 
     [Theory]
