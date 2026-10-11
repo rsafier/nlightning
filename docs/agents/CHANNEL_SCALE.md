@@ -118,10 +118,13 @@ have taken about 15 minutes (16 dials at a time, 15 s each).
    archive and drops it) and the signer's lazy load of its signing info on first use. Linear, but 6.6 s + 4 s at 10,000
    on SQLite and 40 s + 18 s on Postgres. Fix sketch: hand the loaded settled archive to the registration, and load the
    signing info set-based once at startup instead of one query per channel.
-2. **The on-chain executor's background round outlives the node's stop** (NL-1355, medium). `OnchainResolutionExecutor` has no stop;
-   a round scheduled by the last block runs on after the service provider is disposed (logged
-   `ObjectDisposedException`; in the benchmark it recreated an empty SQLite file after the database was deleted).
-   Fix sketch: a stop that cancels and awaits the loop, called by the host before the provider is disposed.
+2. **The on-chain executor's background round outlived the node's stop** (NL-1355, fixed). A round scheduled by the last
+   block ran on after the service provider was disposed (logged `ObjectDisposedException`; in the benchmark it
+   recreated an empty SQLite file after the database was deleted). `OnchainResolutionExecutor.StopAsync` now refuses
+   new rounds, cancels the running one and waits for it (bounded), and nothing it does after the stop is saved,
+   published or raised; the daemon, `NLightningTestNode` and `ScaleNode` call it with the safety services, before the
+   chain monitor and the peers stop (`IChannelFailureService.StopAsync` likewise waits for its block-driven work and
+   the anchor CPFP rounds).
 3. **Readiness waits `StartupDialWait` when any stored peer does not answer** (NL-576, by design). With dead peers stored, every start
    waits the full 15 s before the chain monitor starts (by design, NL-576), whatever the channel count.
 4. **One peer connection caps payments at about 17/s** (not filed) with SQLite here (ordered per-peer processing, one fsynced save

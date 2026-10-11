@@ -468,6 +468,41 @@ public sealed class ChannelFailureServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_BlockRetryPublishing_When_StopAsync_Then_WaitsForTheRetry()
+    {
+        // Arrange (NL-1355): the block's publish retry is held in the publish
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        _publishResults.Enqueue(() => false);
+        _publishResults.Enqueue(() =>
+        {
+            entered.Set();
+            release.Wait(TimeSpan.FromSeconds(10));
+            return true;
+        });
+        var service = Service;
+        service.Start();
+        await service.WhenResumedAsync();
+        await service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b"),
+                                       TestContext.Current.CancellationToken);
+        _blockchainMonitor.Raise(m => m.OnNewBlockDetected += null, new NewBlockEventArgs(501, new byte[32]));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+        // Act
+        var stop = service.StopAsync();
+        var waitedForRetry = !stop.IsCompleted;
+        release.Set();
+        await stop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert: the stop returned only once the retry had ended
+        Assert.True(waitedForRetry);
+        Assert.False(service.IsPublishPending(_channel.ChannelId));
+    }
+
+    [Fact]
     public async Task Given_FailedByAnOlderBuildWithOnlyAWatch_When_Started_Then_RowWrittenAndPublished()
     {
         // Arrange: an older build persisted Failed and the watch of its commitment, but no broadcast row; the

@@ -108,9 +108,13 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private readonly TimeProvider _timeProvider;
 
     private readonly Lock _gate = new();
+    private readonly CancellationTokenSource _stopping = new();
     private Task _loop = Task.CompletedTask;
     private uint? _scheduledHeight;
     private bool _looping;
+    private bool _stopRequested;
+    private int _active;
+    private TaskCompletionSource? _drained;
 
     public OnchainResolutionExecutor(IChainBroadcaster chainBroadcaster, IChannelLockProvider channelLockProvider,
                                      IChannelMemoryRepository channelMemoryRepository,
@@ -141,15 +145,25 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             var fundingReconfirmation = new FundingReconfirmationHandler(channelLockProvider, channelMemoryRepository,
                                                                          logger, serviceScopeFactory);
             blockchainMonitor.OnTransactionConfirmed += (_, args) =>
-                _ = fundingReconfirmation.HandleAsync(args.WatchedTransaction);
+                _ = RunGuardedAsync(token => fundingReconfirmation.HandleAsync(args.WatchedTransaction, token),
+                                    CancellationToken.None);
         }
     }
+
+    /// <summary>
+    /// How long <see cref="StopAsync"/> waits for the work in flight to end (NL-1355); the work is cancelled first, so
+    /// it ends at its next await.
+    /// </summary>
+    internal TimeSpan StopTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <inheritdoc />
     public void ScheduleRound(uint height)
     {
         lock (_gate)
         {
+            if (_stopRequested)
+                return;
+
             _scheduledHeight = Math.Max(_scheduledHeight ?? 0, height);
             if (_looping)
                 return;
@@ -177,7 +191,71 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     }
 
     /// <inheritdoc />
-    public async Task RunRoundAsync(uint height, CancellationToken cancellationToken = default)
+    public async Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        Task drained;
+        Task loop;
+        lock (_gate)
+        {
+            _stopRequested = true;
+            _scheduledHeight = null;
+            _drained ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (_active == 0)
+                _drained.TrySetResult();
+            drained = _drained.Task;
+            loop = _loop;
+        }
+
+        await _stopping.CancelAsync();
+        try
+        {
+            await Task.WhenAll(drained, loop).WaitAsync(StopTimeout, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("The on-chain resolution work still running did not end within {Timeout} of the stop",
+                               StopTimeout);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task RunRoundAsync(uint height, CancellationToken cancellationToken = default) =>
+        RunGuardedAsync(token => RunRoundCoreAsync(height, token), cancellationToken);
+
+    /// <summary>
+    /// NL-1355: runs <paramref name="work"/> unless the stop was requested, counted as work in flight that
+    /// <see cref="StopAsync"/> waits for, with a token the stop cancels. A cancellation by the stop ends it quietly.
+    /// </summary>
+    private async Task RunGuardedAsync(Func<CancellationToken, Task> work, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (_stopRequested)
+                return;
+            _active++;
+        }
+
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopping.Token);
+            await work(linked.Token);
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested
+                                              && !cancellationToken.IsCancellationRequested)
+        {
+            // Stopping: what was not saved is done again by the next start's rounds
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                if (--_active == 0 && _stopRequested)
+                    _drained?.TrySetResult();
+            }
+        }
+    }
+
+    private async Task RunRoundCoreAsync(uint height, CancellationToken cancellationToken)
     {
         // NL-493: once per process, the funding spends the chain monitor recorded before a crash stopped their handling
         try
@@ -214,7 +292,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                await ResolveChannelAsync(channel.ChannelId, height, cancellationToken);
+                await RunChannelAsync(channel.ChannelId, height, null, false, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -288,16 +366,20 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
     /// <inheritdoc />
     public Task ResolveChannelAsync(ChannelId channelId, uint height, CancellationToken cancellationToken = default) =>
-        RunChannelAsync(channelId, height, null, false, cancellationToken);
+        RunGuardedAsync(token => RunChannelAsync(channelId, height, null, false, token), cancellationToken);
 
     /// <inheritdoc />
     /// <remarks>A spend of a funding output other than the channel's current one (a pending splice's, or one a lock
     /// retired, watched since splicing plan §3.6) reaches this path from the channel manager; it goes to the on-chain
     /// watcher, which classifies it against that funding (SP2-C-T1).</remarks>
-    public async Task HandleOutputSpentAsync(OutpointSpentEventArgs args,
-                                             CancellationToken cancellationToken = default)
+    public Task HandleOutputSpentAsync(OutpointSpentEventArgs args, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(args);
+        return RunGuardedAsync(token => HandleOutputSpentCoreAsync(args, token), cancellationToken);
+    }
+
+    private async Task HandleOutputSpentCoreAsync(OutpointSpentEventArgs args, CancellationToken cancellationToken)
+    {
         if (args.SpentTransactionId is not { } spentTxId || args.SpentOutputIndex is not { } spentIndex)
             return;
 
@@ -330,16 +412,17 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     }
 
     /// <inheritdoc />
-    public async Task CatchUpSpendsAsync(ChannelId channelId, IReadOnlyList<WatchedOutpointModel> watches,
-                                         uint fromHeight, CancellationToken cancellationToken = default)
+    public Task CatchUpSpendsAsync(ChannelId channelId, IReadOnlyList<WatchedOutpointModel> watches,
+                                   uint fromHeight, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(watches);
-        await CatchUpSpendsAsync(channelId, watches.Select(w => (w, fromHeight)).ToList(), cancellationToken);
+        var bounded = watches.Select(w => (w, fromHeight)).ToList();
+        return RunGuardedAsync(token => CatchUpSpendsAsync(channelId, bounded, token), cancellationToken);
     }
 
     /// <inheritdoc />
     public Task CatchUpSavedWatchesAsync(ChannelId channelId, CancellationToken cancellationToken = default) =>
-        CatchUpSavedWatchesCoreAsync([channelId], cancellationToken);
+        RunGuardedAsync(token => CatchUpSavedWatchesCoreAsync([channelId], token), cancellationToken);
 
     /// <summary>
     /// NL-311: the saved watch of every output of <paramref name="channelIds"/> that is not resolved yet
@@ -561,6 +644,10 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             try
             {
                 await RunRoundAsync(height);
+            }
+            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+            {
+                // Stopping
             }
             catch (Exception e)
             {
@@ -1743,7 +1830,11 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         }
 
         if (staged)
+        {
+            // NL-1355: nothing is saved once the stop was requested (the next start's round stages it again)
+            cancellationToken.ThrowIfCancellationRequested();
             await unitOfWork.SaveChangesAsync();
+        }
 
         return new Applied(staged, toPublish, toTrack,
                            actions.OfType<RaiseChannelEventAction>().Select(a => a.Event).ToList(),
@@ -1752,11 +1843,25 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
     private async Task AfterSaveAsync(IServiceScope scope, ChannelId channelId, Applied applied)
     {
+        // NL-1355: once the stop was requested nothing is published or raised: the saved broadcast rows are sent by the
+        // chain monitor after the next start, the watches tracked again and the resolvers raise their events again
+        if (_stopping.IsCancellationRequested)
+        {
+            if (applied.ToPublish.Count > 0 || applied.Events.Count > 0)
+                _logger.LogInformation("Stopping: channel {ChannelId}'s {Count} saved broadcasts and {Events} switch "
+                                     + "events wait for the next start", channelId, applied.ToPublish.Count,
+                                       applied.Events.Count);
+            return;
+        }
+
         foreach (var watch in applied.NewWatches)
             _outpointWatcher.TrackWatchedOutpoint(watch);
 
         foreach (var transaction in applied.ToPublish)
         {
+            if (_stopping.IsCancellationRequested)
+                break;
+
             try
             {
                 if (!await _chainBroadcaster.PublishAsync(transaction))

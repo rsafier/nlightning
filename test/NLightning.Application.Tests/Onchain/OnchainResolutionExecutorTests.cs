@@ -877,13 +877,18 @@ public sealed partial class OnchainResolutionExecutorTests : IDisposable
 
         public bool CanResolve(ChannelCloseKind kind) => Kinds.Contains(kind);
 
-        public Task<IReadOnlyList<OutputResolverAction>> ResolveAsync(ChannelCloseModel close,
-                                                                      IReadOnlyList<OutputResolutionModel> outputs,
-                                                                      uint height,
-                                                                      CancellationToken cancellationToken)
+        /// <summary>Awaited before <see cref="OnResolve"/> (a round held in the resolver).</summary>
+        public Func<Task>? BeforeResolve { get; set; }
+
+        public async Task<IReadOnlyList<OutputResolverAction>> ResolveAsync(ChannelCloseModel close,
+                                                                            IReadOnlyList<OutputResolutionModel> outputs,
+                                                                            uint height,
+                                                                            CancellationToken cancellationToken)
         {
             LastHeight = height;
-            return Task.FromResult(OnResolve?.Invoke(close, outputs, height) ?? []);
+            if (BeforeResolve is not null)
+                await BeforeResolve();
+            return OnResolve?.Invoke(close, outputs, height) ?? [];
         }
 
         public Task<IReadOnlyList<OutputResolverAction>> OnOutputSpentAsync(

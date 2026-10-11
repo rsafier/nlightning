@@ -148,6 +148,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                         SpentAtHeight = args.BlockHeight,
                         BlockHash = blockHash
                     });
+                    cancellationToken.ThrowIfCancellationRequested();
                     await unitOfWork.SaveChangesAsync();
                 }
 
@@ -162,6 +163,9 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
             var spentFunding = contexts.First(c => ReferenceEquals(c.Context, match.Context)).Funding;
             var classification = match.Classification;
+
+            // NL-1355: a caller that is stopping (the on-chain executor's replay) saves nothing more
+            cancellationToken.ThrowIfCancellationRequested();
             switch (classification.Kind)
             {
                 case FundingSpendKind.NotFundingSpend:
@@ -205,7 +209,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             return null;
         }
 
-        if (recorded is null)
+        if (recorded is null || cancellationToken.IsCancellationRequested)
             return null;
 
         foreach (var watch in recorded.NewWatches)

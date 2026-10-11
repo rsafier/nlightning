@@ -26,6 +26,7 @@ using Application.Channels.Safety.Interfaces;
 using Application.Channels.Splicing;
 using Application.InteractiveTx;
 using Application.Onchain.Fees;
+using Application.Onchain.Interfaces;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Application.Payments.Trampoline;
@@ -805,14 +806,15 @@ public sealed class NLightningTestNode : IAsyncDisposable
     }
 
     /// <summary>
-    /// Stops the HTLC deadline monitor, the fail-the-channel service and the fee rounds, before the chain monitor and
-    /// the peers they use (the daemon's order).
+    /// Stops the HTLC deadline monitor, the on-chain resolution executor, the fail-the-channel service and the fee
+    /// rounds, before the chain monitor and the peers they use (the daemon's order; NL-1355).
     /// </summary>
     private async Task StopSafetyServicesAsync()
     {
         await Task.WhenAll(Services.GetRequiredService<IHtlcExpiryMonitor>().StopAsync(),
-                           Services.GetRequiredService<IFeeUpdateScheduler>().StopAsync());
-        Services.GetRequiredService<IChannelFailureService>().Stop();
+                           Services.GetRequiredService<IFeeUpdateScheduler>().StopAsync(),
+                           Services.GetService<IOnchainResolutionExecutor>()?.StopAsync() ?? Task.CompletedTask);
+        await Services.GetRequiredService<IChannelFailureService>().StopAsync();
     }
 
     private async Task DisposeServiceProviderAsync()
