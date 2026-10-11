@@ -11230,7 +11230,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** move those serializations to source-generated `JsonSerializerContext`s (as `KeyProvisioningJsonContext` and `KeyFileDataJsonContext` do), then put the gate back at 0.
 
 ### NL-1381 An open gRPC stream held the node's stop for the whole shutdown timeout
-- **Status:** fixed (pending)
+- **Status:** fixed (d3807407)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.LndGrpc/LndGrpcHost.cs`, `src/NLightning.LnBackend/LnBackendHost.cs`, `src/NLightning.Cashu.PaymentProcessor/CashuPaymentProcessorHost.cs`, `src/Shared/Grpc/`
