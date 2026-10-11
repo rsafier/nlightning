@@ -90,6 +90,11 @@ internal static class ClientApp
             var namedPipeFilePath = NodeUtils.GetNamedPipeFilePath(cookiePath);
             var cookieFilePath = NodeUtils.GetCookieFilePath(cookiePath);
 
+            // NL-1349: a locked node has no IPC pipe; unlock talks to its provisioning socket
+            if (cmd == "unlock")
+                return await UnlockCommands.RunAsync(commandArgs, cookiePath, Console.In, Console.Out, Console.Error,
+                                                     cancellationToken);
+
             await using var client = new NamedPipeIpcClient(namedPipeFilePath, cookieFilePath);
 
             // NL-602 A3-T1: --label/--tag are taken out before the command's own parser runs (checked above)
@@ -621,6 +626,8 @@ internal static class ClientApp
             case "listpeerstorage":
             case "list-peer-storage":
                 return PeerStorageCommands.Validate(cmd, commandArgs);
+            case "unlock":
+                return UnlockCommands.Validate(cmd, commandArgs);
             case "waitinvoice":
             case "wait-invoice":
                 return WaitInvoiceCommands.Validate(cmd, commandArgs);

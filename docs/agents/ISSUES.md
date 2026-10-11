@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 97 | 99 |
-| in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 74 | 265 | 535 | 889 |
+| open | 0 | 0 | 2 | 102 | 104 |
+| in-progress | 0 | 1 | 8 | 1 | 10 |
+| fixed | 15 | 74 | 267 | 535 | 891 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **284** | **654** | **1028** |
+| **Total** | **15** | **75** | **286** | **660** | **1036** |
 
 ### Epics
 
@@ -10860,7 +10860,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** in local signing mode the daemon passes the local signer's channel derivation; a pre-enrollment database is adopted (enrolled once to the configured context and the key file's node key) only when every local `ChannelKeySets` row's revocation, payment, delayed-payment and HTLC basepoints are the ones the key file derives at that row's key index (funding keys rotate with splices and are not compared). A database whose channels came from another key file is refused without enrollment. A local database with no channels is adopted (its wallet can only be the key file's own). RemoteNative and VLS modes never adopt existing state. The same applies to LND credentials (`LndCredentialEnrollment`): a standard node (local signing, default context) keeps its unbound credentials and stored root key (`LndCredentialContext.Resolve` returns no context), so the existing admin/readonly/invoice macaroons used by RTL, the REST gateway, Lightning Terminal, loopd and bos keep working; remote signers and hosted contexts stay bound. The test node uses the daemon's adoption helper (the matrix's `Day0UpgradeInPlaceTests` caught it), and `run-cluster.sh` exports the symlink-resolved `TMPDIR` (macOS `/var` -> `/private/var` failed the credential path check). Tests: `Daemon.Tests/Configuration/NodeSigningEnrollmentTests` (adoption, foreign key file refused, wallet-only adoption, existing refusals unchanged), 14/14.
 
 ### NL-1345 The local signer's safety guards lived in process memory only
-- **Status:** fixed (branch `wip/durable-signer-guard`)
+- **Status:** fixed (becd47e4)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.DurableGuard.cs` (and the guarded entry points in `LocalLightningSigner{,.Splicing,.Taproot}.cs`), Domain `Channels/ValueObjects/ChannelSignerGuard`, `Bitcoin/Interfaces/IChannelSignerGuardStore`, `Channels/Interfaces/IChannelSignerGuardDbRepository`, `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelSignerGuard{Store,DbRepository}.cs`, migration `AddChannelSignerGuards`
@@ -10986,3 +10986,49 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the node write fence (NL-1341) is asked on the outbox, the single path of channel messages, our own gossip and onion messages, and before our `peer_storage` backup. These other sends carry no channel state (connection upkeep, gossip queries and their answers from the graph, handing a peer its own blob back), but a fenced instance still keeps its connections alive with them.
 - **Fix sketch:** check the fence in `PeerCommunicationService.SendMessageAsync` (one transport choke point, all message types) and close the connection on a refusal.
 - **Blocks/Blocked-by:** NL-1341
+
+### NL-1349 Locked start: no key material in the node's image, the key delivered at run time
+- **Status:** fixed (d59bdf4a)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.Daemon/Provisioning/`, `src/NLightning.Daemon/Configuration/StartupOptions.cs`, `src/NLightning.Daemon.Contracts/Provisioning/KeyProvisioningProtocol.cs`, `src/NLightning.Client/Handlers/UnlockCommands.cs`, `SecureKeyManager.FromKeyFileContent`, `KeyIndexFile`, `NodeSigningEnrollmentStore.IsEnrolledToAnotherAsync`
+- **Evidence:** the daemon could only start from a key file on disk unlocked by a password given at start, so an image or enclave that must not hold key material at rest could not run a node.
+- **Fix:** `--locked` / `Node:Startup:Locked` starts with no key: only the provisioning endpoint is open (owner-only Unix socket `<configPath>/provisioning/key.sock` in a 0700 directory, or stdin), nothing else runs. An `IKeyProvisioner` (development provider: an encrypted key file plus its password, framed `NLKP` v1 JSON) delivers the key; it is opened in memory only (`FromKeyFileContent`: the file version decides the node id, a v1 file is not upgraded, the channel key index goes to the public `nltg.key-index`), checked read-only against the key index file and the database's signing enrollment, then the configured migrations and the enrollment validation of a normal start run on a throwaway node graph, and the node starts as a normal start does. A refused key keeps the node locked and is answered with the reason; nothing is written. Client verb `unlock` (and `unlock --status`, `--frame` for the stdin provider). Doc `docs/agents/LOCKED_START.md`.
+- **Validation:** `Daemon.Tests/Provisioning/` (`LockedStartupTests`, `KeyProvisioningSocketTests`, `LockedStartOptionsTests`), `Infrastructure.Bitcoin.Tests/Managers/SecureKeyManagerKeyFileContentTests`; daemon smoke on regtest (locked, wrong password refused, unlock, migrations, enrollment, node start, SIGTERM while locked).
+- **Blocks/Blocked-by:** NL-1340
+
+### NL-1350 Locked start: vsock transport and attested key providers
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Provisioning/IProvisioningEndpoint.cs`, `IKeyProvisioner.cs`
+- **Evidence:** the locked start has a Unix socket and a stdin endpoint and one provider (encrypted key file plus password). A vsock listener, an attested KMS unwrap and an operator import encrypted to an attested ephemeral key are not implemented.
+- **Fix sketch:** a `VsockProvisioningEndpoint : IProvisioningEndpoint` under the same `EndpointKeyProvisioner`; new providers as `IKeyProvisioner`s yielding their own `ProvisionedKeyMaterial` subtypes, opened in `LockedStartup.OpenMaterial`.
+- **Blocks/Blocked-by:** NL-1349
+
+### NL-1351 Locked start: a database from before signing enrollment is migrated before the adoption check
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Provisioning/LockedStartup.cs` (`CheckIdentityAsync`)
+- **Evidence:** the read-only identity check runs only once the schema has `NodeSigningEnrollments`. A database from before enrollment (NL-1340) is adopted only after the configured migrations ran, so a key whose channels do not match is refused (nothing key-bound is written) but leaves the schema migrated.
+- **Fix sketch:** run the NL-1340 basepoint comparison read-only before the migrations when the database predates enrollment, or refuse locked starts on such databases until a normal start enrolled them.
+- **Blocks/Blocked-by:** NL-1349
+
+### NL-1352 Locked start: at-rest secrets delivered with the key
+- **Status:** in-progress
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `KeyProvisioningSecrets` (`src/NLightning.Daemon.Contracts/Provisioning/KeyProvisioningProtocol.cs`), `LockedStartup.ApplySecrets`
+- **Evidence:** a locked node still read its other secrets from files or its configuration.
+- **Fix:** the unlock request may carry `databaseConnectionString`, `bitcoinRpcUser` and `bitcoinRpcPassword`, laid over the configuration in memory before the identity check (client `unlock --secrets-file`); without them the configuration is used as today. Remaining: the LND gRPC macaroon root key and TLS key, the Tor onion service key and the CDK processor's TLS keys are still files.
+- **Blocks/Blocked-by:** NL-1349
+
+
+### NL-1353 `LoopPersistenceTests.Given_ADurableImportedHistory_*` times out in loaded full Integration runs
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests` `LoopPersistenceTests`
+- **Evidence:** failed with `TaskCanceledException` in two full net10.0 Integration runs on 2026-10-10 (the locked-start and node-fence lanes, neither touching the class); the class passed alone (8/8) both times.
+- **Fix sketch:** find the wall-clock wait in the durable imported-history case and make it event-driven or give it a stepped clock.

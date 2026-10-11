@@ -8,6 +8,7 @@ using NLightning.Daemon.Configuration;
 using NLightning.Daemon.Contracts.Helpers;
 using NLightning.Daemon.Contracts.Utilities;
 using NLightning.Daemon.Extensions;
+using NLightning.Daemon.Provisioning;
 using NLightning.Daemon.Utilities;
 using NLightning.Domain.Node.Options;
 using NLightning.Domain.Protocol.Interfaces;
@@ -63,7 +64,10 @@ try
     // Bind and validate the configuration, then exit (NL-338): no key, bitcoind or database needed
     if (DaemonUtils.IsCheckConfigRequested(args))
     {
-        var failures = ConfigurationCheck.Run(initialConfig, network);
+        var failures = ConfigurationCheck.Run(initialConfig, network).ToList();
+        var checkedStartup = StartupOptions.Read(initialConfig, DaemonUtils.IsLockedRequested(args));
+        if (checkedStartup.Locked)
+            failures.AddRange(checkedStartup.GetValidationErrors(configPath));
         foreach (var failure in failures)
             Console.Error.WriteLine(failure);
 
@@ -92,7 +96,11 @@ try
     var signingOptions = SigningOptions.Read(initialConfig);
     ISecureKeyManager keyManager;
     var password = string.Empty;
-    using var remoteConnection = signingOptions.IsRemoteNative
+    var nodeConfig = initialConfig;
+
+    // Locked start (NL-1349): no key material at start; the node waits for its key on the provisioning endpoint
+    var startupOptions = StartupOptions.Read(initialConfig, DaemonUtils.IsLockedRequested(args));
+    using var remoteConnection = signingOptions.IsRemoteNative && !startupOptions.Locked
         ? new RemoteSignerConnection(new RemoteSignerOptions
         {
             NodeId = signingOptions.NodeId,
@@ -108,7 +116,7 @@ try
             ExpectedNodePublicKey = signingOptions.ExpectedNodePublicKey
         })
         : null;
-    var vlsConnection = signingOptions.IsVls
+    var vlsConnection = signingOptions.IsVls && !startupOptions.Locked
         ? new VlsSignerConnection(new VlsSignerOptions
         {
             SocketPath = signingOptions.SocketPath,
@@ -118,7 +126,18 @@ try
             ExpectedNodePublicKey = signingOptions.ExpectedNodePublicKey
         })
         : null;
-    if (vlsConnection is not null)
+    if (startupOptions.Locked)
+    {
+        var (lockedExitCode, unlocked) = await LockedStartupRunner.RunAsync(args, initialConfig, network, configPath,
+                                                                            pidFilePath, startupOptions,
+                                                                            signingOptions);
+        if (lockedExitCode is { } exitCode)
+            return exitCode;
+
+        keyManager = unlocked!.KeyManager;
+        nodeConfig = unlocked.Configuration;
+    }
+    else if (vlsConnection is not null)
     {
         keyManager = new VlsSecureKeyManager(vlsConnection);
         Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
@@ -199,7 +218,7 @@ try
         }
     }
 
-    // Start as a daemon if requested
+    // Start as a daemon if requested (a locked start daemonized before its wait: the child returns false here)
     if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger, password))
     {
         // The parent process exits immediately after starting the daemon
@@ -213,7 +232,7 @@ try
 
     // Create and run host
     var host = Host.CreateDefaultBuilder(DaemonUtils.NormalizeArgs(args))
-                   .ConfigureNltg(initialConfig)
+                   .ConfigureNltg(nodeConfig)
                    .ConfigureNltgServices(keyManager, configPath, remoteConnection, vlsConnection)
                    .Build();
 

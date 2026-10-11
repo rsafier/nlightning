@@ -232,6 +232,9 @@ public static class ClientUtils
         Console.WriteLine("                               Wait until an invoice is paid or canceled (alias:");
         Console.WriteLine("                               wait-invoice) [timeout 1-300, default 60]; exit code 1 if");
         Console.WriteLine("                               it is still open when the wait ends");
+        Console.WriteLine("  unlock --key-file <path> [--password-file <path> | --password-stdin] [--secrets-file <path>]");
+        Console.WriteLine("         [--socket <path>] [--frame]   Deliver the key to a node started with --locked");
+        Console.WriteLine("  unlock --status [--socket <path>]    Show whether a locked node is still waiting for its key");
         Console.WriteLine("  createholdinvoice <payment_hash> [amount_msat|any] [description] [--expiry <seconds>]");
         Console.WriteLine("                               Create a hold invoice (alias: create-hold-invoice): the");
         Console.WriteLine("                               node locks the paying HTLCs in and holds them until you");

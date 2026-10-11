@@ -21,10 +21,11 @@ public class DaemonUtils
         "exec 3<&0; nohup \"$0\" \"$@\" <&3 3<&- >/dev/null 2>&1 & exec 3<&-; echo $!";
 
     internal const string CheckConfigFlag = "--check-config";
+    internal const string LockedFlag = "--locked";
 
     private static readonly HashSet<string> s_bareFlags = new(StringComparer.OrdinalIgnoreCase)
     {
-        DashDashDaemon, DashDashDaemonChild, "--stop", "--status", "--help", CheckConfigFlag
+        DashDashDaemon, DashDashDaemonChild, "--stop", "--status", "--help", CheckConfigFlag, LockedFlag
     };
 
     private static readonly HashSet<string> s_shortSwitches = ["-n", "-c", "-h", "-?"];
@@ -48,6 +49,8 @@ public class DaemonUtils
         Console.WriteLine("  --stop                     Stop a running daemon");
         Console.WriteLine("  --status                   Show daemon status information");
         Console.WriteLine("  --check-config             Bind and validate the configuration, then exit (0 = valid)");
+        Console.WriteLine("  --locked                   Start without key material and wait for the key on the provisioning");
+        Console.WriteLine("                             endpoint (Node:Startup; the client's unlock command delivers it)");
         Console.WriteLine("  --help, -h, -?             Show this help message");
         Console.WriteLine();
         Console.WriteLine("Environment Variables:");
@@ -157,6 +160,15 @@ public class DaemonUtils
     {
         return args.Any(arg =>
                             arg.Equals("--status", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Checks the command line for <c>--locked</c>: start without key material (NL-1349).
+    /// </summary>
+    public static bool IsLockedRequested(string[] args)
+    {
+        return args.Any(arg => arg.Equals(LockedFlag, StringComparison.OrdinalIgnoreCase)
+                            || arg.Equals(LockedFlag + "=true", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
