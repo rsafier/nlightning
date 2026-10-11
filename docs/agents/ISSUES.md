@@ -11308,7 +11308,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** separate a first-use (construction/JIT) cost from the match timeout, or retry a timed-out match once before reporting it; in the test, assert the timed-out report instead of a plain miss, or run the case outside the loaded collection.
 
 ### NL-1392 Opens before (or during) a channel restore can take a key index a restored channel uses
-- **Status:** fixed (SHA_PENDING)
+- **Status:** fixed (5f941f63)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Backup/ChannelRestoreService.cs` (`ReserveKeyIndexesAsync`), `SecureKeyManagerKeyIndexReserver`, the open paths (`LocalLightningSigner.CreateNewChannel`)
