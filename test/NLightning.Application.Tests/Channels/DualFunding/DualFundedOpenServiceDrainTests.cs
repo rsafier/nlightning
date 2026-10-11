@@ -8,10 +8,13 @@ using Application.Channels.DualFunding;
 using Application.Node.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
+using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
@@ -23,7 +26,8 @@ using Moq;
 /// <summary>
 /// The dual-funded open's drain gate for a peer's RBF (NL-592): while the node drains for its shutdown,
 /// <c>tx_init_rbf</c> is answered with <c>tx_abort</c> (BOLT 2 lets the recipient refuse for any reason), like the
-/// splice path does. The first pass only refused our own <c>bumpopen</c> (IPC) and a peer's open.
+/// splice path does. The first pass only refused our own <c>bumpopen</c> (IPC) and a peer's open. Also the channel key
+/// index gate of a restore (NL-1392), which refuses our dual-funded open before a key index is taken.
 /// </summary>
 public sealed class DualFundedOpenServiceDrainTests
 {
@@ -69,7 +73,30 @@ public sealed class DualFundedOpenServiceDrainTests
             Assert.DoesNotContain("shutting down", decision.RejectReason);
     }
 
-    private static DualFundedOpenService CreateService(IServiceProvider serviceProvider)
+    [Fact]
+    public async Task Given_AChannelRestoreInProgress_When_WeOpenDualFunded_Then_RefusedBeforeAKeyIndexIsTaken()
+    {
+        // Arrange - NL-1392: the channel key index gate is held by a restore
+        var gate = new ChannelKeyIndexGate();
+        using var restore = await gate.BeginRestoreAsync(TestContext.Current.CancellationToken);
+        var services = new ServiceCollection();
+        services.AddSingleton<IChannelKeyIndexGate>(gate);
+        var signer = new Mock<ILightningSigner>();
+        var service = CreateService(services.BuildServiceProvider(), signer.Object);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelKeyIndexHeldException>(
+                            () => service.OpenAsync(new DualFundedOpenRequest(Peer(9), LightningMoney.Satoshis(600_000)),
+                                                    TestContext.Current.CancellationToken));
+
+        // Assert: a retryable refusal, the signer never asked for a key index
+        Assert.Equal(ChannelKeyIndexHold.RestoreInProgressReason, exception.Reason);
+        signer.Verify(s => s.CreateNewChannel(out It.Ref<ChannelBasepoints>.IsAny, out It.Ref<CompactPubKey>.IsAny),
+                      Times.Never);
+    }
+
+    private static DualFundedOpenService CreateService(IServiceProvider serviceProvider,
+                                                       ILightningSigner? signer = null)
     {
         return new DualFundedOpenService(new Mock<IChannelLockProvider>().Object,
                                          new Mock<IChannelMemoryRepository>().Object,
@@ -77,7 +104,7 @@ public sealed class DualFundedOpenServiceDrainTests
                                          new Mock<ICommitmentTransactionBuilder>().Object,
                                          new Mock<ICommitmentTransactionModelFactory>().Object,
                                          new Mock<IFeeService>().Object,
-                                         new Mock<ILightningSigner>().Object,
+                                         signer ?? new Mock<ILightningSigner>().Object,
                                          NullLogger<DualFundedOpenService>.Instance,
                                          new Mock<IMessageFactory>().Object, serviceProvider,
                                          new Mock<ISha256>().Object,

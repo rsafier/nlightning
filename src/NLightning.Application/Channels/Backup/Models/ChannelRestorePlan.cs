@@ -30,12 +30,15 @@ public enum ChannelRestoreAction
 /// <param name="LocalBasepoints">Our re-derived basepoints, for <see cref="ChannelRestoreAction.Restore"/>.</param>
 /// <param name="LocalFundingPubKey">Our re-derived funding key of the entry's current funding (at
 /// <see cref="ChannelBackupEntry.LocalFundingKeyIndex"/>), for <see cref="ChannelRestoreAction.Restore"/>.</param>
+/// <param name="Detail">For a channel restored at a key index already in use: the key-compromise warning (NL-1392).
+/// </param>
 public sealed record ChannelRestorePlanItem(
     ChannelBackupEntry Entry,
     ChannelRestoreAction Action,
     ChannelState? ExistingState = null,
     ChannelBasepoints? LocalBasepoints = null,
-    Domain.Crypto.ValueObjects.CompactPubKey? LocalFundingPubKey = null);
+    Domain.Crypto.ValueObjects.CompactPubKey? LocalFundingPubKey = null,
+    string? Detail = null);
 
 /// <summary>The outcome of <c>restorechanbackup</c> for one channel.</summary>
 /// <param name="Entry">The channel as backed up.</param>

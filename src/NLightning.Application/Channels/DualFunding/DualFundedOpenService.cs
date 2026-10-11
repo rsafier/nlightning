@@ -23,6 +23,7 @@ using Domain.Channels.DualFunding.Interfaces;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.Models;
 using Domain.Channels.Policies;
 using Domain.Channels.Splicing;
@@ -165,6 +166,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             throw new InvalidOperationException("Chain processing is halted: no new channel (NL-216)");
         if (IsDraining())
             throw new InvalidOperationException(NodeDrain.Refusal("openchannel"));
+        if (GetKeyIndexHoldReason() is { } holdReason)
+            throw new ChannelKeyIndexHeldException(holdReason);
         if (request.IsPublic && !_gossipOptions.ArePublicChannelsAllowed(_nodeOptions.BitcoinNetwork))
             throw new InvalidOperationException("Public channels are not enabled on this network");
         if (request.LocalFundingAmount.IsZero)
@@ -730,6 +733,12 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (IsDraining())
             throw new ChannelErrorException(NodeDrain.Refusal("open_channel2"), temporaryId,
                                             "Not accepting channels right now, try again later");
+        if (GetKeyIndexHoldReason() is { } holdReason)
+            throw new ChannelErrorException(ChannelKeyIndexHold.Refusal("open_channel2", holdReason), temporaryId,
+                                            ChannelKeyIndexHold.PeerMessage)
+            {
+                KeepConnection = true
+            };
         if (payload.ChannelFlags.AnnounceChannel && (!_gossipOptions.AcceptPublicChannels
                                                   || !_gossipOptions.ArePublicChannelsAllowed(
                                                          _nodeOptions.BitcoinNetwork)))
@@ -800,7 +809,23 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                            negotiatedFeatures)),
                                      minimumDepth, payload.FundingAmount, out _, out _, negotiatedFeatures) is not null;
 
-        var keyIndex = _lightningSigner.CreateNewChannel(out var basepoints, out var firstPoint);
+        uint keyIndex;
+        ChannelBasepoints basepoints;
+        CompactPubKey firstPoint;
+        try
+        {
+            keyIndex = _lightningSigner.CreateNewChannel(out basepoints, out firstPoint);
+        }
+        catch (ChannelKeyIndexHeldException e)
+        {
+            // A restore started after the check above (NL-1392)
+            throw new ChannelErrorException(ChannelKeyIndexHold.Refusal("open_channel2", e.Reason), temporaryId,
+                                            ChannelKeyIndexHold.PeerMessage)
+            {
+                KeepConnection = true
+            };
+        }
+
         var secondPoint = _lightningSigner.GetPerCommitmentPoint(keyIndex, 1);
         var channelId = ChannelIdV2.Derive(_sha256, basepoints.RevocationBasepoint, payload.RevocationBasepoint);
 
@@ -2498,6 +2523,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     /// <summary>NL-591: a node draining for its shutdown opens nothing new.</summary>
     private bool IsDraining() => _serviceProvider.GetService<INodeDrainState>() is { IsDraining: true };
+
+    /// <summary>Why new channel key indexes are refused now (a restore, NL-1392), or null.</summary>
+    private string? GetKeyIndexHoldReason() => _serviceProvider.GetService<IChannelKeyIndexGate>()?.HoldReason;
 
     private uint GetLocktime() => GetMonitor()?.LastProcessedBlockHeight ?? 0;
 

@@ -56,6 +56,9 @@ public sealed class ListChannelsPrinter : IPrinter<ListChannelsIpcResponse>
             PrintFundings(channel);
             if (channel.DataLossDetected)
                 _output.WriteLine("  DATA LOSS DETECTED: do not force-close this channel");
+            if (channel.SharesKeysWith is { Count: > 0 } shared)
+                _output.WriteLine("  KEYS SHARED with {0}: key-compromised; close it cooperatively (closechannel), "
+                                + "never force close it", string.Join(", ", shared));
             _output.WriteLine(PaymentsPrintFormat.Separator);
         }
     }

@@ -43,4 +43,12 @@ public sealed class ChannelBackupOptions
     /// (NL-430).
     /// </summary>
     public uint RestoreSpendSearchBatchSize { get; set; } = 8;
+
+    /// <summary>
+    /// Opt-in for a node set up on a fresh database before its channels are restored (NL-1392, default false): a start
+    /// whose database holds no channel row refuses every channel open (inbound and ours) until a
+    /// <c>restorechanbackup</c> completes or the operator lifts the hold (<c>openhold --release</c>), so no new channel
+    /// takes a key index that a backed-up channel uses. A start whose database already has channels ignores it.
+    /// </summary>
+    public bool HoldOpensUntilRestore { get; set; }
 }

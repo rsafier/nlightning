@@ -252,6 +252,31 @@ public class ListChannelsClientHandlerTests
     }
 
     [Fact]
+    public async Task Given_TwoLiveChannelsAtOneKeyIndex_When_HandleAsync_Then_BothAreMarkedAsSharingKeys()
+    {
+        // Arrange (NL-1392: a restored channel at a key index a live channel already used)
+        var live = CreateChannel(CreateChannelId(1), s_alice, ChannelState.Open);
+        var recovery = CreateChannel(CreateChannelId(2), s_alice, ChannelState.Failed);
+        var other = CreateChannel(CreateChannelId(3), s_alice, ChannelState.Open);
+        _channelDbRepositoryMock.Setup(x => x.GetAllAsync()).ReturnsAsync([live, recovery, other]);
+        _channelDbRepositoryMock.Setup(x => x.GetLocalKeyIndexesAsync())
+                                .ReturnsAsync([(live.ChannelId, 5u, ChannelState.Open),
+                                               (recovery.ChannelId, 5u, ChannelState.Failed),
+                                               (other.ChannelId, 6u, ChannelState.Open),
+                                               (CreateChannelId(4), 6u, ChannelState.Closed)]);
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert: a Closed row at the same index shares nothing that can still sign
+        var byId = response.Channels.ToDictionary(c => c.ChannelId);
+        Assert.Equal([recovery.ChannelId], byId[live.ChannelId].SharesKeysWith);
+        Assert.Equal([live.ChannelId], byId[recovery.ChannelId].SharesKeysWith);
+        Assert.Empty(byId[other.ChannelId].SharesKeysWith);
+    }
+
+    [Fact]
     public async Task Given_RoutingOptions_When_HandleAsync_Then_FeePolicyIsReportedAndNotReestablished()
     {
         // Arrange

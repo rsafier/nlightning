@@ -427,7 +427,8 @@ mainnet` on each side.
   `listchannels` means do not force close; let the peer close.
 - After a splice with a rotated funding key there is no downgrade to a build without `ChannelFundings`.
 - Backups are for recovery through the peer (`restorechanbackup` asks it to force close); they are not a way to go
-  back in time.
+  back in time. A node set up again on a fresh database holds its opens until the restore
+  (`Node:Backup:HoldOpensUntilRestore`, NL-1392): `CHANNEL_RESTORE.md`.
 
 ## 5. Results template
 

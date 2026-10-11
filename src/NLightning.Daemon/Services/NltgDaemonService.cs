@@ -10,6 +10,8 @@ using Application.Accounting;
 using Application.Accounting.Books;
 using Application.Accounting.Financial;
 using Application.Accounting.Prices;
+using Application.Channels.Backup;
+using Application.Channels.Backup.Interfaces;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -24,6 +26,7 @@ using Application.Payments.Trampoline;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Client.Interfaces;
 using Domain.Gossip.Addresses;
@@ -171,6 +174,12 @@ public class NltgDaemonService : BackgroundService
 
             // Never hand out a channel key index a stored channel already uses (SECURITY_REVIEW SR-19)
             await ReconcileChannelKeyIndexAsync();
+
+            // NL-1392: never hand out a key index of a backed-up channel the database lacks; refuse opens until the
+            // restore when asked; say which channels share their keys
+            await RaiseKeyIndexesFromBackupFileAsync(stoppingToken);
+            await ApplyOpenHoldUntilRestoreAsync();
+            await WarnSharedKeyIndexesAsync();
 
             // Open the accounting feed with the node's balances, once per node (NL-602 A1-T6): before the peers
             // connect and the chain monitor runs, so the database does not change while it is read
@@ -438,6 +447,85 @@ public class NltgDaemonService : BackgroundService
                          + "negotiation(s) mid-flight; stopping anyway (nothing is broadcast; the HTLC expiry "
                          + "monitor and the resolvers run at the next start)", result.Snapshot.HtlcsInFlight,
                            result.Snapshot.NegotiationCount);
+    }
+
+    /// <summary>
+    /// NL-1392: raises the channel key index past every channel of <c>channel.backup</c> that the database lacks
+    /// (<see cref="BackupFileKeyIndexGuard"/>), before the peers start. Not for a VLS signer, whose keys do not follow
+    /// our index.
+    /// </summary>
+    private async Task RaiseKeyIndexesFromBackupFileAsync(CancellationToken cancellationToken)
+    {
+        if (_scopeFactory is null || _secureKeyManager is VlsSecureKeyManager)
+            return;
+
+        using var scope = _scopeFactory.CreateScope();
+        var provider = scope.ServiceProvider;
+        if (provider.GetService<IChannelBackupService>() is not { } backupService
+         || provider.GetService<IChannelKeyIndexReserver>() is not { } reserver
+         || provider.GetService<IOptions<ChannelBackupOptions>>()?.Value is not { } backupOptions)
+            return;
+
+        try
+        {
+            await new BackupFileKeyIndexGuard(backupService, reserver, provider.GetService<IChannelKeyIndexGate>(),
+                                              _logger)
+                 .RaiseAsync(backupOptions.FilePath, _nodeOptions.BitcoinNetwork.ChainHash,
+                             _secureKeyManager.GetNodePubKey(),
+                             provider.GetRequiredService<IUnitOfWork>().ChannelDbRepository, cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Could not check the channel backup file's key indexes");
+        }
+    }
+
+    /// <summary>
+    /// <c>Node:Backup:HoldOpensUntilRestore</c> (NL-1392): at a start whose database holds no channel row, every
+    /// channel open is refused (<see cref="IChannelKeyIndexGate.HoldUntilRestore"/>) until a <c>restorechanbackup</c>
+    /// completes or the operator runs <c>openhold --release</c>, so an open accepted before the restore can't take a
+    /// backed-up channel's key index. Runs before the peers start.
+    /// </summary>
+    private async Task ApplyOpenHoldUntilRestoreAsync()
+    {
+        if (_scopeFactory is null)
+            return;
+
+        using var scope = _scopeFactory.CreateScope();
+        if (scope.ServiceProvider.GetService<IOptions<ChannelBackupOptions>>()?.Value is not
+            { HoldOpensUntilRestore: true }
+         || scope.ServiceProvider.GetService<IChannelKeyIndexGate>() is not { } gate)
+            return;
+
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var channels = await unitOfWork.ChannelDbRepository.GetLocalKeyIndexesAsync();
+        if (channels.Count > 0)
+        {
+            _logger.LogInformation("Node:Backup:HoldOpensUntilRestore is set but the database already holds {Count} "
+                                 + "channel(s): channel opens are not held", channels.Count);
+            return;
+        }
+
+        gate.HoldUntilRestore();
+        _logger.LogWarning("Node:Backup:HoldOpensUntilRestore: the database holds no channel, so every channel open is "
+                         + "refused until restorechanbackup completes or 'openhold --release' lifts the hold");
+    }
+
+    /// <summary>A critical log per group of live channels that share a key index (NL-1392).</summary>
+    private async Task WarnSharedKeyIndexesAsync()
+    {
+        if (_scopeFactory is null)
+            return;
+
+        using var scope = _scopeFactory.CreateScope();
+        var channels = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().ChannelDbRepository
+                                  .GetLocalKeyIndexesAsync();
+        foreach (var group in channels.Where(c => c.State is not (Domain.Channels.Enums.ChannelState.Closed
+                                                                   or Domain.Channels.Enums.ChannelState.Stale))
+                                      .GroupBy(c => c.KeyIndex).Where(g => g.Count() > 1))
+            _logger.LogCritical("Channels {Channels} share channel key index {Index}: they are key-compromised; close "
+                              + "them cooperatively (closechannel), never force close them",
+                                string.Join(", ", group.Select(c => c.ChannelId)), group.Key);
     }
 
     /// <summary>

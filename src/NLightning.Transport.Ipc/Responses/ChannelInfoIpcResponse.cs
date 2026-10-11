@@ -103,6 +103,12 @@ public sealed class ChannelInfoIpcResponse
     [Key(27)] public string? ChannelType { get; init; }
 
     /// <summary>
+    /// The other live channels at the same channel key index (NL-1392): this channel is key-compromised; null or
+    /// empty for none.
+    /// </summary>
+    [Key(28)] public List<ChannelId>? SharesKeysWith { get; init; }
+
+    /// <summary>
     /// The name of a channel type's commitment format, as <c>listchannels</c> and the backup commands print it.
     /// </summary>
     public static string ChannelTypeName(CommitmentFormat format) => format switch
@@ -147,7 +153,8 @@ public sealed class ChannelInfoIpcResponse
                                             .Select(RetiredScidInfoIpcResponse.FromClientResponse).ToList(),
             Label = channel.Label,
             Tags = channel.Tags.Count == 0 ? null : [.. channel.Tags],
-            ChannelType = ChannelTypeName(channel.ChannelType)
+            ChannelType = ChannelTypeName(channel.ChannelType),
+            SharesKeysWith = channel.SharesKeysWith.Count == 0 ? null : [.. channel.SharesKeysWith]
         };
     }
 }

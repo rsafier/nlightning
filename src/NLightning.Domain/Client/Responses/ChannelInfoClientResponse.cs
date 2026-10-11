@@ -125,4 +125,11 @@ public sealed class ChannelInfoClientResponse
     /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1); empty for none.
     /// </summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
+
+    /// <summary>
+    /// Other channels of this database (any state but Closed and Stale) at the same channel key index (NL-1392): the
+    /// channels share their funding key, basepoints and per-commitment secrets, so this one is key-compromised. Close
+    /// it cooperatively, never force close it. Empty for none.
+    /// </summary>
+    public IReadOnlyList<ChannelId> SharesKeysWith { get; init; } = [];
 }

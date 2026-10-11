@@ -13,6 +13,8 @@ using Domain.Channels.DualFunding.Interfaces;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
@@ -57,6 +59,7 @@ public sealed class OpenChannelClientHandler
 
     private ChannelId _channelId = ChannelId.Zero;
     private ChannelId? _upgradedChannelId;
+    private readonly IChannelKeyIndexGate? _keyIndexGate;
     private bool _v1OpenWithDualFundNegotiated;
     private IPeerService? _peerService;
 
@@ -83,8 +86,10 @@ public sealed class OpenChannelClientHandler
                                     UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null,
                                     IDualFundedOpenService? dualFundedOpenService = null,
                                     ILightningSigner? lightningSigner = null,
-                                    NativeV1ChannelOpening? nativeOpening = null)
+                                    NativeV1ChannelOpening? nativeOpening = null,
+                                    IChannelKeyIndexGate? keyIndexGate = null)
     {
+        _keyIndexGate = keyIndexGate;
         _nativeOpening = nativeOpening;
         _lightningSigner = lightningSigner;
         _dualFundedOpenService = dualFundedOpenService;
@@ -112,6 +117,11 @@ public sealed class OpenChannelClientHandler
         // NL-216: no new channel while the node does not follow the chain (it could not see the funding confirm)
         if (_blockchainMonitor.IsChainProcessingHalted)
             throw new ClientException(ErrorCodes.InvalidOperation, ChainProcessingHalt.Refusal("openchannel"));
+
+        // NL-1392: no new channel key index while a channel restore holds them (retryable)
+        if (_keyIndexGate?.HoldReason is { } holdReason)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      ChannelKeyIndexHold.Refusal("openchannel", holdReason));
 
         // BOLT 7 plan D12: public channels stay off on mainnet until the Docker proof of G1 passed
         if (request.IsPublic && _nodeOptions.BitcoinNetwork == BitcoinNetwork.Mainnet
@@ -176,9 +186,18 @@ public sealed class OpenChannelClientHandler
         _v1OpenWithDualFundNegotiated = peer.NegotiatedFeatures.DualFund != FeatureSupport.No;
 
         // Since we're connected, let's open the channel
-        var channel = _nativeOpening is { Enabled: true }
-            ? await _nativeOpening.CreateOutboundAsync(request, peer.NegotiatedFeatures, peerId)
-            : await _channelFactory.CreateChannelV1AsInitiatorAsync(request, peer.NegotiatedFeatures, peerId);
+        ChannelModel channel;
+        try
+        {
+            channel = _nativeOpening is { Enabled: true }
+                ? await _nativeOpening.CreateOutboundAsync(request, peer.NegotiatedFeatures, peerId)
+                : await _channelFactory.CreateChannelV1AsInitiatorAsync(request, peer.NegotiatedFeatures, peerId);
+        }
+        catch (ChannelKeyIndexHeldException e)
+        {
+            // A restore started after the check above (NL-1392)
+            throw new ClientException(ErrorCodes.InvalidOperation, e.Message, e);
+        }
         channel.Label = labels.Label;
         channel.Tags = labels.CanonicalTags;
 

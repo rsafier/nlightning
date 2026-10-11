@@ -10,6 +10,7 @@ using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
@@ -937,6 +938,40 @@ public class OpenChannelClientHandlerTests
         Assert.Equal("duplicate pending channel", ex.Message);
         reserveMock.Verify(x => x.LockFundingUtxosAsync(It.IsAny<LightningMoney>(), It.IsAny<ChannelModel>(),
                                                         It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ARestoreThatStartsAfterTheCheck_When_TheFactoryAllocates_Then_ARetryableInvalidOperation()
+    {
+        // Arrange (NL-1392: the gate is open at the handler's check; the signer refuses the key index under the
+        // factory)
+        var peerId = CreateDummyPubKey();
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", LightningMoney.Satoshis(1_000_000));
+        var peerModel = new PeerModel(peerId, "127.0.0.1", 9735, "ipv4");
+        var peerServiceMock = new Mock<IPeerService>();
+        peerServiceMock.Setup(x => x.Features).Returns(new FeatureOptions());
+        peerModel.SetPeerService(peerServiceMock.Object);
+        _peerManagerMock.Setup(x => x.GetPeer(peerId)).Returns(peerModel);
+        _blockchainMonitorMock.Setup(x => x.LastProcessedBlockHeight).Returns(100u);
+        _utxoMemoryRepositoryMock.Setup(x => x.GetConfirmedBalance(100u)).Returns(LightningMoney.Satoshis(2_000_000));
+        _channelFactoryMock.Setup(x => x.CreateChannelV1AsInitiatorAsync(request, It.IsAny<FeatureOptions>(), peerId))
+                           .ThrowsAsync(new ChannelKeyIndexHeldException(ChannelKeyIndexHold.RestoreInProgressReason));
+        var handler = new OpenChannelClientHandler(_blockchainMonitorMock.Object, _channelFactoryMock.Object,
+                                                   _channelManagerMock.Object, _channelMemoryRepositoryMock.Object,
+                                                   new Mock<ILogger<OpenChannelClientHandler>>().Object,
+                                                   _messageFactoryMock.Object, _peerManagerMock.Object,
+                                                   _utxoMemoryRepositoryMock.Object,
+                                                   keyIndexGate: new ChannelKeyIndexGate());
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ClientException>(
+                            () => handler.HandleAsync(request, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
+        Assert.Contains("try again later", exception.Message);
+        _channelManagerMock.Verify(x => x.StartOpeningChannelAsync(It.IsAny<CompactPubKey>(), It.IsAny<ChannelModel>(),
+                                                                    It.IsAny<IChannelMessage>()), Times.Never);
     }
 
     private OpenChannelClientHandler CreateHandlerWithLock(IChannelLockProvider lockProvider) =>

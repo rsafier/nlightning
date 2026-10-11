@@ -73,7 +73,7 @@ internal sealed class BackupTestData
     public ChannelModel AddChannel(byte tag, bool anchors = false, ChannelState state = ChannelState.Open,
                                    bool withFunding = true, bool initiator = true, ShortChannelId? scid = null,
                                    bool withPeer = true, ChannelVersion version = ChannelVersion.V1,
-                                   bool simpleTaproot = false)
+                                   bool simpleTaproot = false, ChannelId? channelId = null)
     {
         var remoteNode = Key(0x03, tag, 9);
         var local = new ChannelKeySetModel(tag, Key(0x02, tag, 1), Key(0x02, tag, 2), Key(0x02, tag, 3),
@@ -97,7 +97,7 @@ internal sealed class BackupTestData
                                             remote.FundingCompactPubKey,
                                             Enumerable.Repeat((byte)(0xA0 + tag), 32).ToArray(), (ushort)(tag % 3));
 
-        var channel = new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat(tag, 32).ToArray()), null,
+        var channel = new ChannelModel(channelParams, channelId ?? new ChannelId(Enumerable.Repeat(tag, 32).ToArray()), null,
                                        funding, initiator, null, null, LightningMoney.Satoshis(600_000), local, 0, 0,
                                        LightningMoney.Satoshis(400_000), remote, 0, remoteNode, 0, state,
                                        version)

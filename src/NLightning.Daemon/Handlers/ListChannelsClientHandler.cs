@@ -96,6 +96,7 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
                 channels.Add(channel);
         }
 
+        var keyIndexes = await GetLiveKeyIndexesAsync();
         var fundingRepository = GetFundingRepository();
         var tipHeight = _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
         var infos = new List<ChannelInfoClientResponse>(channels.Count);
@@ -107,7 +108,8 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             var fundings = fundingRepository is null || IsFinished(channel)
                                ? []
                                : await fundingRepository.GetByChannelIdAsync(channel.ChannelId);
-            infos.Add(ToChannelInfo(channel, fundings, tipHeight, await GetOtherOpenAttemptsAsync(channel)));
+            infos.Add(ToChannelInfo(channel, fundings, tipHeight, await GetOtherOpenAttemptsAsync(channel),
+                                    IsFinished(channel) ? [] : SharingKeys(channel, keyIndexes)));
         }
 
         return new ListChannelsClientResponse(infos);
@@ -164,6 +166,25 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
         return attempts;
     }
 
+    /// <summary>Our key index of every channel row that is not Closed or Stale (NL-1392).</summary>
+    private async Task<IReadOnlyCollection<(ChannelId ChannelId, uint KeyIndex, ChannelState State)>>
+        GetLiveKeyIndexesAsync()
+    {
+        var rows = await _unitOfWork.ChannelDbRepository.GetLocalKeyIndexesAsync() ?? [];
+        return rows.Where(r => r.State is not (ChannelState.Closed or ChannelState.Stale)).ToList();
+    }
+
+    /// <summary>The other live channels at <paramref name="channel"/>'s key index: it is key-compromised (NL-1392).</summary>
+    private static List<ChannelId> SharingKeys(
+        ChannelModel channel, IReadOnlyCollection<(ChannelId ChannelId, uint KeyIndex, ChannelState State)> rows)
+    {
+        // The stored key index (what a restore compares), else the model's
+        var keyIndex = rows.Where(r => r.ChannelId == channel.ChannelId).Select(r => (uint?)r.KeyIndex)
+                           .FirstOrDefault() ?? channel.LocalKeySet.KeyIndex;
+        return rows.Where(r => r.KeyIndex == keyIndex && r.ChannelId != channel.ChannelId)
+                   .Select(r => r.ChannelId).Distinct().ToList();
+    }
+
     private IChannelFundingDbRepository? GetFundingRepository()
     {
         try
@@ -185,7 +206,8 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
 
     private ChannelInfoClientResponse ToChannelInfo(ChannelModel channel, IReadOnlyList<ChannelFunding> fundings,
                                                     uint tipHeight,
-                                                    IReadOnlyList<ChannelFundingInfoClientResponse> openAttempts)
+                                                    IReadOnlyList<ChannelFundingInfoClientResponse> openAttempts,
+                                                    IReadOnlyList<ChannelId> sharesKeysWith)
     {
         var retired = _retiredScidMap?.GetByChannel(channel.ChannelId) ?? [];
         var policy = _channelPolicyProvider?.GetEffectivePolicy(channel)
@@ -228,7 +250,8 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
                 ExpiresAtHeight = r.ExpiresAtHeight
             }).ToList(),
             Label = channel.Label,
-            Tags = SourceLabels.FromStored(null, channel.Tags).TagStrings
+            Tags = SourceLabels.FromStored(null, channel.Tags).TagStrings,
+            SharesKeysWith = sharesKeysWith
         };
     }
 

@@ -49,6 +49,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.Quiescence;
 using Domain.Channels.Reestablish;
 using Domain.Client.Enums;
@@ -193,6 +194,31 @@ public class NodeServiceExtensionsTests
                     provider.GetRequiredService<IInteractiveTxContributor>());
         Assert.Single(services, d => d.ServiceType == typeof(IInteractiveTxDriver));
         Assert.Single(services, d => d.ServiceType == typeof(IQuiescenceService));
+    }
+
+    [Fact]
+    public async Task Given_NodeServices_When_Composed_Then_OneChannelKeyIndexGateHoldsTheSignerAndOpenHold()
+    {
+        // Arrange - NL-1392: the signer, the restore and openhold share one gate
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var gate = provider.GetRequiredService<IChannelKeyIndexGate>();
+        var openHold = scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<OpenHoldClientRequest, OpenHoldClientResponse>>();
+
+        // Act
+        gate.HoldUntilRestore();
+        var shown = await openHold.HandleAsync(new OpenHoldClientRequest(false), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Single(services, d => d.ServiceType == typeof(IChannelKeyIndexGate));
+        Assert.True(shown.AwaitingRestore);
+        Assert.Throws<ChannelKeyIndexHeldException>(() => provider.GetRequiredService<ILightningSigner>()
+                                                                  .CreateNewChannel(out _, out _));
     }
 
     [Fact]

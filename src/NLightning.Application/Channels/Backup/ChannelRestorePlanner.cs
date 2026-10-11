@@ -22,6 +22,8 @@ using Models;
 /// reader that predates that field reads index 0 and refuses a spliced channel here rather than restore it with the
 /// wrong key. A pending splice whose key does not derive is left out of the entry (it can't be followed).</item>
 /// <item>A repeated channel id is restored once (<see cref="ChannelRestoreAction.Duplicate"/>).</item>
+/// <item>A channel whose key index another live channel or an open already uses is still restored, with the
+/// key-compromise warning of <see cref="FindKeyIndexConflict"/> (NL-1392).</item>
 /// </list>
 /// </remarks>
 public static class ChannelRestorePlanner
@@ -112,5 +114,52 @@ public static class ChannelRestorePlanner
         }
 
         return plan;
+    }
+
+    /// <summary>
+    /// The key-compromise warning for <paramref name="entry"/> when its key index is already in use (NL-1392), or null.
+    /// </summary>
+    /// <remarks>
+    /// Two channels at one key index share their funding key, basepoints and per-commitment seed. The backed-up
+    /// channel is restored anyway: a recovery channel signs nothing and releases no secret, so refusing it would remove
+    /// no risk. The other channel is key-compromised: its peer (often the backed-up channel's peer too) may hold our
+    /// per-commitment secrets of the old channel, so a force close of it at a commitment number it already saw revoked
+    /// there could let the peer take our <c>to_local</c>; it must be closed cooperatively, never force closed. In use:
+    /// a channel row of another channel id at that index in any state but <see cref="ChannelState.Closed"/> and
+    /// <see cref="ChannelState.Stale"/> (a closed channel signs nothing more, a stale one never held funds), an index
+    /// handed out to an open that has no row yet, or (<paramref name="inBackup"/>) another channel of the backup.
+    /// </remarks>
+    /// <param name="entry">The backed-up channel to restore.</param>
+    /// <param name="rows">Our key index of every channel row of the database (or of the backup), with its state.</param>
+    /// <param name="isInUseByAnOpen">Whether an open in progress holds a key index (null: unknown).</param>
+    /// <param name="inBackup">True when <paramref name="rows"/> are the backup's own channels.</param>
+    public static string? FindKeyIndexConflict(
+        ChannelBackupEntry entry, IEnumerable<(ChannelId ChannelId, uint KeyIndex, ChannelState State)> rows,
+        Func<uint, bool>? isInUseByAnOpen, bool inBackup = false)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(rows);
+
+        foreach (var (channelId, keyIndex, state) in rows)
+        {
+            if (keyIndex != entry.KeyIndex || channelId == entry.ChannelId || state is ChannelState.Closed
+                                                                                   or ChannelState.Stale)
+                continue;
+
+            return inBackup
+                       ? $"KEYS SHARED: key index {entry.KeyIndex} is also used by backed-up channel {channelId}: the "
+                       + "backup is inconsistent; never force close either channel"
+                       : $"KEYS SHARED: key index {entry.KeyIndex} is also used by channel {channelId} ({state}) of "
+                       + "this database. That channel is key-compromised: close it cooperatively (closechannel) as soon "
+                       + "as possible and never force close it (its peer may hold our per-commitment secrets of the "
+                       + "backed-up channel)";
+        }
+
+        if (isInUseByAnOpen?.Invoke(entry.KeyIndex) == true)
+            return $"KEYS SHARED: key index {entry.KeyIndex} was handed out to an open not stored yet (of this "
+                 + "process, or saved for a restart to resume). If that open completes, the new channel is "
+                 + "key-compromised: close it cooperatively (closechannel) and never force close it";
+
+        return null;
     }
 }

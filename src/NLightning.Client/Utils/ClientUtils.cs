@@ -206,6 +206,9 @@ public static class ClientUtils
         Console.WriteLine("                               After losing the channel database: ask each backed-up");
         Console.WriteLine("                               channel's peer to force close and sweep our funds");
         Console.WriteLine("                               (alias: restore-chan-backup); exit code 1 on a failure");
+        Console.WriteLine("  openhold [--release]         Show whether channel opens are held (a restore running, or");
+        Console.WriteLine("                               Node:Backup:HoldOpensUntilRestore waiting for one); --release");
+        Console.WriteLine("                               lifts the start hold without a restore (alias: open-hold)");
         Console.WriteLine("  listpeerstorage [node_id] [--blob]");
         Console.WriteLine("                               Show the backups our peers handed back (peer storage),");
         Console.WriteLine("                               with the channels they name that this node does not know,");

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Domain.Channels.KeyIndexes;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Exceptions;
 using NLightning.Domain.Persistence.Interfaces;
@@ -12,7 +13,7 @@ using WireRequest = NLightning.Signing.Contracts.SigningRequest;
 namespace NLightning.Infrastructure.RemoteSigning;
 
 /// <summary>Captures requests only inside validated application transitions; recovery never guesses a new request ID.</summary>
-public sealed partial class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordinator, IRemoteSigningRequestCapture, INativeFundingSigningRecovery, INativeWalletSigningRecovery, INativeWalletPsbtSigningRecovery, INativeInitialSweepSigningRecovery, INativeChannelKeyAllocationRecovery, IDisposable
+public sealed partial class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordinator, IRemoteSigningRequestCapture, INativeFundingSigningRecovery, INativeWalletSigningRecovery, INativeWalletPsbtSigningRecovery, INativeInitialSweepSigningRecovery, INativeChannelKeyAllocationRecovery, IPendingChannelKeyIndexSource, IDisposable
 {
     public const int SchemaVersion = 1;
     public const int MaximumEnvelopeBytes = 1024 * 1024;
@@ -24,8 +25,13 @@ public sealed partial class RemoteSigningWorkflowCoordinator : IRemoteSigningWor
     private bool _disposed;
     private readonly ConcurrentDictionary<ChannelId, SemaphoreSlim> _channelGates = new();
 
-    public RemoteSigningWorkflowCoordinator(RemoteSignerConnection connection, IServiceScopeFactory scopes, bool attachCapture = true)
+    // A replayed allocation goes through it too (NL-1392): refused while a restore holds it, its index remembered
+    private readonly IChannelKeyIndexGate? _keyIndexGate;
+
+    public RemoteSigningWorkflowCoordinator(RemoteSignerConnection connection, IServiceScopeFactory scopes, bool attachCapture = true,
+                                            IChannelKeyIndexGate? keyIndexGate = null)
     {
+        _keyIndexGate = keyIndexGate;
         _connection = connection;
         _scopes = scopes;
         _attached = attachCapture;
@@ -143,14 +149,56 @@ public sealed partial class RemoteSigningWorkflowCoordinator : IRemoteSigningWor
         if (requests.Count != 1 || requests[0].Operation != SignerOperations.CreateNewChannel)
             throw Blocked("Channel key allocation contains an unexpected request sequence.");
         var request = requests[0];
-        var response = Execute(request.Operation, request.Envelope, request.ArgumentFingerprint,
-            envelope => RemoteSignerConnection.ToWorkflowStatus(_connection.Reconcile(WireRequest.Parser.ParseFrom(envelope))),
-            envelope => _connection.ExecutePayload(WireRequest.Parser.ParseFrom(envelope)));
-        var result = SignerWire.Decode(response);
-        if (result.Length != 3)
-            throw Blocked("Channel key allocation receipt has an invalid public result.");
-        return new ChannelKeyAllocation(SignerWire.Read<uint>(result[0]), SignerWire.Read<Domain.Channels.ValueObjects.ChannelBasepoints>(result[1]),
-            SignerWire.Read<Domain.Crypto.ValueObjects.CompactPubKey>(result[2]));
+        ChannelKeyAllocation? replayed = null;
+        uint Replay()
+        {
+            var response = Execute(request.Operation, request.Envelope, request.ArgumentFingerprint,
+                envelope => RemoteSignerConnection.ToWorkflowStatus(_connection.Reconcile(WireRequest.Parser.ParseFrom(envelope))),
+                envelope => _connection.ExecutePayload(WireRequest.Parser.ParseFrom(envelope)));
+            var result = SignerWire.Decode(response);
+            if (result.Length != 3)
+                throw Blocked("Channel key allocation receipt has an invalid public result.");
+            replayed = new ChannelKeyAllocation(SignerWire.Read<uint>(result[0]), SignerWire.Read<Domain.Channels.ValueObjects.ChannelBasepoints>(result[1]),
+                SignerWire.Read<Domain.Crypto.ValueObjects.CompactPubKey>(result[2]));
+            return replayed.KeyIndex;
+        }
+
+        // The replayed index was claimed when it was first allocated; the gate refuses it during a restore and
+        // remembers it otherwise (NL-1392)
+        if (_keyIndexGate is null) Replay();
+        else _keyIndexGate.Allocate(Replay);
+        return replayed!;
+    }
+
+    public async Task AbandonUnallocatedAsync(ISigningWorkflowScope workflow)
+    {
+        if (workflow is not WorkflowScope active || !ReferenceEquals(_active.Value, active)
+         || active.Kind != SigningWorkflowKind.ChannelKeyAllocation)
+            throw Blocked("Channel key allocation abandonment requires its activated workflow scope.");
+        await active.AbandonUnallocatedAsync();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyCollection<uint>> GetPendingKeyIndexesAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var scope = _scopes.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SigningWorkflowDbRepository;
+        var indexes = new HashSet<uint>();
+        foreach (var workflow in await repository.GetUnconsumedAsync(SigningWorkflowKind.ChannelKeyAllocation))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var request in await repository.GetRequestsAsync(workflow.WorkflowId))
+            {
+                if (request.Operation != SignerOperations.CreateNewChannel || request.Response is null)
+                    continue;
+                var result = SignerWire.Decode(request.Response);
+                if (result.Length == 3)
+                    indexes.Add(SignerWire.Read<uint>(result[0]));
+            }
+        }
+
+        return indexes;
     }
 
     public Task StageRetireSweepAsync(SigningWorkflowDescriptor descriptor, IUnitOfWork unitOfWork)
@@ -564,6 +612,19 @@ public sealed partial class RemoteSigningWorkflowCoordinator : IRemoteSigningWor
             _consumeStaged = true;
             await unitOfWork.SigningWorkflowDbRepository.UpdateWorkflowAsync(workflow with
             { State = SigningWorkflowState.Abandoned, UpdatedAtTicks = DateTime.UtcNow.Ticks });
+        }
+
+        public async Task AbandonUnallocatedAsync()
+        {
+            if (_disposed || _activated == 0 || !ReferenceEquals(owner._active.Value, this) || _consumeStaged
+             || Volatile.Read(ref _executing) != 0 || requests.Count != 0)
+                throw Blocked("Only an allocation intent without a saved request can be abandoned.");
+            _consumeStaged = true;
+            using var scope = owner._scopes.CreateScope();
+            var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            await uow.SigningWorkflowDbRepository.UpdateWorkflowAsync(workflow with
+            { State = SigningWorkflowState.Abandoned, UpdatedAtTicks = DateTime.UtcNow.Ticks });
+            await uow.SaveChangesAsync();
         }
 
         public async Task StageConsumeAsync(IUnitOfWork unitOfWork)

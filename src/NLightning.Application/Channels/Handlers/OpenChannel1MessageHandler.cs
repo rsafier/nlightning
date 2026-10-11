@@ -10,6 +10,7 @@ using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Acceptance;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Channels.Models;
 using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
@@ -41,6 +42,7 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
     private readonly IChannelOpenDecisionGate? _openDecisionGate;
     private readonly NativeV1ChannelOpening? _nativeOpening;
+    private readonly IChannelKeyIndexGate? _keyIndexGate;
 
     /// <param name="gossipOptions">Whether public channels are accepted (<see cref="GossipOptions.AcceptPublicChannels"/>,
     /// default yes, and on mainnet only with <see cref="GossipOptions.AllowPublicChannelsOnMainnet"/>).</param>
@@ -56,6 +58,8 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     /// is refused.</param>
     /// <param name="openDecisionGate">External deciders on the open (LND's <c>ChannelAcceptor</c>, NL-1180): asked
     /// before anything is created for it; without one, or with no decider registered, the open goes on as usual.</param>
+    /// <param name="keyIndexGate">Refuses the open while a channel restore holds new channel key indexes (NL-1392); the
+    /// signer refuses the index itself too.</param>
     public OpenChannel1MessageHandler(IChannelFactory channelFactory, IChannelMemoryRepository channelMemoryRepository,
                                       ILogger<OpenChannel1MessageHandler> logger, IMessageFactory messageFactory,
                                       IBlockchainMonitor? blockchainMonitor = null,
@@ -66,8 +70,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                       INodeDrainState? nodeDrainState = null, ILightningSigner? lightningSigner = null,
                                       IMusig2Service? musig2 = null,
                                       IChannelOpenDecisionGate? openDecisionGate = null,
-                                      NativeV1ChannelOpening? nativeOpening = null)
+                                      NativeV1ChannelOpening? nativeOpening = null,
+                                      IChannelKeyIndexGate? keyIndexGate = null)
     {
+        _keyIndexGate = keyIndexGate;
         _nativeOpening = nativeOpening;
         _openDecisionGate = openDecisionGate;
         _lightningSigner = lightningSigner;
@@ -105,6 +111,14 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         if (_nodeDrainState is { IsDraining: true })
             throw new ChannelErrorException(NodeDrain.Refusal("open_channel"), payload.ChannelId,
                                             "Not accepting channels right now, try again later");
+
+        // NL-1392: no new channel key index while a channel restore holds them (the signer refuses it too)
+        if (_keyIndexGate?.HoldReason is { } holdReason)
+            throw new ChannelErrorException(ChannelKeyIndexHold.Refusal("open_channel", holdReason), payload.ChannelId,
+                                            ChannelKeyIndexHold.PeerMessage)
+            {
+                KeepConnection = true
+            };
 
         // BOLT 2: the receiver MAY fail a channel whose announce_channel it does not want (NL-341). The flag is stored
         // with the channel by the factory
@@ -151,10 +165,22 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
             }
         }
 
-        // Create the channel
-        var channel = _nativeOpening is { Enabled: true }
-            ? await _nativeOpening.CreateInboundAsync(message, negotiatedFeatures, peerPubKey, decision)
-            : await _channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures, peerPubKey);
+        // Create the channel (a restore that started meanwhile refuses its key index, NL-1392)
+        ChannelModel channel;
+        try
+        {
+            channel = _nativeOpening is { Enabled: true }
+                ? await _nativeOpening.CreateInboundAsync(message, negotiatedFeatures, peerPubKey, decision)
+                : await _channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures, peerPubKey);
+        }
+        catch (ChannelKeyIndexHeldException e)
+        {
+            throw new ChannelErrorException(ChannelKeyIndexHold.Refusal("open_channel", e.Reason), payload.ChannelId,
+                                            ChannelKeyIndexHold.PeerMessage)
+            {
+                KeepConnection = true
+            };
+        }
 
         // The acceptor's values replace the ones we would announce (a value that cannot apply refuses the open). Also
         // without values: an acceptance must allow the opener's zero-conf channel_type (LND, NL-1181)

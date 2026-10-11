@@ -6,6 +6,7 @@ using NLightning.Domain.Bitcoin.Transactions.Models;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Channels.Commitments;
+using NLightning.Domain.Channels.KeyIndexes;
 using NLightning.Domain.Channels.Models;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
@@ -19,15 +20,25 @@ namespace NLightning.Infrastructure.VlsSigning;
 
 /// <summary>VLS semantic policy operations; generic channel signing is explicitly refused.</summary>
 public sealed partial class VlsLightningSigner(VlsSignerConnection connection, VlsChannelMappingRegistry mappings,
-    IChannelSigningInfoSource? signingInfoSource = null, IUtxoMemoryRepository? wallet = null) : ILightningSigner, IVlsChannelSigner, IVlsGossipSigner
+    IChannelSigningInfoSource? signingInfoSource = null, IUtxoMemoryRepository? wallet = null,
+    IChannelKeyIndexGate? keyIndexGate = null) : ILightningSigner, IVlsChannelSigner, IVlsGossipSigner
 {
     private readonly Dictionary<ChannelId, ChannelSigningInfo> _registered = [];
     public uint CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint) =>
         throw new NotSupportedException("VLS allocation requires peer identity.");
     public uint CreateNewChannel(CompactPubKey peer, out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
     {
-        var (keyIndex, result) = mappings.Allocate(peer);
-        basepoints = ReadBasepoints(result);
+        // Nothing is allocated while the channel key index gate is held (a restore, NL-1392)
+        JsonElement allocated = default;
+        uint Allocate()
+        {
+            var (index, answer) = mappings.Allocate(peer);
+            allocated = answer;
+            return index;
+        }
+
+        var keyIndex = keyIndexGate is null ? Allocate() : keyIndexGate.Allocate(Allocate);
+        basepoints = ReadBasepoints(allocated);
         firstPerCommitmentPoint = GetPerCommitmentPoint(keyIndex, 0);
         return keyIndex;
     }

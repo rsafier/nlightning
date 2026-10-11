@@ -1552,7 +1552,8 @@ public sealed partial class PeerManager : IPeerManager, IPeerGossipOutbox, IPeer
     /// <remarks>
     /// BOLT 1: an `error` with an all-zero channel_id makes the peer fail every channel with us, so a channel failure
     /// always carries <paramref name="channelId"/>:
-    /// - <see cref="ChannelErrorException"/>: `error` for the channel, then disconnect.
+    /// - <see cref="ChannelErrorException"/>: `error` for the channel, then disconnect (only the `error` when
+    ///   <see cref="ChannelErrorException.KeepConnection"/> is set, NL-1392).
     /// - <see cref="ChannelWarningException"/> (includes the messages we don't implement yet): `warning` for the
     ///   channel, and the connection stays up, unless <see cref="ChannelWarningException.CloseConnection"/> is set
     ///   (then the warning is sent and the peer disconnected).
@@ -1590,7 +1591,23 @@ public sealed partial class PeerManager : IPeerManager, IPeerGossipOutbox, IPeer
                     : cee.Message);
 
             if (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
-                cee = new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage);
+                cee = new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage)
+                {
+                    KeepConnection = cee.KeepConnection
+                };
+
+            // A refused open that must not drop the peer's other channels (NL-1392): the error, no disconnect
+            if (cee.KeepConnection && IsChannelScoped(cee.ChannelId))
+            {
+                var refusal = new ErrorMessage(new ErrorPayload(cee.ChannelId!.Value,
+                                                                string.IsNullOrEmpty(cee.PeerMessage)
+                                                                    ? cee.Message
+                                                                    : cee.PeerMessage));
+                if (!session.Outbox.TryEnqueueError(refusal))
+                    _logger.LogWarning("Peer {Peer} is disconnecting, dropping the error of channel {ChannelId}",
+                                       peerPubKey, cee.ChannelId);
+                return true;
+            }
 
             session.Outbox.TryEnqueueDisconnect(cee);
             return false;

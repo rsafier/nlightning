@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -11,6 +12,7 @@ using Crypto.Functions;
 using Crypto.Musig2;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.KeyIndexes;
 using Domain.Crypto.Interfaces;
 using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
@@ -102,6 +104,9 @@ public static class DependencyInjection
         // BOLT 2 interactive transaction construction (splicing plan IT2): prevtx inspector, builder, wallet prevtx source
         services.AddInteractiveTxBitcoinServices();
 
+        // Every new channel key index goes through the one gate, held while a channel restore runs (NL-1392)
+        services.TryAddSingleton<IChannelKeyIndexGate, ChannelKeyIndexGate>();
+
         // The signer holds the node's secrets; ISecureKeyManager is registered by the host
         services.AddSingleton<ILightningSigner>(sp =>
         {
@@ -116,7 +121,8 @@ public static class DependencyInjection
                                             sp.GetService<IChannelSigningInfoSource>(),
                                             sp.GetService<IChannelSignerGuardStore>(),
                                             sp.GetService<INodeWriteFence>(),
-                                            sp.GetService<IChannelKeyIndexStore>());
+                                            sp.GetService<IChannelKeyIndexStore>(),
+                                            sp.GetService<IChannelKeyIndexGate>());
         });
 
         // BOLT 12 BIP-340 signatures; the keys stay in ILightningSigner (BOLT 12 plan B1)
