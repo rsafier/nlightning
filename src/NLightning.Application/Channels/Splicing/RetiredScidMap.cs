@@ -5,6 +5,7 @@ namespace NLightning.Application.Channels.Splicing;
 
 using Domain.Bitcoin.Events;
 using Domain.Channels.Enums;
+using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
@@ -26,6 +27,14 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// </remarks>
 public sealed class RetiredScidMap : IRetiredScidMap, IDisposable
 {
+    /// <summary>The states <see cref="LoadAsync"/> rebuilds a channel's retired short channel ids in (the channel
+    /// repository's ready channels).</summary>
+    private static readonly HashSet<ChannelState> s_readyStates =
+    [
+        ChannelState.V1FundingCreated, ChannelState.V1FundingSigned, ChannelState.ReadyForThem, ChannelState.ReadyForUs,
+        ChannelState.Open, ChannelState.ShuttingDown, ChannelState.Negotiating, ChannelState.Closing
+    ];
+
     private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly Dictionary<ShortChannelId, RetiredShortChannelId> _entries = [];
     private readonly ILogger<RetiredScidMap> _logger;
@@ -129,14 +138,28 @@ public sealed class RetiredScidMap : IRetiredScidMap, IDisposable
         if (currentHeight == 0)
             currentHeight = await GetStoredHeightAsync(unitOfWork);
 
-        var channels = await unitOfWork.ChannelDbRepository.GetReadyChannelsAsync();
+        // Only the channels a locked splice retired a funding of: loading every channel here read each channel's
+        // fundings through one unit of work, which made the start quadratic in the channel count (NL-1358)
+        var channelIds = await unitOfWork.ChannelFundingDbRepository.GetChannelIdsWithRetiredFundingsAsync();
 
         var rebuilt = new List<RetiredShortChannelId>();
-        foreach (var channel in channels)
+        foreach (var channelId in channelIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            ChannelModel? channel;
+            try
+            {
+                channel = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
+            }
+            catch (InvalidOperationException e)
+            {
+                // A channel refused for legacy HTLC rows (NL-025) is not loaded at startup either
+                _logger.LogError(e, "Channel {ChannelId} was not loaded", channelId);
+                continue;
+            }
+
             // An alias-only channel (option_scid_alias Compulsory) never resolves by a real short channel id (NL-348)
-            if (channel.State is ChannelState.Closed or ChannelState.Stale
+            if (channel is null || !s_readyStates.Contains(channel.State)
              || channel.ChannelParams.UseScidAlias == FeatureSupport.Compulsory)
                 continue;
 

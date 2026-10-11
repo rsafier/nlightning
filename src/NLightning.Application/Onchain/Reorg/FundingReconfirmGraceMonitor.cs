@@ -65,12 +65,17 @@ internal sealed class FundingReconfirmGraceMonitor
 
         using var scope = _serviceScopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        // One read of the watches not seen in the active chain, not one per channel (NL-1359): a watch without a
+        // first-seen height is never completed, so the pending watches hold every rolled-back funding
+        var unseen = (await unitOfWork.WatchedTransactionDbRepository.GetAllPendingAsync())
+                    .Where(w => w.FirstSeenAtHeight is null)
+                    .Select(w => w.TransactionId)
+                    .ToHashSet();
         foreach (var channel in channels)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var watch = await unitOfWork.WatchedTransactionDbRepository
-                                      .GetByTransactionIdAsync(channel.FundingOutput!.TransactionId!.Value);
-            if (watch is null || watch.FirstSeenAtHeight is not null)
+            if (!unseen.Contains(channel.FundingOutput!.TransactionId!.Value))
             {
                 // No row we know of is not ours to judge (its funding confirmation is the channel manager's); seen
                 // again, the depth completes and the confirmation handler moves the short channel id

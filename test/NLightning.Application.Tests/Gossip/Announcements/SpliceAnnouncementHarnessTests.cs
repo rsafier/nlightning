@@ -167,8 +167,9 @@ public class SpliceAnnouncementHarnessTests
                        .ThenBy(f => f.ConfirmedHeight ?? uint.MaxValue)
                        .ToList();
         var channelDb = new Mock<IChannelDbRepository>();
-        channelDb.Setup(r => r.GetReadyChannelsAsync()).ReturnsAsync([channel]);
+        channelDb.Setup(r => r.GetByIdAsync(channel.ChannelId)).ReturnsAsync(channel);
         var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetChannelIdsWithRetiredFundingsAsync()).ReturnsAsync([channel.ChannelId]);
         fundingDb.Setup(r => r.GetByChannelIdAsync(channel.ChannelId)).ReturnsAsync(rows);
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);

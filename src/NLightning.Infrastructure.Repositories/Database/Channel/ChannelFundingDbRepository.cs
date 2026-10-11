@@ -36,6 +36,14 @@ public class ChannelFundingDbRepository : IChannelFundingDbRepository
         (await GetEntitiesAsync(_context, channelId)).Select(MapToDomain).ToList();
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<ChannelId>> GetChannelIdsWithRetiredFundingsAsync() =>
+        await _context.ChannelFundings.AsNoTracking()
+                      .Where(f => f.Status == (byte)ChannelFundingStatus.Replaced && f.ShortChannelId != null)
+                      .Select(f => f.ChannelId)
+                      .Distinct()
+                      .ToListAsync();
+
+    /// <inheritdoc />
     public async Task<FundingSet?> GetFundingSetAsync(ChannelId channelId) =>
         ToFundingSet(await GetByChannelIdAsync(channelId));
 

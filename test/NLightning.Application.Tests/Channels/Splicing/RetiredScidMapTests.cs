@@ -171,8 +171,9 @@ public class RetiredScidMapTests
         };
         var channelDb = new Mock<IChannelDbRepository>();
         var open = CreateChannel(s_channelId, ChannelState.Open);
-        channelDb.Setup(r => r.GetReadyChannelsAsync()).ReturnsAsync([open]);
+        channelDb.Setup(r => r.GetByIdAsync(s_channelId)).ReturnsAsync(open);
         var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetChannelIdsWithRetiredFundingsAsync()).ReturnsAsync([s_channelId]);
         fundingDb.Setup(r => r.GetByChannelIdAsync(s_channelId)).ReturnsAsync(fundings);
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
@@ -204,8 +205,9 @@ public class RetiredScidMapTests
             Funding(0x04, ChannelFundingStatus.Current, s_secondSpliceScid, 700)
         };
         var channelDb = new Mock<IChannelDbRepository>();
-        channelDb.Setup(r => r.GetReadyChannelsAsync()).ReturnsAsync([CreateChannel(s_channelId, ChannelState.Open)]);
+        channelDb.Setup(r => r.GetByIdAsync(s_channelId)).ReturnsAsync(CreateChannel(s_channelId, ChannelState.Open));
         var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetChannelIdsWithRetiredFundingsAsync()).ReturnsAsync([s_channelId]);
         fundingDb.Setup(r => r.GetByChannelIdAsync(s_channelId)).ReturnsAsync(fundings);
         var states = new Mock<IBlockchainStateDbRepository>();
         states.Setup(r => r.GetStateAsync()).ReturnsAsync(new BlockchainState(710, Hash.Empty, DateTime.UtcNow));
@@ -235,8 +237,9 @@ public class RetiredScidMapTests
         var channelDb = new Mock<IChannelDbRepository>();
         var aliasOnly = SpliceLockTestChannels.Create(s_channelId, ChannelState.Open, s_secondSpliceScid,
                                                       useScidAlias: FeatureSupport.Compulsory);
-        channelDb.Setup(r => r.GetReadyChannelsAsync()).ReturnsAsync([aliasOnly]);
+        channelDb.Setup(r => r.GetByIdAsync(s_channelId)).ReturnsAsync(aliasOnly);
         var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetChannelIdsWithRetiredFundingsAsync()).ReturnsAsync([s_channelId]);
         fundingDb.Setup(r => r.GetByChannelIdAsync(s_channelId)).ReturnsAsync(fundings);
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
@@ -249,6 +252,39 @@ public class RetiredScidMapTests
         // Assert
         Assert.Empty(map.GetByChannel(s_channelId));
         Assert.False(map.TryResolve(s_firstSpliceScid, out _));
+    }
+
+    [Fact]
+    public async Task Given_RetiredFundingsOfAnOpenAndAFailedChannel_When_Loaded_Then_OnlyTheReadyChannelIsReadOnce()
+    {
+        // Arrange (NL-1358): the load asks the fundings table which channels a splice retired a funding of, reads only
+        // those channels and skips one that is not ready (a Failed channel, as the ready-channel load did)
+        var fundings = new List<ChannelFunding>
+        {
+            Funding(0x02, ChannelFundingStatus.Replaced, s_firstSpliceScid, 600),
+            Funding(0x04, ChannelFundingStatus.Current, s_secondSpliceScid, 700)
+        };
+        var channelDb = new Mock<IChannelDbRepository>();
+        channelDb.Setup(r => r.GetByIdAsync(s_channelId)).ReturnsAsync(CreateChannel(s_channelId, ChannelState.Open));
+        channelDb.Setup(r => r.GetByIdAsync(s_otherChannelId))
+                 .ReturnsAsync(CreateChannel(s_otherChannelId, ChannelState.Failed));
+        var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetChannelIdsWithRetiredFundingsAsync()).ReturnsAsync([s_channelId, s_otherChannelId]);
+        fundingDb.Setup(r => r.GetByChannelIdAsync(It.IsAny<ChannelId>())).ReturnsAsync(fundings);
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
+        unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundingDb.Object);
+        using var map = CreateMap(unitOfWork.Object);
+
+        // Act
+        await map.LoadAsync(710, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(s_firstSpliceScid, Assert.Single(map.GetByChannel(s_channelId)).ShortChannelId);
+        Assert.Empty(map.GetByChannel(s_otherChannelId));
+        fundingDb.Verify(r => r.GetByChannelIdAsync(s_otherChannelId), Times.Never);
+        channelDb.Verify(r => r.GetReadyChannelsAsync(), Times.Never);
+        channelDb.Verify(r => r.GetAllAsync(), Times.Never);
     }
 
     private RetiredScidMap CreateMap(IUnitOfWork? unitOfWork = null)

@@ -466,6 +466,33 @@ public class SpliceFundingsPersistenceTests
     }
 
     [Fact]
+    public async Task Given_ASpliceLockedOverAFundingWithAShortChannelId_When_Listed_Then_OnlyThatChannelIsRetired()
+    {
+        // Arrange (NL-1358): a channel without a retired funding, then the lock of a splice that retires the initial
+        // funding with its short channel id
+        await using var harness = await SpliceHarness.CreateAsync();
+        using (var before = harness.CreateUnitOfWork())
+            Assert.Empty(await before.ChannelFundingDbRepository.GetChannelIdsWithRetiredFundingsAsync());
+        var funding = harness.Splice(0x9d, 1_000_000) with { ShortChannelId = new ShortChannelId(900_100, 2, 1) };
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, funding));
+        var initialScid = new ShortChannelId(800_000, 5, 0);
+
+        // Act
+        await harness.SaveAsync(async uow =>
+        {
+            await uow.ChannelFundingDbRepository.ApplyLockAsync(
+                harness.ChannelId, funding with { Status = ChannelFundingStatus.Current, SpliceLockedReceived = true },
+                [harness.CurrentFunding with { Status = ChannelFundingStatus.Replaced, ShortChannelId = initialScid }]);
+            await uow.ChannelStateDbRepository.InitializeAsync(harness.Driver.Us);
+        });
+
+        // Assert
+        using var reader = harness.CreateUnitOfWork();
+        Assert.Equal(harness.ChannelId,
+                     Assert.Single(await reader.ChannelFundingDbRepository.GetChannelIdsWithRetiredFundingsAsync()));
+    }
+
+    [Fact]
     public async Task Given_ALockedSplice_When_ReloadedAndTheNextSpliceLocks_Then_TheRetiredRowKeepsItsKindAndKeyIndex()
     {
         // Arrange: a splice locked before a restart (NL-517, found in the Mutinynet day-0 rehearsal)

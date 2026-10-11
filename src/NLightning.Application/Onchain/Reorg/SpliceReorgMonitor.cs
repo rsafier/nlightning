@@ -76,7 +76,11 @@ internal sealed class SpliceReorgMonitor
             var current = channel.FundingOutput!.TransactionId!.Value;
             if (!_replaced.TryGetValue(channel.ChannelId, out var known) || known.Current != current)
             {
-                var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
+                // Its own unit of work: the shared one tracked every channel's rows and each funding read went over
+                // all of them, so the first round after a start was quadratic in the channel count (NL-1359)
+                using var fundingScope = _serviceScopeFactory.CreateScope();
+                var fundings = await OnchainFundings.GetAllAsync(
+                                   fundingScope.ServiceProvider.GetRequiredService<IUnitOfWork>(), channel, _logger);
                 known = (current, fundings.Where(f => f.Status == ChannelFundingStatus.Replaced).ToList());
                 _replaced[channel.ChannelId] = known;
             }

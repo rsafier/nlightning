@@ -202,10 +202,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 95 | 97 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 74 | 264 | 535 | 888 |
+| fixed | 15 | 74 | 267 | 536 | 892 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **283** | **652** | **1025** |
+| **Total** | **15** | **75** | **286** | **653** | **1029** |
 
 ### Epics
 
@@ -10930,3 +10930,36 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** the gateway signs anchors HTLC transactions with phase 1 (it rebuilds the zero-fee HTLC pair at input/output 0 from its own keys and checks the sighash) and returns the sighash type; the signer port says so (`SignsAnchorHtlcWithSingleAnyoneCanPay`, default false) and `AddWitness` puts `0x83` on our signature (both forms are valid BOLT 3 witnesses). The fee inputs go through a new `sign_holder_htlc_fee_inputs` (op 2105): it validates the HTLC pair again with `sign_holder_htlc_tx` for the commitment signed for broadcast, checks it is zero-fee (same value in and out), runs VLS's `check_onchain_tx` over the wallet part alone (fee inputs and change: every output ours, fee range, fee velocity) and signs only the P2WPKH wallet inputs; the adapter routes an HTLC transaction it signed there by txid. Delayed sweeps, counterparty HTLC claims (nSequence 1, VLS's anchors sequence rule) and penalties needed no change; the anchors `to_remote` is the 1-CSV P2WSH from VLS's unilateral-close key (a given witness script must equal VLS's).
 - **Validation:** `VlsOnchainSigningProcessTests` 8/8 (anchors `to_remote` with VLS's script and a foreign script refused, an anchors HTLC claim at nSequence 1 and a refused RBF sequence, fee inputs refused without a broadcast mark or on a static_remotekey channel); `AnchorHtlcTransactionBuilderTests` (our `SIGHASH_SINGLE|ANYONECANPAY` signature on an Appendix F HTLC transaction with a fee input verifies); live `VlsOnchainResolutionTests` 6/6 (both force closes and the penalty, each on static_remotekey and anchors) in batch `rc-20261008175645`.
 - **Blocks/Blocked-by:** NL-1307, NL-1320, NL-1325
+
+### NL-1357 Channel-count scale benchmark; startup dials waited behind peers that never answer
+- **Status:** fixed (branch `wip/channel-scale`)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Scale/` (`ScaleNode`, `ScaleChain`, `ChannelScaleSeeder`, `ChannelScaleBenchmarkTests`, `ChannelScaleLivePeerTests`), `src/NLightning.Application/Node/Managers/PeerManager.cs` (`StartAsync`), `docs/agents/CHANNEL_SCALE.md`
+- **Evidence:** no measurement of a node with thousands of channels existed. The benchmark seeds 1,000-10,000 Open anchors channels (real keys, funding transactions on an in-memory chain, commitment snapshots, HTLCs in flight) across up to 1,000 peers, starts the daemon's composition and times every start step, memory, the per-block rounds, `FindChannels`, a live peer reestablishing 1,000 channels and payments. It found NL-1358..NL-1360 and this: the startup dials went in database order 16 at a time, so with 190 stored peers that never answer listed before a live peer, the live peer's channels became usable 166.6 s after the start (about 15 minutes with 1,000 such peers).
+- **Fix:** the startup dials go to the peers seen last first (`PeerModel.LastSeenAt` descending); the live peer above is usable when the start returns (16.3 s, the `StartupDialWait`). Test `PeerManagerTests.Given_ManyDeadPeersListedFirst_When_StartAsync_Then_ThePeerSeenLastIsDialedFirst`. The benchmark is `Explicit` + `Category=Long` (`ChannelScaleBenchmarkTests.Given_1000To10000Channels_*`, `ChannelScaleLivePeerTests.Given_ThousandsOfChannelsAndALivePeer_*`, sizes and Postgres from `NLTG_SCALE_*`), with two default-run variants of about 8 s together; results and method in `docs/agents/CHANNEL_SCALE.md`.
+- **Follow-ups (not filed separately):** (1) startup reads every channel three times: the peer manager's per-channel consistent load, the registration's state reload for pending HTLC events, and the signer's lazy signing-info load (6.6 s + 4 s at 10,000 on SQLite, 40 s + 18 s on Postgres; linear); (2) `OnchainResolutionExecutor` has no stop, so a round scheduled by the last block runs on after the service provider is disposed (`ObjectDisposedException` logged); (3) any stored peer that never answers makes every start wait the full `StartupDialWait` (NL-576, by design); (4) one peer connection caps payments at about 17/s on SQLite (ordered per-peer processing, one fsynced save per transition).
+
+### NL-1358 Loading the retired short channel ids at startup was quadratic in the channel count
+- **Status:** fixed (branch `wip/channel-scale`)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Splicing/RetiredScidMap.cs` (`LoadAsync`), `IChannelFundingDbRepository.GetChannelIdsWithRetiredFundingsAsync`, `ChannelFundingDbRepository`
+- **Evidence:** `LoadAsync` (run by the host before `PeerManager.StartAsync`) loaded every ready channel in full and then read each one's fundings through the same unit of work; `ChannelFundingDbRepository.GetEntitiesAsync` is a tracking query that also reads `ChannelFundings.Local`, whose change detection scans every row tracked so far. The start step took 1.2 s, 14.3 s and 55.6 s at 1,000, 5,000 and 10,000 channels (NL-1357's benchmark), for a map that is empty unless a channel was spliced.
+- **Fix:** one no-tracking query lists the channels that have a `Replaced` funding with a short channel id; only those are loaded (`GetByIdAsync`) and checked against the same ready states and the alias-only rule. The step takes 0.4-2 ms at every size. Tests: `RetiredScidMapTests` (incl. a Failed channel skipped and the full channel loads never called), `SpliceFundingsPersistenceTests.Given_ASpliceLockedOverAFundingWithAShortChannelId_*` on SQLite.
+
+### NL-1359 Every block's on-chain executor round read the database once per channel
+- **Status:** fixed (branch `wip/channel-scale`)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Reorg/FundingReconfirmGraceMonitor.cs`, `RecordedFundingSpendReplay.cs`, `SpliceReorgMonitor.cs`
+- **Evidence:** the round `ChannelManager` schedules after every block ran the NL-329 reconfirm check with one watched-transaction query per Open channel, and its first round in a process ran the NL-493 spend replay and the splice reorg check over every channel's fundings through one unit of work (quadratic, as in NL-1358). Measured: 1.5 s per block at 1,000 channels, 6.7-7.8 s per block and a first round of 41 s at 5,000 (NL-1357's benchmark); the same round resolves force-closed channels, so their sweeps and penalties waited as long.
+- **Fix:** the reconfirm check reads the pending watches once per round (a watch without a first-seen height is never completed, so they hold every rolled-back funding) and looks the channels up in memory; the replay and the splice reorg check read each channel's fundings in a unit of work of its own, and the replay reads the channel's close only for a recorded spend. Round: 2-11 ms per block at every size, the first one included. Tests: `OnchainReorgTests` (the reconfirm grace through `GetAllPendingAsync`), the `Application.Tests` Onchain namespace (173).
+
+### NL-1360 Each payment ran the liquidity search on every channel to its first hop
+- **Status:** fixed (branch `wip/channel-scale`)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/LocalLiquidityEstimator.cs` (`MaxSendableMsat`), `PaymentRoutePlanner.BuildPaths`
+- **Evidence:** the planner orders the candidate channels by what each can send, and the estimator answers by a binary search of about 30 dry-run `SendAdd`s (half of them throwing `CommitmentRefusedException`) per channel, for every payment. With 1,000 channels to the payee, payments ran at 6.5-7.2/s with a p50 of 109-123 ms against 48 ms with 50 channels (NL-1357's live-peer benchmark; stack samples all in `LocalLiquidityEstimator.TrySend`).
+- **Fix:** the answer without planned HTLCs, a function of the immutable snapshot alone, is kept per snapshot instance and `cltv_expiry` in a `ConditionalWeakTable` (released with the snapshot). Payments over 1,000 channels to the payee: 13-17/s, p50 40 ms. Tests: `LocalLiquidityEstimatorTests` (kept answer equals a fresh search, planned HTLCs bypass it, another snapshot is searched again).
