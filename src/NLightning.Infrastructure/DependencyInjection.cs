@@ -29,6 +29,9 @@ public static class DependencyInjection
         services.AddSingleton<ITorOnionService, TorOnionService>();
         services.AddSingleton<IAnnouncedAddressSource>(sp => sp.GetRequiredService<ITorOnionService>());
         services.AddSingleton<ITcpService, TcpService>();
+        // A host hands the node inbound connections it accepted itself through this (the node's TCP service); a
+        // host's outbound IPeerConnectionDialer is optional and not registered here
+        services.AddSingleton<IPeerInboundAcceptor>(sp => sp.GetRequiredService<ITcpService>());
         // Shared by singletons (ChannelFactory) and scoped users alike: per-thread state, so concurrent callers never
         // mix their data (NL-247)
         services.AddSingleton<ISha256, ThreadLocalSha256>();

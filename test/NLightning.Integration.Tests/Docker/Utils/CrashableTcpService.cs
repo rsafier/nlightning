@@ -5,6 +5,7 @@ using System.Net.Sockets;
 namespace NLightning.Integration.Tests.Docker.Utils;
 
 using Domain.Exceptions;
+using Domain.Transport;
 using Infrastructure.Node.ValueObjects;
 using Infrastructure.Protocol.Models;
 using Infrastructure.Transport.Events;
@@ -18,7 +19,7 @@ using Infrastructure.Transport.Interfaces;
 internal sealed class CrashableTcpService : ITcpService
 {
     private readonly ITcpService _inner;
-    private readonly ConcurrentBag<TcpClient> _clients = [];
+    private readonly ConcurrentBag<PeerConnection> _clients = [];
     private volatile bool _crashed;
 
     public CrashableTcpService(ITcpService inner)
@@ -39,14 +40,21 @@ internal sealed class CrashableTcpService : ITcpService
 
     public Task StopListeningAsync() => _inner.StopListeningAsync();
 
+    public Task AcceptInboundAsync(Stream stream, EndPoint? remoteEndPoint, bool isProxied,
+                                   CancellationToken cancellationToken = default)
+    {
+        ThrowIfCrashed();
+        return _inner.AcceptInboundAsync(stream, remoteEndPoint, isProxied, cancellationToken);
+    }
+
     public async Task<ConnectedPeer> ConnectToPeerAsync(PeerAddress peerAddress)
     {
         ThrowIfCrashed();
         var connectedPeer = await _inner.ConnectToPeerAsync(peerAddress);
-        _clients.Add(connectedPeer.TcpClient);
+        _clients.Add(connectedPeer.Connection);
         if (_crashed)
         {
-            Reset(connectedPeer.TcpClient);
+            Reset(connectedPeer.Connection);
             ThrowIfCrashed();
         }
 
@@ -74,10 +82,10 @@ internal sealed class CrashableTcpService : ITcpService
 
     private void HandleNewPeerConnected(object? sender, NewPeerConnectedEventArgs args)
     {
-        _clients.Add(args.TcpClient);
+        _clients.Add(args.Connection);
         if (_crashed)
         {
-            Reset(args.TcpClient);
+            Reset(args.Connection);
             return;
         }
 
@@ -93,10 +101,16 @@ internal sealed class CrashableTcpService : ITcpService
     /// <summary>
     /// Closes the socket with a zero linger time, which sends a TCP RST instead of a FIN.
     /// </summary>
-    private static void Reset(TcpClient client)
+    private static void Reset(PeerConnection connection)
     {
         try
         {
+            if (connection.TcpClient is not { } client)
+            {
+                connection.Close();
+                return;
+            }
+
             client.Client.LingerState = new LingerOption(true, 0);
             client.Client.Close();
         }

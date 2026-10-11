@@ -88,7 +88,7 @@ public class TransportServiceTests
                                           TestContext.Current.CancellationToken);
             var transportService = new TransportService(_mockLogger.Object, messageSerializerMock.Object,
                                                         TimeSpan.FromSeconds(30), handshakeServiceMock.Object,
-                                                        tcpClient1);
+                                                        PeerConnection.FromTcpClient(tcpClient1));
 
             // When
             await transportService.InitializeAsync();
@@ -114,14 +114,15 @@ public class TransportServiceTests
         var messageSerializerMock = new Mock<IMessageSerializer>();
         var tcpClient1 = new TcpClient();
         var transportService = new TransportService(_mockLogger.Object, messageSerializerMock.Object,
-                                                    TimeSpan.FromSeconds(30), handshakeServiceMock.Object, tcpClient1);
+                                                    TimeSpan.FromSeconds(30), handshakeServiceMock.Object,
+                                                    PeerConnection.FromTcpClient(tcpClient1));
 
         // Act
         var exception = await Assert
                            .ThrowsAnyAsync<InvalidOperationException>(() => transportService.InitializeAsync());
 
         // Assert
-        Assert.Equal("TcpClient is not connected", exception.Message);
+        Assert.Equal("The connection is not open", exception.Message);
     }
 
     [Fact]
@@ -170,7 +171,8 @@ public class TransportServiceTests
             await tcpClient1.ConnectAsync(IPEndPoint.Parse(tcpListener.LocalEndpoint.ToEndpointString()),
                                           TestContext.Current.CancellationToken);
             var transportService = new TransportService(_mockLogger.Object, messageSerializerMock.Object, TimeSpan.Zero,
-                                                        handshakeServiceMock.Object, tcpClient1);
+                                                        handshakeServiceMock.Object,
+                                                        PeerConnection.FromTcpClient(tcpClient1));
 
             // Act
             var exception = await Assert
@@ -604,7 +606,8 @@ public class TransportServiceTests
                 client.SendBufferSize = socketBufferSize.Value;
             await client.ConnectAsync((IPEndPoint)listener.LocalEndpoint);
             var service = new TransportService(new Mock<ILogger>().Object, serializer, TimeSpan.FromSeconds(30),
-                                               new ScriptedHandshakeService(transport), client);
+                                               new ScriptedHandshakeService(transport),
+                                               PeerConnection.FromTcpClient(client));
             await service.InitializeAsync();
 
             return new ConnectedTransportService(listener, service, await acceptTask, client);

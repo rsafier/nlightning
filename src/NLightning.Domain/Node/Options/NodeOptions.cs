@@ -60,6 +60,13 @@ public class NodeOptions
     public List<string> ListenAddresses { get; set; } = ["127.0.0.1:9735"];
 
     /// <summary>
+    /// Whether the node opens a listener of its own on <see cref="ListenAddresses"/> (default true). False: no
+    /// listener; peers reach the node only through connections an embedding host hands over
+    /// (<c>IPeerInboundAcceptor</c>), and an onion service needs an explicit <c>Tor:OnionServiceTarget</c>.
+    /// </summary>
+    public bool ListenEnabled { get; set; } = true;
+
+    /// <summary>
     /// List of Features the node offers/expects to/from peers
     /// </summary>
     /// <see cref="FeatureOptions"/>
@@ -364,6 +371,12 @@ public class NodeOptions
     public ulong? MaxDustHtlcExposureMsat { get; set; } = DefaultMaxDustHtlcExposureMsat;
 
     /// <summary>
+    /// The addresses the node's own listener binds: <see cref="ListenAddresses"/>, or none when
+    /// <see cref="ListenEnabled"/> is false.
+    /// </summary>
+    public IReadOnlyList<string> GetListenAddresses() => ListenEnabled ? ListenAddresses : [];
+
+    /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
     /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="LiquidityAds"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="ReestablishTimeout"/>, <see cref="PingInterval"/>, the accepted open limits, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
@@ -410,7 +423,7 @@ public class NodeOptions
         errors.AddRange(Keysend.GetValidationErrors());
         errors.AddRange(Quiescence.GetValidationErrors());
         errors.AddRange(Bootstrap.GetValidationErrors());
-        errors.AddRange(Tor.GetValidationErrors(ListenAddresses));
+        errors.AddRange(Tor.GetValidationErrors(GetListenAddresses()));
         // Only an explicit Enabled = true: the mainnet default must never stop a node whose operator raised
         // NetworkTimeout (the bootstrap then waits NetworkTimeout, BootstrapOptions.GetEffectiveConnectTimeout)
         if (Bootstrap.Enabled == true && Bootstrap.ConnectTimeout < NetworkTimeout)

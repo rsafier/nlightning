@@ -16,6 +16,7 @@ using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.OnionMessages.Interfaces;
+using Domain.Transport;
 using Protocol.Services;
 using Services;
 using Transport.Tor;
@@ -51,7 +52,7 @@ public class PeerServiceFactory : IPeerServiceFactory
 
     /// <inheritdoc />
     /// <exception cref="ConnectionException">Thrown when the connection to the peer fails.</exception>
-    public async Task<IPeerService> CreateConnectedPeerAsync(CompactPubKey peerPubKey, TcpClient tcpClient)
+    public async Task<IPeerService> CreateConnectedPeerAsync(CompactPubKey peerPubKey, PeerConnection connection)
     {
         // Create a specific logger for the communication service
         var commLogger = _loggerFactory.CreateLogger<PeerCommunicationService>();
@@ -61,7 +62,7 @@ public class PeerServiceFactory : IPeerServiceFactory
         // (like the onion peel), so the node private key never leaves locked memory (NL-436)
         var transportService =
             _transportServiceFactory.CreateTransportService(true, _secureKeyManager.GetNodePubKey(), peerPubKey,
-                                                            tcpClient,
+                                                            connection,
                                                             _secureKeyManager.ComputeNodeSharedSecret);
 
         try
@@ -78,7 +79,7 @@ public class PeerServiceFactory : IPeerServiceFactory
         var messageService = _messageServiceFactory.CreateMessageService(transportService);
 
         // Create the ping pong service; a connection through Tor waits longer for its pong and init (NL-590)
-        var networkTimeout = TorTcpClient.GetNetworkTimeout(_nodeOptions, tcpClient, inbound: false);
+        var networkTimeout = TorTcpClient.GetNetworkTimeout(_nodeOptions, connection, inbound: false);
         var pingPongService = CreatePingPongService(networkTimeout);
 
         // Create the communication service
@@ -95,16 +96,16 @@ public class PeerServiceFactory : IPeerServiceFactory
 
     /// <inheritdoc />
     /// <exception cref="ConnectionException">Thrown when the connection to the peer fails.</exception>
-    public async Task<IPeerService> CreateConnectingPeerAsync(TcpClient tcpClient)
+    public async Task<IPeerService> CreateConnectingPeerAsync(PeerConnection connection)
     {
         // Create loggers
         var commLogger = _loggerFactory.CreateLogger<PeerCommunicationService>();
         var appLogger = _loggerFactory.CreateLogger<PeerService>();
 
-        var remoteEndPoint =
-            (IPEndPoint)(tcpClient.Client.RemoteEndPoint ?? throw new Exception("Failed to get remote endpoint"));
-        var ipAddress = remoteEndPoint.Address.ToString();
-        var port = remoteEndPoint.Port;
+        // A connection of our own listener always has an IP endpoint; a host's stream may come with any or none
+        var remoteEndPoint = connection.RemoteEndPoint;
+        if (connection.TcpClient is not null && remoteEndPoint is not IPEndPoint)
+            throw new Exception("Failed to get remote endpoint");
 
         // Create and Initialize the transport service. The responder's remote static key arrives in act three, so
         // the own public key is the placeholder the old call passed too; the static ECDH runs through the key
@@ -112,7 +113,7 @@ public class PeerServiceFactory : IPeerServiceFactory
         var localStaticPublicKey = _secureKeyManager.GetNodePubKey();
         var transportService =
             _transportServiceFactory.CreateTransportService(false, localStaticPublicKey, localStaticPublicKey,
-                                                            tcpClient,
+                                                            connection,
                                                             _secureKeyManager.ComputeNodeSharedSecret);
         try
         {
@@ -121,7 +122,7 @@ public class PeerServiceFactory : IPeerServiceFactory
         catch (Exception ex)
         {
             transportService.Dispose();
-            throw new ConnectionException($"Error establishing connection to peer {ipAddress}:{port}", ex);
+            throw new ConnectionException($"Error establishing connection to peer {connection}", ex);
         }
 
         if (transportService.RemoteStaticPublicKey is null)
@@ -134,15 +135,18 @@ public class PeerServiceFactory : IPeerServiceFactory
         var messageService = _messageServiceFactory.CreateMessageService(transportService);
 
         // Create the ping pong service; a connection that reached our onion service waits longer (NL-590)
-        var networkTimeout = TorTcpClient.GetNetworkTimeout(_nodeOptions, tcpClient, inbound: true);
+        var networkTimeout = TorTcpClient.GetNetworkTimeout(_nodeOptions, connection, inbound: true);
         var pingPongService = CreatePingPongService(networkTimeout);
 
         // Create the communication service (infrastructure layer). BOLT 1 (NL-009): as the receiver of the connection
-        // our init carries remote_addr: the endpoint the peer connected from, unless it is a private address
+        // our init carries remote_addr: the endpoint the peer connected from, unless it is a private address or the
+        // connection came through a proxy (we do not see where the peer connected from)
         var communicationService = new PeerCommunicationService(commLogger, messageService, _messageFactory,
                                                                 transportService.RemoteStaticPublicKey.Value,
                                                                 pingPongService, _serviceProvider,
-                                                                FromInboundEndPoint(tcpClient.Client.RemoteEndPoint));
+                                                                connection.IsProxied
+                                                                    ? null
+                                                                    : FromInboundEndPoint(remoteEndPoint));
 
         // Create the application service (application layer)
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, networkTimeout,

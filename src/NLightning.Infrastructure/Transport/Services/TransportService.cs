@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Transport.Services;
@@ -21,7 +20,7 @@ internal sealed class TransportService : ITransportService
     private readonly IMessageSerializer _messageSerializer;
     private readonly TimeSpan _networkTimeout;
     private readonly SemaphoreSlim _networkWriteSemaphore = new(1, 1);
-    private readonly TcpClient _tcpClient;
+    private readonly PeerConnection _connection;
     private long _bytesSent;
     private long _bytesReceived;
     private readonly TaskCompletionSource<bool> _tcs = new();
@@ -66,7 +65,7 @@ internal sealed class TransportService : ITransportService
     public event EventHandler<Exception>? ExceptionRaised;
 
     public bool IsInitiator { get; }
-    public bool IsConnected => _tcpClient.Connected;
+    public bool IsConnected => _connection.IsConnected;
 
     /// <inheritdoc />
     public long BytesSent => Interlocked.Read(ref _bytesSent);
@@ -76,9 +75,10 @@ internal sealed class TransportService : ITransportService
     public CompactPubKey? RemoteStaticPublicKey { get; private set; }
 
     public TransportService(IEcdh ecdh, ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
-                            bool isInitiator, ReadOnlySpan<byte> s, ReadOnlySpan<byte> rs, TcpClient tcpClient)
+                            bool isInitiator, ReadOnlySpan<byte> s, ReadOnlySpan<byte> rs,
+                            PeerConnection connection)
         : this(logger, messageSerializer, networkTimeout, new HandshakeService(isInitiator, s, rs, null, ecdh),
-               tcpClient)
+               connection)
     {
         _messageSerializer = messageSerializer;
         _networkTimeout = networkTimeout;
@@ -90,20 +90,20 @@ internal sealed class TransportService : ITransportService
     /// </summary>
     public TransportService(IEcdh ecdh, ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
                             bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey, ReadOnlySpan<byte> rs,
-                            TcpClient tcpClient, ProtectedStaticEcdh protectedStaticEcdh)
+                            PeerConnection connection, ProtectedStaticEcdh protectedStaticEcdh)
         : this(logger, messageSerializer, networkTimeout,
-               new HandshakeService(isInitiator, localStaticPublicKey, rs, ecdh, protectedStaticEcdh), tcpClient)
+               new HandshakeService(isInitiator, localStaticPublicKey, rs, ecdh, protectedStaticEcdh), connection)
     {
     }
 
     internal TransportService(ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
-                              IHandshakeService handshakeService, TcpClient tcpClient)
+                              IHandshakeService handshakeService, PeerConnection connection)
     {
         _handshakeService = handshakeService;
         _logger = logger;
         _messageSerializer = messageSerializer;
         _networkTimeout = networkTimeout;
-        _tcpClient = tcpClient;
+        _connection = connection;
 
         IsInitiator = handshakeService.IsInitiator;
     }
@@ -113,16 +113,16 @@ internal sealed class TransportService : ITransportService
         if (_handshakeService == null)
             throw new NullReferenceException(nameof(_handshakeService));
 
-        if (!_tcpClient.Connected)
-            throw new InvalidOperationException("TcpClient is not connected");
+        if (!_connection.IsConnected)
+            throw new InvalidOperationException("The connection is not open");
 
         var writeBuffer = ArrayPool<byte>.Shared.Rent(66);
         var readBuffer = ArrayPool<byte>.Shared.Rent(66);
-        var stream = _tcpClient.GetStream();
+        var stream = _connection.GetStream();
 
         CancellationTokenSource networkTimeoutCancellationTokenSource = new();
 
-        var host = _tcpClient.Client.RemoteEndPoint?.ToString() ?? "unknown";
+        var host = _connection.ToString();
 
         if (_handshakeService.IsInitiator)
         {
@@ -173,7 +173,7 @@ internal sealed class TransportService : ITransportService
                 // Read exactly 50 bytes
                 networkTimeoutCancellationTokenSource = new CancellationTokenSource(_networkTimeout);
                 if (!IsSocketConnected())
-                    throw new ConnectionException($"TcpClient disconnected before reading Act One from host {host}");
+                    throw new ConnectionException($"Connection closed before reading Act One from host {host}");
 
                 await stream.ReadExactlyAsync(readBuffer.AsMemory()[..50], networkTimeoutCancellationTokenSource.Token);
 
@@ -182,7 +182,7 @@ internal sealed class TransportService : ITransportService
                 var len = _handshakeService.PerformStep(readBuffer.AsSpan()[..50], writeBuffer.AsSpan()[..50], out _);
 
                 if (!IsSocketConnected())
-                    throw new ConnectionException($"TcpClient disconnected before writing Act Two to host {host}");
+                    throw new ConnectionException($"Connection closed before writing Act Two to host {host}");
 
                 await stream.WriteAsync(writeBuffer.AsMemory()[..len], CancellationToken.None);
                 await stream.FlushAsync(CancellationToken.None);
@@ -192,7 +192,7 @@ internal sealed class TransportService : ITransportService
                 act = 3;
                 networkTimeoutCancellationTokenSource = new CancellationTokenSource(_networkTimeout);
                 if (!IsSocketConnected())
-                    throw new ConnectionException($"TcpClient disconnected before reading Act Three from host {host}");
+                    throw new ConnectionException($"Connection closed before reading Act Three from host {host}");
                 await stream.ReadExactlyAsync(readBuffer.AsMemory()[..66], networkTimeoutCancellationTokenSource.Token);
                 networkTimeoutCancellationTokenSource.Dispose();
 
@@ -264,14 +264,10 @@ internal sealed class TransportService : ITransportService
 
     public async Task WriteMessageAsync(IMessage message, CancellationToken cancellationToken = default)
     {
-        if (_tcpClient is null)
-            throw new ConnectionException("TcpClient was null while trying to write a message",
-                                          new NullReferenceException(nameof(_tcpClient)));
-
         // Not IsSocketConnected: its Poll + Available probe races with the read loop, which can drain the socket in
         // between and make a live connection look closed (NL-240). A closed socket fails the write itself.
-        if (!_tcpClient.Connected)
-            throw new ConnectionException("TcpClient was not connected while trying to write a message");
+        if (!_connection.IsConnected)
+            throw new ConnectionException("The connection was not open while trying to write a message");
 
         if (_transport is null)
             throw new ConnectionException("Handshake not completed while trying to write a message");
@@ -297,7 +293,7 @@ internal sealed class TransportService : ITransportService
             // applies, and any failure leaves the stream out of sync with the peer's nonces, so it is fatal.
             try
             {
-                var stream = _tcpClient.GetStream();
+                var stream = _connection.GetStream();
                 await stream.WriteAsync(buffer.AsMemory()[..size], _cts.Token);
                 await stream.FlushAsync(_cts.Token);
                 Interlocked.Add(ref _bytesSent, size);
@@ -305,7 +301,7 @@ internal sealed class TransportService : ITransportService
             catch (Exception e)
             {
                 _writeFaulted = true;
-                _tcpClient.Close();
+                _connection.Close();
                 throw new ConnectionException("Error writing message", e);
             }
         }
@@ -316,28 +312,7 @@ internal sealed class TransportService : ITransportService
         }
     }
 
-    private bool IsSocketConnected()
-    {
-        try
-        {
-            if (_tcpClient.Client.Connected)
-            {
-                // This is how you can determine if a socket is still connected.
-                return _tcpClient.Client.Connected &&
-                       (!_tcpClient.Client.Poll(1, SelectMode.SelectRead) || _tcpClient.Client.Available != 0);
-            }
-
-            return false;
-        }
-        catch (SocketException)
-        {
-            return false;
-        }
-        catch (ObjectDisposedException)
-        {
-            return false;
-        }
-    }
+    private bool IsSocketConnected() => _connection.IsAlive();
 
     private async Task ReadResponseAsync()
     {
@@ -355,11 +330,12 @@ internal sealed class TransportService : ITransportService
                     if (_transport == null)
                         throw new InvalidOperationException("Handshake not completed while trying to read a message");
 
-                    if (_tcpClient is null || !IsSocketConnected())
-                        throw new InvalidOperationException("TcpClient is not connected while trying to read a message");
+                    if (!IsSocketConnected())
+                        throw new InvalidOperationException(
+                            "The connection is not open while trying to read a message");
 
                     // Read the encrypted header; a TCP read may return fewer bytes than requested
-                    var stream = _tcpClient.GetStream();
+                    var stream = _connection.GetStream();
                     await stream.ReadExactlyAsync(memoryBuffer[..ProtocolConstants.MessageHeaderSize], _cts.Token);
                     if (_cts.IsCancellationRequested)
                         break;
@@ -401,7 +377,7 @@ internal sealed class TransportService : ITransportService
                 {
                     if (!_cts.IsCancellationRequested)
                     {
-                        if (_tcpClient is null || !_tcpClient.Connected)
+                        if (!_connection.IsConnected)
                             throw new PeerClosedConnectionException("Peer closed the connection");
 
                         throw new ConnectionException("Error reading response", e);
@@ -443,12 +419,17 @@ internal sealed class TransportService : ITransportService
             }
 
             _cts.Cancel();
+
+            // A host's stream may not honor the read's cancellation: closing it ends the read at once
+            if (_connection.TcpClient is null)
+                _connection.Close();
+
             if (readLoopStarted)
                 _tcs.Task.Wait(TimeSpan.FromSeconds(5));
 
             _handshakeService?.Dispose();
             _transport?.Dispose();
-            _tcpClient.Dispose();
+            _connection.Dispose();
         }
 
         _disposed = true;

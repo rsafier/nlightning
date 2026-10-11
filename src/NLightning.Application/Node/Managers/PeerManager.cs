@@ -23,7 +23,6 @@ using Domain.Gossip.Models;
 using Domain.Node.Bootstrap;
 using Domain.Node.Constants;
 using Domain.Node.Events;
-using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
@@ -104,8 +103,6 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     private readonly Lazy<IOnionMessageRateLimiter?> _onionMessageRateLimiter;
     private readonly Lazy<IGraphStore?> _graphStore;
 
-    // The optional node write fence every outbox asks before a send (NL-1341); none registered = nothing checked
-    private readonly Lazy<INodeWriteFence?> _writeFence;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
     private long _droppedOutboxOnionMessages;
@@ -216,7 +213,6 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         _channelUpdateService?.OnChannelUpdateReady += HandleChannelUpdateReady;
         _gossipOutboxSettings = new Lazy<GossipOutboxSettings>(ResolveGossipOutboxSettings);
         _graphStore = new Lazy<IGraphStore?>(ResolveGraphStore);
-        _writeFence = new Lazy<INodeWriteFence?>(() => _serviceProvider.GetService<INodeWriteFence>());
     }
 
     /// <summary>The gossip messages waiting in every current connection's outbox (NL-360; the metric's gauge).</summary>
@@ -617,14 +613,14 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _ = connectTask.ContinueWith(t => t.Result.TcpClient.Dispose(), CancellationToken.None,
+            _ = connectTask.ContinueWith(t => t.Result.Connection.Dispose(), CancellationToken.None,
                                          TaskContinuationOptions.OnlyOnRanToCompletion
                                        | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             throw;
         }
 
         var createTask = _peerServiceFactory.CreateConnectedPeerAsync(connectedPeer.CompactPubKey,
-                                                                      connectedPeer.TcpClient);
+                                                                      connectedPeer.Connection);
         IPeerService peerService;
         try
         {
@@ -633,7 +629,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Closing the socket ends the handshake; a service built anyway is released
-            connectedPeer.TcpClient.Dispose();
+            connectedPeer.Connection.Dispose();
             _ = createTask.ContinueWith(t => t.Result.Dispose(), CancellationToken.None,
                                         TaskContinuationOptions.OnlyOnRanToCompletion
                                       | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
@@ -777,7 +773,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         try
         {
             // Create the peer
-            var peerService = await _peerServiceFactory.CreateConnectingPeerAsync(args.TcpClient);
+            var peerService = await _peerServiceFactory.CreateConnectingPeerAsync(args.Connection);
 
             _logger.LogTrace("PeerService created for peer {PeerPubKey}", peerService.PeerPubKey);
 
@@ -787,10 +783,13 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             // An inbound peer's listening address is unknown (init remote_addr is our address, NL-344): the row
             // keeps a saved one (NL-514) or is saved from its node_announcement, else at this host with the default
             // port. From a loopback address (a local tunnel, Tor on the same host) that host is not the peer's: it
-            // is saved as inbound-only, never dialed (NL-497)
-            var isInboundOnly = IsLoopback(args.Host);
+            // is saved as inbound-only, never dialed (NL-497); so is a connection a host handed over through a proxy
+            // or without an endpoint
+            var isInboundOnly = IsLoopback(args.Host) || args.Connection.IsProxied || string.IsNullOrEmpty(args.Host);
             var peer = new PeerModel(peerService.PeerPubKey, args.Host, NodeConstants.DefaultPort,
-                                     args.TcpClient.Client.ProtocolType == ProtocolType.IPv6 ? "IPv6" : "IPv4")
+                                     args.Connection.TcpClient?.Client.ProtocolType == ProtocolType.IPv6
+                                         ? "IPv6"
+                                         : "IPv4")
             {
                 LastSeenAt = DateTime.UtcNow,
                 IsInboundOnly = isInboundOnly
@@ -814,7 +813,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             }
 
             // Every inbound peer is saved, so its channels are registered at our next start (NL-497)
-            session.DialablePeer = await SaveInboundPeerAsync(peer);
+            session.DialablePeer = await SaveInboundPeerAsync(peer, args.Connection.IsProxied);
         }
         catch (ConnectionException e)
         {
@@ -836,11 +835,13 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// peer's (NL-497), unless Tor is on and its <c>node_announcement</c> names an address we can dial (an onion
     /// service, or an IP): a peer that reached our onion service is then saved there and dialed back (NL-579); any
     /// other peer is saved at the address of its <c>node_announcement</c> when the graph has one (NL-514), else at the
-    /// host it connected from with the default port (its listening port is unknown until it announces itself).
+    /// host it connected from with the default port (its listening port is unknown until it announces itself). A peer
+    /// whose connection a host handed over through a proxy (<paramref name="viaProxy"/>) is inbound-only like a
+    /// loopback one, and saved at its announced address whether Tor is on or not.
     /// </summary>
     /// <returns>The saved dialable row of an inbound-only peer (kept or from its announcement), the one the reconnect
     /// loop dials; else null.</returns>
-    private Task<PeerModel?> SaveInboundPeerAsync(PeerModel peer)
+    private Task<PeerModel?> SaveInboundPeerAsync(PeerModel peer, bool viaProxy)
     {
         return SavePeerRowAsync(peer.NodeId, async uow =>
         {
@@ -855,8 +856,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             if (peer.IsInboundOnly)
             {
                 // Tor delivers our onion service's connections from loopback: the peer's announcement says where to
-                // dial it back (NL-579)
-                if (_torOptions.IsEnabled && TryGetAnnouncedPeer(peer.NodeId) is { } announced)
+                // dial it back (NL-579); so does a proxied peer's
+                if ((_torOptions.IsEnabled || viaProxy) && TryGetAnnouncedPeer(peer.NodeId) is { } announced)
                 {
                     announced.LastSeenAt = peer.LastSeenAt;
                     await uow.PeerDbRepository.AddOrUpdateAsync(announced);
@@ -951,7 +952,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
                                     },
                                     MaxOutboxOnionMessagesPerPeer,
                                     () => Interlocked.Increment(ref _droppedOutboxOnionMessages),
-                                    maxQueuedGossipBytes, _writeFence.Value);
+                                    maxQueuedGossipBytes);
         var session = new PeerSession(peer, peerService, outbox, isInbound);
         session.ChannelMessageHandler = (_, args) => QueueInboundMessage(session, args);
         session.DisconnectHandler = (_, args) => HandleSessionDisconnected(session, args);

@@ -26,7 +26,7 @@ public static class TorStartupChecks
             return warnings;
 
         // Refused at validation unless Tor:AllowClearnetListen is set (NL-577); then a reminder
-        foreach (var listen in nodeOptions.ListenAddresses)
+        foreach (var listen in nodeOptions.GetListenAddresses())
             if (IPEndPoint.TryParse(listen, out var endPoint) && !IPAddress.IsLoopback(endPoint.Address))
                 warnings.Add($"Tor-only mode listens on {listen} (Tor:AllowClearnetListen), reachable without Tor; "
                            + "listen on 127.0.0.1 (the onion service's target) to be reachable through Tor only");

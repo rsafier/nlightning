@@ -8,14 +8,19 @@ namespace NLightning.Daemon.Tests.Extensions;
 using Daemon.Extensions;
 using Domain.Bitcoin.Interfaces;
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
 using Domain.Node.Fencing;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Domain.Transport;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Transport.Interfaces;
 
 /// <summary>
 /// NL-1341: the node composition registers no node write fence (a standard node behaves as before), and one a host
-/// registers reaches the unit of work, the signer and the chain service.
+/// registers reaches the unit of work, the signer, the chain service and every peer connection's message service
+/// (NL-1343). NL-1369: the composition registers the inbound acceptor (the node's TCP service) and no outbound dialer.
 /// </summary>
 public class NodeWriteFenceCompositionTests
 {
@@ -34,6 +39,8 @@ public class NodeWriteFenceCompositionTests
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(INodeWriteFence));
         Assert.Null(provider.GetService<INodeWriteFence>());
         Assert.Equal(64, ((byte[])signature).Length);
+        Assert.Null(provider.GetService<IPeerConnectionDialer>());
+        Assert.Same(provider.GetRequiredService<ITcpService>(), provider.GetRequiredService<IPeerInboundAcceptor>());
     }
 
     [Fact]
@@ -54,8 +61,17 @@ public class NodeWriteFenceCompositionTests
             scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync());
         await Assert.ThrowsAsync<NodeFencedException>(() =>
             provider.GetRequiredService<IBitcoinChainService>().SendTransactionAsync(Network.RegTest.CreateTransaction()));
+        var transport = new Mock<ITransportService>();
+        transport.SetupGet(t => t.IsConnected).Returns(true);
+        using var messageService = provider.GetRequiredService<IMessageServiceFactory>()
+                                           .CreateMessageService(transport.Object);
+        var refused = await Assert.ThrowsAsync<ConnectionException>(() =>
+            messageService.SendMessageAsync(new PongMessage(4), throwOnException: true,
+                                           TestContext.Current.CancellationToken));
+        Assert.IsType<NodeFencedException>(refused.InnerException);
+        transport.Verify(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()), Times.Never);
         Assert.Equal(1, fence.Saves);
-        Assert.Equal([NodeEffect.Sign, NodeEffect.Broadcast], fence.Effects);
+        Assert.Equal([NodeEffect.Sign, NodeEffect.Broadcast, NodeEffect.PeerSend], fence.Effects);
     }
 
     private static Hash CreateHash() => new(Enumerable.Repeat((byte)0x42, 32).ToArray());

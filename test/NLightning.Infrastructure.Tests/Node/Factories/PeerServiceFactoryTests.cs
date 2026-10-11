@@ -103,7 +103,8 @@ public class PeerServiceFactoryTests
         using var connection = await LoopbackConnection.OpenAsync();
 
         // Act
-        await Assert.ThrowsAsync<ConnectionException>(() => factory.CreateConnectingPeerAsync(connection.Accepted));
+        await Assert.ThrowsAsync<ConnectionException>(
+            () => factory.CreateConnectingPeerAsync(PeerConnection.FromTcpClient(connection.Accepted)));
 
         // Assert
         transport.Verify(x => x.Dispose(), Times.Once);
@@ -120,7 +121,8 @@ public class PeerServiceFactoryTests
         using var connection = await LoopbackConnection.OpenAsync();
 
         // Act
-        await Assert.ThrowsAsync<ErrorException>(() => factory.CreateConnectingPeerAsync(connection.Accepted));
+        await Assert.ThrowsAsync<ErrorException>(
+            () => factory.CreateConnectingPeerAsync(PeerConnection.FromTcpClient(connection.Accepted)));
 
         // Assert
         transport.Verify(x => x.Dispose(), Times.Once);
@@ -136,8 +138,9 @@ public class PeerServiceFactoryTests
         using var connection = await LoopbackConnection.OpenAsync();
 
         // Act
+        var peerConnection = PeerConnection.FromTcpClient(connection.Client);
         await Assert.ThrowsAsync<ConnectionException>(() => factory.CreateConnectedPeerAsync(s_nodePubKey,
-                                                                                             connection.Client));
+                                                                                             peerConnection));
 
         // Assert
         transport.Verify(x => x.Dispose(), Times.Once);
@@ -160,13 +163,13 @@ public class PeerServiceFactoryTests
     private sealed class SingleTransportServiceFactory(ITransportService transport) : ITransportServiceFactory
     {
         public ITransportService CreateTransportService(bool isInitiator, ReadOnlySpan<byte> s,
-                                                        ReadOnlySpan<byte> rs, TcpClient tcpClient)
+                                                        ReadOnlySpan<byte> rs, PeerConnection connection)
         {
             return transport;
         }
 
         public ITransportService CreateTransportService(bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey,
-                                                        ReadOnlySpan<byte> rs, TcpClient tcpClient,
+                                                        ReadOnlySpan<byte> rs, PeerConnection connection,
                                                         ProtectedStaticEcdh protectedStaticEcdh)
         {
             return transport;

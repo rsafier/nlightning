@@ -11,6 +11,7 @@ namespace NLightning.Infrastructure.Tests.Transport.Tor;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
+using Domain.Transport;
 using Infrastructure.Protocol.Models;
 using Infrastructure.Transport.Services;
 using Infrastructure.Transport.Tor;
@@ -67,8 +68,8 @@ public sealed class TorTransportTests : IAsyncDisposable
         var usernames = _proxy.Requests.Select(r => r.Username).ToList();
         Assert.All(usernames, u => Assert.StartsWith("nltg-", u));
         Assert.NotEqual(usernames[0], usernames[1]);
-        first.TcpClient.Dispose();
-        second.TcpClient.Dispose();
+        first.Connection.TcpClient!.Dispose();
+        second.Connection.TcpClient!.Dispose();
     }
 
     [Fact]
@@ -82,8 +83,8 @@ public sealed class TorTransportTests : IAsyncDisposable
 
         // Assert
         Assert.Empty(_proxy.Requests);
-        Assert.True(peer.TcpClient.Connected);
-        peer.TcpClient.Dispose();
+        Assert.True(peer.Connection.TcpClient!.Connected);
+        peer.Connection.TcpClient!.Dispose();
     }
 
     [Theory]
@@ -102,8 +103,8 @@ public sealed class TorTransportTests : IAsyncDisposable
         var request = Assert.Single(_proxy.Requests);
         Assert.Equal(host, request.Host);
         Assert.Equal(addressType, request.AddressType);
-        Assert.IsType<TorTcpClient>(peer.TcpClient);
-        peer.TcpClient.Dispose();
+        Assert.IsType<TorTcpClient>(peer.Connection.TcpClient!);
+        peer.Connection.TcpClient!.Dispose();
     }
 
     [Fact]
@@ -117,9 +118,9 @@ public sealed class TorTransportTests : IAsyncDisposable
 
         // Assert
         Assert.Empty(_proxy.Requests);
-        Assert.True(peer.TcpClient.Connected);
-        Assert.IsNotType<TorTcpClient>(peer.TcpClient);
-        peer.TcpClient.Dispose();
+        Assert.True(peer.Connection.TcpClient!.Connected);
+        Assert.IsNotType<TorTcpClient>(peer.Connection.TcpClient!);
+        peer.Connection.TcpClient!.Dispose();
     }
 
     [Theory]
@@ -142,7 +143,10 @@ public sealed class TorTransportTests : IAsyncDisposable
         using var accepted = await listener.AcceptTcpClientAsync(ct);
 
         // Act
-        var timeout = TorTcpClient.GetNetworkTimeout(options, inboundFromLoopback ? accepted : client,
+        var timeout = TorTcpClient.GetNetworkTimeout(options,
+                                                     PeerConnection.FromTcpClient(inboundFromLoopback
+                                                                                      ? accepted
+                                                                                      : client),
                                                      inbound: inboundFromLoopback);
 
         // Assert

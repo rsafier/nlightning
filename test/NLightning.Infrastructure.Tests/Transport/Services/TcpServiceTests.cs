@@ -60,9 +60,10 @@ public class TcpServiceTests
             // Assert: the event names the peer's end (its ephemeral port), not our listener
             Assert.Equal("127.0.0.1", eventArgs.Host);
             Assert.NotEqual((uint)port, eventArgs.Port);
-            Assert.True(eventArgs.TcpClient.Connected);
-            Assert.True(eventArgs.TcpClient.NoDelay); // Nagle off: no delayed-ACK stall between two peer messages
-            AssertKeepAlive(eventArgs.TcpClient.Client);
+            Assert.True(eventArgs.Connection.TcpClient!.Connected);
+            // Nagle off: no delayed-ACK stall between two peer messages
+            Assert.True(eventArgs.Connection.TcpClient!.NoDelay);
+            AssertKeepAlive(eventArgs.Connection.TcpClient!.Client);
             Assert.Single(service.ListeningTo);
         }
         finally
@@ -99,17 +100,17 @@ public class TcpServiceTests
             Assert.Equal(peerAddress.Host.ToString(), connectedPeer.Host);
             Assert.Equal((uint)port, connectedPeer.Port);
             Assert.Equal(peerAddress.PubKey, connectedPeer.CompactPubKey);
-            Assert.True(connectedPeer.TcpClient.Connected);
-            Assert.True(connectedPeer.TcpClient.NoDelay);
-            AssertKeepAlive(connectedPeer.TcpClient.Client);
-            await connectedPeer.TcpClient.Client.SendAsync(new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 },
+            Assert.True(connectedPeer.Connection.TcpClient!.Connected);
+            Assert.True(connectedPeer.Connection.TcpClient!.NoDelay);
+            AssertKeepAlive(connectedPeer.Connection.TcpClient!.Client);
+            await connectedPeer.Connection.TcpClient!.Client.SendAsync(new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 },
                                                            TestContext.Current.CancellationToken);
             var peer = await peerAccepted.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             var reply = new byte[3];
-            await connectedPeer.TcpClient.GetStream()
+            await connectedPeer.Connection.TcpClient!.GetStream()
                          .ReadExactlyAsync(reply, TestContext.Current.CancellationToken);
             Assert.Equal(new byte[] { 0x0a, 0x0b, 0x0c }, reply);
-            connectedPeer.TcpClient.Dispose();
+            connectedPeer.Connection.TcpClient!.Dispose();
             peer.Dispose();
         }
         finally
@@ -220,7 +221,7 @@ public class TcpServiceTests
 
             // Assert
             Assert.Equal("::1", eventArgs.Host);
-            Assert.True(eventArgs.TcpClient.Connected);
+            Assert.True(eventArgs.Connection.TcpClient!.Connected);
         }
         finally
         {
@@ -263,7 +264,7 @@ public class TcpServiceTests
             Assert.Equal(2, events.Count);
             Assert.Contains("::1", events.Select(e => e.Host));
             Assert.Contains(events.Select(e => e.Host), h => h.EndsWith("127.0.0.1", StringComparison.Ordinal));
-            Assert.All(events, e => Assert.True(e.TcpClient.Connected));
+            Assert.All(events, e => Assert.True(e.Connection.TcpClient!.Connected));
         }
         finally
         {

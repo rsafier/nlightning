@@ -8,6 +8,7 @@ namespace NLightning.Infrastructure.Transport.Services;
 using Domain.Exceptions;
 using Domain.Node.Constants;
 using Domain.Node.Options;
+using Domain.Transport;
 using Events;
 using Interfaces;
 using Node.ValueObjects;
@@ -28,6 +29,7 @@ public class TcpService : ITcpService
     private readonly ILogger<TcpService> _logger;
     private readonly NodeOptions _nodeOptions;
     private readonly ITorSocksDialer? _torSocksDialer;
+    private readonly IPeerConnectionDialer? _peerConnectionDialer;
     private readonly List<TcpListener> _listeners = [];
 
     private CancellationTokenSource? _cts;
@@ -38,12 +40,18 @@ public class TcpService : ITcpService
     /// <inheritdoc />
     public event EventHandler<NewPeerConnectedEventArgs>? OnNewPeerConnected;
 
+    /// <param name="logger">A logger.</param>
+    /// <param name="nodeOptions">The node options (listen addresses, timeouts, <c>Node:Tor</c>).</param>
+    /// <param name="torSocksDialer">Dials through Tor's SOCKS5 port.</param>
+    /// <param name="peerConnectionDialer">The host's outbound dialer, asked before every dial (none by
+    /// default).</param>
     public TcpService(ILogger<TcpService> logger, IOptions<NodeOptions> nodeOptions,
-                      ITorSocksDialer? torSocksDialer = null)
+                      ITorSocksDialer? torSocksDialer = null, IPeerConnectionDialer? peerConnectionDialer = null)
     {
         _logger = logger;
         _nodeOptions = nodeOptions.Value;
         _torSocksDialer = torSocksDialer;
+        _peerConnectionDialer = peerConnectionDialer;
     }
 
     /// <inheritdoc />
@@ -51,7 +59,7 @@ public class TcpService : ITcpService
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        foreach (var address in _nodeOptions.ListenAddresses)
+        foreach (var address in _nodeOptions.GetListenAddresses())
         {
             if (!TryParseListenAddress(address, out var endPoint))
             {
@@ -118,6 +126,7 @@ public class TcpService : ITcpService
 
     /// <inheritdoc />
     /// <remarks>
+    /// A registered <see cref="IPeerConnectionDialer"/> is asked first; when it returns null (or none is registered),
     /// <c>Node:Tor</c> decides the route: an onion service goes through Tor's SOCKS5 port (and cannot be dialed with Tor
     /// off), and in Tor-only mode every address does, host names resolved by Tor, except loopback and private-network IP
     /// addresses, which Tor refuses and which are dialed directly (NL-588); otherwise the connection is direct, a host
@@ -126,6 +135,10 @@ public class TcpService : ITcpService
     /// <exception cref="ConnectionException">Thrown when the connection to the peer fails.</exception>
     public async Task<ConnectedPeer> ConnectToPeerAsync(PeerAddress peerAddress)
     {
+        if (_peerConnectionDialer is not null
+         && await DialThroughHostAsync(_peerConnectionDialer, peerAddress) is { } hosted)
+            return hosted;
+
         var tor = _nodeOptions.Tor;
         if (!tor.CanDial(peerAddress.Type))
             throw new ConnectionException(peerAddress.IsOnion
@@ -160,6 +173,78 @@ public class TcpService : ITcpService
             tcpClient.Dispose();
             throw new ConnectionException($"Failed to connect to peer {peerAddress.Host}:{peerAddress.Port}", e);
         }
+    }
+
+    /// <inheritdoc />
+    public Task AcceptInboundAsync(Stream stream, EndPoint? remoteEndPoint, bool isProxied,
+                                   CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Only between StartListeningAsync and StopListeningAsync, when the peer manager takes connections
+        var cts = _cts;
+        if (cts is null || cts.IsCancellationRequested)
+            throw new InvalidOperationException("The node is not accepting peer connections");
+
+        var connection = PeerConnection.FromStream(stream, remoteEndPoint, isProxied);
+        var (host, port) = remoteEndPoint switch
+        {
+            IPEndPoint ip => (ip.Address.ToString(), (uint)ip.Port),
+            DnsEndPoint dns => (dns.Host, (uint)dns.Port),
+            _ => (string.Empty, 0u)
+        };
+
+        _logger.LogInformation("New peer connection handed over from {RemoteEndPoint} (proxied: {IsProxied})",
+                               connection, isProxied);
+        OnNewPeerConnected?.Invoke(this, new NewPeerConnectedEventArgs(host, port, connection));
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Asks the host's dialer for a connection to the peer, bounded by <c>Node:NetworkTimeout</c>; null when it leaves
+    /// the dial to the node.
+    /// </summary>
+    private async Task<ConnectedPeer?> DialThroughHostAsync(IPeerConnectionDialer dialer, PeerAddress peerAddress)
+    {
+        Stream? stream;
+        try
+        {
+            using var timeout = new CancellationTokenSource(_nodeOptions.NetworkTimeout);
+            stream = await dialer.DialAsync(peerAddress.PubKey, peerAddress, timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new ConnectionException($"Timeout connecting to peer {peerAddress.Host}:{peerAddress.Port} through "
+                                        + "the host's dialer");
+        }
+        catch (ConnectionException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            throw new ConnectionException($"Failed to connect to peer {peerAddress.Host}:{peerAddress.Port} through "
+                                        + "the host's dialer", e);
+        }
+
+        if (stream is null)
+            return null;
+
+        PeerConnection connection;
+        try
+        {
+            connection = PeerConnection.FromStream(stream, new DnsEndPoint(peerAddress.Host, peerAddress.Port),
+                                                   isProxied: true);
+        }
+        catch (ArgumentException e)
+        {
+            await stream.DisposeAsync();
+            throw new ConnectionException($"The host's dialer returned an unusable stream for peer {peerAddress.Host}:"
+                                        + $"{peerAddress.Port}", e);
+        }
+
+        return new ConnectedPeer(peerAddress.PubKey, peerAddress.Host, (uint)peerAddress.Port, connection);
     }
 
     /// <summary>

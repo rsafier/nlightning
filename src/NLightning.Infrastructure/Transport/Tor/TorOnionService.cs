@@ -37,7 +37,7 @@ public sealed class TorOnionService : ITorOnionService
     {
         _logger = logger;
         _torOptions = nodeOptions.Value.Tor;
-        _listenAddresses = nodeOptions.Value.ListenAddresses;
+        _listenAddresses = nodeOptions.Value.GetListenAddresses();
     }
 
     /// <inheritdoc />
