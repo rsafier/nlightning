@@ -89,6 +89,12 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// </summary>
     private const int MaxParallelStartupDials = 16;
 
+    /// <summary>
+    /// The announced addresses of an inbound-only peer tried per attempt (NL-1385): each failed dial can wait
+    /// <c>Node:NetworkTimeout</c>.
+    /// </summary>
+    private const int MaxAnnouncedDialAddresses = 4;
+
     private static readonly TimeSpan s_stopTimeout = TimeSpan.FromSeconds(5);
 
     private readonly IChannelManager _channelManager;
@@ -268,18 +274,25 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         var dials = new List<Task>();
         // The peers seen last first: at most MaxParallelStartupDials dial at once, so a live peer listed behind many
         // that never answer waited for all of them, NetworkTimeout per round of dials (NL-1357)
+        var inboundOnly = new List<PeerModel>();
         foreach (var peer in peers.OrderByDescending(p => p.LastSeenAt))
         {
-            // A peer we know no address of (it connected to us from a loopback address, NL-497): its channels are
-            // registered above and we wait for it to connect again
+            // A peer we know no address of (it connected to us from a loopback address or through a proxy, NL-497):
+            // its channels are registered above; it is dialed below at its announced address, if any
             if (peer.IsInboundOnly)
             {
-                _logger.LogInformation("Not dialing peer {PeerId}: it only connects to us", peer.NodeId);
+                inboundOnly.Add(peer);
                 continue;
             }
 
-            dials.Add(DialOnStartupAsync(peer, dialGate));
+            dials.Add(DialOnStartupAsync(peer, [peer], dialGate));
         }
+
+        // After the stored addresses, the inbound-only peers we have channels with at the addresses of their
+        // node_announcement (NL-1385): waiting for such a peer to redial left its channels down for as long as its own
+        // backoff decided (LND doubles it for connections that lasted under 10 minutes)
+        foreach (var peer in inboundOnly)
+            DialInboundOnlyPeerOnStartup(peer, dials, dialGate);
 
         _startupDials = Task.WhenAll(dials);
         var waited = await Task.WhenAny(_startupDials, Task.Delay(StartupDialWait, _cts.Token));
@@ -293,42 +306,77 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     }
 
     /// <summary>
-    /// One startup dial (NL-576): at most <see cref="MaxParallelStartupDials"/> at a time, cancelled by
-    /// <see cref="StopAsync"/>; a peer with active channels that could not be reached goes to the reconnect loop.
+    /// Adds the startup dial of an inbound-only peer (NL-1385): only one we have active channels with, at the addresses
+    /// of its <c>node_announcement</c> (<see cref="GetAnnouncedPeers"/>). A peer that announced nothing we can dial (a
+    /// private node) is not dialed and we wait for it to connect, as before; with a graph its reconnect loop still
+    /// starts, which dials once the graph learns an announcement of it (a gossip sync after the start).
     /// </summary>
-    private async Task DialOnStartupAsync(PeerModel peer, SemaphoreSlim dialGate)
+    private void DialInboundOnlyPeerOnStartup(PeerModel peer, List<Task> dials, SemaphoreSlim dialGate)
+    {
+        if (!HasActiveChannels(peer))
+        {
+            _logger.LogInformation("Not dialing peer {PeerId}: it only connects to us", peer.NodeId);
+            return;
+        }
+
+        var announced = GetAnnouncedPeers(peer.NodeId);
+        if (announced.Count > 0)
+        {
+            _logger.LogInformation("Peer {PeerId} only connected to us; dialing its announced address {Address}",
+                                   peer.NodeId, announced[0].PeerAddressInfo.Address);
+            dials.Add(DialOnStartupAsync(peer, announced, dialGate));
+            return;
+        }
+
+        _logger.LogInformation("Not dialing peer {PeerId}: it only connects to us and announced no address we can dial",
+                               peer.NodeId);
+        if (_graphStore.Value is not null)
+            StartReconnectLoop(peer);
+    }
+
+    /// <summary>
+    /// One startup dial (NL-576): at most <see cref="MaxParallelStartupDials"/> at a time, cancelled by
+    /// <see cref="StopAsync"/>. <paramref name="targets"/> are tried in order (the stored row, or an inbound-only peer's
+    /// announced addresses, NL-1385) until one connects; a peer with active channels that could not be reached goes to
+    /// the reconnect loop.
+    /// </summary>
+    private async Task DialOnStartupAsync(PeerModel peer, IReadOnlyList<PeerModel> targets, SemaphoreSlim dialGate)
     {
         var token = _reconnectCts.Token;
-        try
+        foreach (var target in targets)
         {
-            await dialGate.WaitAsync(token);
             try
             {
-                _ = await DialPeerAsync(peer.PeerAddressInfo, token);
+                await dialGate.WaitAsync(token);
+                try
+                {
+                    _ = await DialPeerAsync(target.PeerAddressInfo, token);
+                    return;
+                }
+                finally
+                {
+                    dialGate.Release();
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Already connected (the peer connected to us first, or its connection won the tie-break)
                 return;
             }
-            finally
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
-                dialGate.Release();
+                // Stopping
+                return;
             }
-        }
-        catch (InvalidOperationException)
-        {
-            // Already connected (the peer connected to us first)
-            return;
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-            // Stopping
-            return;
-        }
-        catch (ConnectionException)
-        {
-            _logger.LogWarning("Unable to connect to peer {PeerId} on startup", peer.NodeId);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Error connecting to peer {PeerId} on startup", peer.NodeId);
+            catch (ConnectionException)
+            {
+                _logger.LogWarning("Unable to connect to peer {PeerId} at {Address} on startup", peer.NodeId,
+                                   target.PeerAddressInfo.Address);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Error connecting to peer {PeerId} on startup", peer.NodeId);
+            }
         }
 
         if (HasActiveChannels(peer))
@@ -514,7 +562,9 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
     /// <summary>
     /// Keeps trying to connect to a peer we have channels with, with exponential backoff, until it is connected (by
-    /// us or by itself) or the manager stops.
+    /// us or by itself) or the manager stops. An inbound-only <paramref name="peer"/> is dialed at the addresses of its
+    /// <c>node_announcement</c>, read from the graph again before every attempt (NL-1385); without one the attempt
+    /// dials nothing and backs off.
     /// </summary>
     private void StartReconnectLoop(PeerModel peer)
     {
@@ -537,23 +587,34 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
                 if (_peers.ContainsKey(peer.NodeId))
                     return;
 
-                try
+                var targets = peer.IsInboundOnly ? GetAnnouncedPeers(peer.NodeId) : [peer];
+                Exception? error = null;
+                foreach (var target in targets)
                 {
-                    await ConnectToPeerAsync(peer.PeerAddressInfo);
-                    _logger.LogInformation("Reconnected to peer {PeerId}", peer.NodeId);
-                    return;
+                    try
+                    {
+                        await ConnectToPeerAsync(target.PeerAddressInfo);
+                        _logger.LogInformation("Reconnected to peer {PeerId}", peer.NodeId);
+                        return;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // The peer connected to us in the meantime
+                        return;
+                    }
+                    catch (Exception e)
+                    {
+                        error = e;
+                    }
                 }
-                catch (InvalidOperationException)
-                {
-                    // The peer connected to us in the meantime
-                    return;
-                }
-                catch (Exception e)
-                {
-                    delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, ReconnectMaxDelay.Ticks));
-                    _logger.LogDebug(e, "Unable to reconnect to peer {PeerId}, retrying in {Delay}", peer.NodeId,
+
+                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, ReconnectMaxDelay.Ticks));
+                if (error is null)
+                    _logger.LogDebug("Peer {PeerId} only connects to us and announced no address we can dial, "
+                                   + "looking again in {Delay}", peer.NodeId, delay);
+                else
+                    _logger.LogDebug(error, "Unable to reconnect to peer {PeerId}, retrying in {Delay}", peer.NodeId,
                                      delay);
-                }
             }
         }
         catch (OperationCanceledException)
@@ -575,9 +636,12 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         if (_stopping || _cts is null || session.ReconnectSuppressed || _reconnectCts.IsCancellationRequested)
             return;
 
-        // A peer we cannot dial reconnects to us (NL-497), unless we saved a dialable address of it before it
-        // connected from a loopback address: that one is dialed
-        var dialable = session.Peer.IsInboundOnly ? session.DialablePeer : session.Peer;
+        // A peer we know no address of (NL-497) is dialed at a dialable row saved before it connected from a loopback
+        // address or through a proxy, else at the addresses of its node_announcement, which the reconnect loop reads
+        // from the graph before each attempt (NL-1385); without a graph we wait for it to connect again
+        var dialable = session.Peer.IsInboundOnly
+                           ? session.DialablePeer ?? (_graphStore.Value is not null ? session.Peer : null)
+                           : session.Peer;
         if (dialable is null)
             return;
 
@@ -878,43 +942,67 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     }
 
     /// <summary>
-    /// The peer's listening address from its <c>node_announcement</c> in the graph (NL-514): its first announced IPv4
-    /// or IPv6 address that we could dial (port 0, unspecified and multicast ones refused; a loopback one never, it is
-    /// not the peer's listening address any more than a loopback connection is), or its Tor v3 onion service when Tor
-    /// is on (first in Tor-only mode, after the IP addresses otherwise). Null without a graph, for an unannounced node,
-    /// or when it announced nothing we can dial.
+    /// The peer's listening address from its <c>node_announcement</c> in the graph (NL-514): the first of
+    /// <see cref="GetAnnouncedPeers"/> that is not a DNS host name. Null without a graph, for an unannounced node, or
+    /// when it announced nothing we can dial.
     /// </summary>
-    private PeerModel? TryGetAnnouncedPeer(CompactPubKey nodeId)
+    private PeerModel? TryGetAnnouncedPeer(CompactPubKey nodeId) =>
+        GetAnnouncedPeers(nodeId).FirstOrDefault(p => p.Type != ToPeerType(AddressDescriptorType.Dns));
+
+    /// <summary>
+    /// The addresses of the peer's <c>node_announcement</c> in the graph we can dial, in the order to try them (at most
+    /// <see cref="MaxAnnouncedDialAddresses"/>): its IPv4 and IPv6 addresses (port 0, unspecified and multicast ones
+    /// refused; a loopback one never, it is not the peer's listening address any more than a loopback connection is),
+    /// its Tor v3 onion services when Tor is on (first in Tor-only mode, after the IP addresses otherwise), then its DNS
+    /// host names (resolved by Tor in Tor-only mode; <c>localhost</c> refused). Empty without a graph, for an
+    /// unannounced node, or when it announced nothing we can dial.
+    /// </summary>
+    /// <remarks>
+    /// The graph dials of other nodes skip DNS names (a remote would choose the names we resolve, NL-543); a peer we
+    /// have a channel with is dialed at its own name only after its IP addresses and onion services (NL-1385).
+    /// </remarks>
+    private List<PeerModel> GetAnnouncedPeers(CompactPubKey nodeId)
     {
         var graphStore = _graphStore.Value;
         if (graphStore is null || !graphStore.TryGetNode(nodeId, out var node))
-            return null;
+            return [];
 
-        PeerModel? ip = null;
-        PeerModel? onion = null;
+        var ips = new List<PeerModel>();
+        var onions = new List<PeerModel>();
+        var names = new List<PeerModel>();
         foreach (var descriptor in node.Addresses)
         {
-            if (descriptor.Type == AddressDescriptorType.TorV3)
+            if (descriptor.Port == 0 || !_torOptions.CanDial(descriptor.Type))
+                continue;
+
+            switch (descriptor.Type)
             {
-                if (onion is null && _torOptions.CanDial(descriptor.Type) && descriptor.Port > 0
-                                  && OnionV3Address.IsValid(descriptor.Address))
-                    onion = new PeerModel(nodeId, descriptor.Host, descriptor.Port, ToPeerType(descriptor.Type));
-
-                continue;
+                case AddressDescriptorType.TorV3:
+                    if (OnionV3Address.IsValid(descriptor.Address))
+                        onions.Add(new PeerModel(nodeId, descriptor.Host, descriptor.Port,
+                                                 ToPeerType(descriptor.Type)));
+                    break;
+                case AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6:
+                    var address = new IPAddress(descriptor.Address);
+                    if (SeedAddressFilter.IsUsable(address, descriptor.Port, allowNonRoutable: true, out _)
+                     && !IsLoopback(address.ToString()))
+                        ips.Add(new PeerModel(nodeId, address.ToString(), descriptor.Port,
+                                              ToPeerType(descriptor.Type)));
+                    break;
+                case AddressDescriptorType.Dns:
+                    if (Uri.CheckHostName(descriptor.Host) == UriHostNameType.Dns && !IsLoopback(descriptor.Host))
+                        names.Add(new PeerModel(nodeId, descriptor.Host, descriptor.Port,
+                                                ToPeerType(descriptor.Type)));
+                    break;
             }
-
-            if (ip is not null || descriptor.Type is not (AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6))
-                continue;
-
-            var address = new IPAddress(descriptor.Address);
-            if (!SeedAddressFilter.IsUsable(address, descriptor.Port, allowNonRoutable: true, out _)
-             || IsLoopback(address.ToString()))
-                continue;
-
-            ip = new PeerModel(nodeId, address.ToString(), descriptor.Port, ToPeerType(descriptor.Type));
         }
 
-        return _torOptions.IsTorOnly ? onion ?? ip : ip ?? onion;
+        IEnumerable<PeerModel> ordered = _torOptions.IsTorOnly
+                                             ? [.. onions, .. ips, .. names]
+                                             : [.. ips, .. onions, .. names];
+        return ordered.DistinctBy(p => (p.Host.ToLowerInvariant(), p.Port))
+                      .Take(MaxAnnouncedDialAddresses)
+                      .ToList();
     }
 
     /// <summary>
