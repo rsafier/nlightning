@@ -11270,7 +11270,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation:** `Infrastructure.Bitcoin.Tests/Wallet/WalletLocksTests` (two containers from `AddBitcoinInfrastructure`: one node hangs inside its address allocation and holds its account gate while the other hands out an address and enters its gate; waiting allocations, a named-account `NextAsync` and the gate end with the caller's token; four scopes of one node allocate concurrently without a duplicate index) and `Integration.Tests/Persistence/WalletLocksTwoNodeTests` (two real chain monitors over their own SQLite databases: one node holds both its locks while the other commits a block paying its named account, with the account's discovery, and hands out an address); both fail with the locks made static again.
 
 ### NL-1388 A channel key index reserved for a negotiation that was never saved could be handed out again by a second process over the same database
-- **Status:** fixed (this commit)
+- **Status:** fixed (2f1bd1f6)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs` (`CreateNewChannel`), `src/NLightning.Daemon/Services/NltgDaemonService.cs` (`ReconcileChannelKeyIndexAsync`), `src/NLightning.Application/Channels/Backup/SecureKeyManagerKeyIndexReserver.cs`
@@ -11279,7 +11279,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation:** `Integration.Tests/Persistence/ChannelKeyIndexSharedDatabaseTests` (two service providers, each with its own seed key manager starting at index 0, over one SQLite file: an index handed out without a channel row is skipped by the replacement process; 2 x 10 concurrent opens get 20 distinct indexes; a fenced process is refused and claims nothing; the mark only moves up), `Infrastructure.Bitcoin.Tests/Signers/LocalLightningSignerKeyIndexTests` (claimed index derived, skip past a higher mark, store failure and endless refusal refuse the channel), `Application.Tests/Channels/Backup/SecureKeyManagerKeyIndexReserverTests` (the mark is raised before the key manager; a failing mark refuses the restore).
 
 ### NL-1389 LND gRPC macaroon root keys lived as files: a replacement host resurrected deleted ids or minted a new root key 0
-- **Status:** fixed (this commit)
+- **Status:** fixed (2f1bd1f6)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.LndGrpc/Macaroons/LndRootKeyStore.cs`, `src/NLightning.LndGrpc/Macaroons/LndMacaroonFiles.cs`, `src/NLightning.LndGrpc/LndGrpcHost.cs`
@@ -11288,7 +11288,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation:** `Integration.Tests/Persistence/MacaroonRootKeySharedDatabaseTests` (two processes over one SQLite file: files from before moved in encrypted; an id deleted by one stays deleted for a replacement holding an older directory; a replacement without files uses the stored keys and writes no key file; `RequireExistingRootKey` with nothing stored fails and stores nothing; a provisioned root key wins; a key manager without node data encryption keeps the files). The cluster LND gRPC suites run on the database store.
 
 ### NL-1390 Two accounting sealers over one database could fork the hash chain
-- **Status:** fixed (this commit)
+- **Status:** fixed (2f1bd1f6)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Persistence/EntityConfiguration/Accounting/AccountingEventEntityConfiguration.cs`, `src/NLightning.Application/Accounting/AccountingEventSealerService.cs`
