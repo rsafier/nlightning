@@ -395,6 +395,13 @@ temporary ids and every channel first seen unregistered on a connection (the pee
 (the dispatcher), the connection-level messages (they never reach the dispatcher), the one `PeerOutbox` per connection,
 and every connection on SQLite unless `Node:ChannelLanes:Enabled=true`.
 
-**Default.** On for Postgres, with the gates in the commit record: the unit and integration suites with the laned
-variants, and the cluster matrix `lnd,cln,abcd,postgres` with `NLTG_CHANNEL_LANES=true`. The owner runs the full
-matrix.
+**Gates** (at `daea11b3`): Release `--no-incremental` build 0 warnings; `dotnet format --verify-no-changes` clean;
+net11.0 compile check of the daemon clean; net10.0 tests (no Docker, no SQL Server) all green but three loaded-run
+flakes, each green 3 out of 3 alone (`ClassificationEngineTests` regex timeout NL-1391, `OnchainResolutionExecutorTests`
+stop NL-1394, `LoopPersistenceTests` SQLite function registration NL-1407, none on a lane path); cluster matrix
+`lnd,cln,abcd,postgres -j 6` with `NLTG_CHANNEL_LANES=true` (every test node laned, SQLite ones included): 4 suites
+green, none rerun (`mx-20261011212338`: lnd 69, cln 91, abcd 11, postgres 44 passed, 982 s).
+
+**Default.** On for Postgres (`ChannelLaneOptions.DefaultFor`), off for SQLite and SQL Server. The cluster test nodes run
+SQLite, so the default matrix runs them without lanes: run it with `NLTG_CHANNEL_LANES=true` to cover lanes (the
+owner runs the full matrix).

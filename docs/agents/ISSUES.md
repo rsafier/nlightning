@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 117 | 119 |
+| open | 0 | 0 | 2 | 118 | 120 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
 | fixed | 15 | 76 | 285 | 542 | 918 |
 | wontfix | 0 | 0 | 7 | 15 | 22 |
 | duplicate | 0 | 0 | 3 | 8 | 11 |
-| **Total** | **15** | **77** | **305** | **682** | **1079** |
+| **Total** | **15** | **77** | **305** | **683** | **1080** |
 
 ### Epics
 
@@ -11341,13 +11341,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** look at the run's diagnostics (`TestResults/cluster/<run>/lnd/diag/BarkWalletFlowTests*`) for the StatefulSet's events; check the namespace quota against the suite's pods at that point; create the wallet pod earlier or wait for its controller's events.
 
 ### NL-1396 One peer's channel messages are handled one at a time
-- **Status:** fixed (pending)
+- **Status:** fixed (daea11b3)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.Application/Node/Managers/PeerManager.Lanes.cs`, `PeerManager.cs` (`SelectInboundLoop`), `src/NLightning.Domain/Node/Options/ChannelLaneOptions.cs`, `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`
 - **Evidence:** Plan `docs/agents/PEER_CHANNEL_PARALLELISM_PLAN.md` (proposed as NL-1361, re-filed). Every connection had one inbound loop, so payments over many channels of one peer were serialized there: on Postgres, 1,000 channels to one live peer, 6.7 payments/s one at a time and 22-35/s at 8-32 at once, the latency growing about linearly with the payments in flight (`docs/agents/CHANNEL_SCALE.md` "Per-peer parallelism").
 - **Fix:** per-channel lanes behind a per-connection dispatcher (`Node:ChannelLanes`: `Enabled`, unset = on for `Database:Provider` Postgres and off for SQLite and SQL Server (owner decision 2026-10-11: SQLite keeps its serial behaviour); `MaxConcurrentPerPeer` 8, `MaxConcurrent` 32). The dispatcher runs the reestablish prologue first, groups `start_batch` (a batch is one lane item), and routes each message: a channel id gets its own FIFO lane at its first sight on the connection when it is a registered channel of the peer, else (temporary ids of an open, unknown, all-zero) the serial peer lane, sticky for the connection; a new channel lane waits for the peer lane's earlier items. A lane handles one item at a time exactly as the loop did, takes the per-connection then the node-wide permit before the channel lock, replies to its own connection, and a disconnecting failure drops every lane's queued items; the next connection waits for every lane and the revert. Lane work is bounded by the inbound capacity (backpressure to the socket). The plain loop is kept unchanged when lanes are off.
-- **Validation:** Application `Node/Managers/PeerManagerLaneTests` (13 rules), `PeerManagerLanedTests` and `PeerManagerBatchLanedTests` (every existing PeerManager and batch test with lanes on); Integration `Scale/ChannelLanesLivePeerTests` (two real nodes, 20 channels over one connection: parallel payments with lanes on and off, and a restart of the peer mid-load with no HTLC lost or doubled; SQLite by default, Postgres with `NLTG_SCALE_POSTGRES`); Domain `ChannelLaneOptionsTests`; Daemon `NodeServiceExtensionsTests.Given_ADatabaseAndALaneSetting_*`. Postgres benchmark (median of 3): 26.5-33.6/s at 4-8 at once and 61-69/s at 16-32 (against 16-22/s before), p50 at 16 at once 238 ms (1,022 ms before). Cluster matrix `lnd,cln,abcd,postgres` with `NLTG_CHANNEL_LANES=true` (record in the plan).
+- **Validation:** Application `Node/Managers/PeerManagerLaneTests` (13 rules), `PeerManagerLanedTests` and `PeerManagerBatchLanedTests` (every existing PeerManager and batch test with lanes on); Integration `Scale/ChannelLanesLivePeerTests` (two real nodes, 20 channels over one connection: parallel payments with lanes on and off, and a restart of the peer mid-load with no HTLC lost or doubled; SQLite by default, Postgres with `NLTG_SCALE_POSTGRES`); Domain `ChannelLaneOptionsTests`; Daemon `NodeServiceExtensionsTests.Given_ADatabaseAndALaneSetting_*`. Postgres benchmark (median of 3): 26.5-33.6/s at 4-8 at once and 61-69/s at 16-32 (against 16-22/s before), p50 at 16 at once 238 ms (1,022 ms before). Cluster matrix `lnd,cln,abcd,postgres -j 6` with `NLTG_CHANNEL_LANES=true` (every test node laned): 4 suites green, none rerun (mx-20261011212338: lnd 69, cln 91, abcd 11, postgres 44 passed).
 - **Blocks/Blocked-by:** NL-1397 (wontfix: SQLite stays serial), NL-1399, NL-1401, NL-1404, NL-1405, NL-1406
 
 ### NL-1397 SQLite writers collide and the provider sleeps 150 ms per busy retry
@@ -11406,7 +11406,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** Plan R13 (proposed as NL-1368). NL-1378 already documents that `CheckSaveAsync` takes only shared locks and tests that two saves' checks overlap (`UnitOfWorkWriteFenceTests.Given_AFenceThatTakesASharedLock_*`).
 
 ### NL-1404 Npgsql reset every pooled connection with DISCARD ALL: half the database's statements per payment
-- **Status:** fixed (pending)
+- **Status:** fixed (daea11b3)
 - **Severity:** medium
 - **Kind:** performance
 - **Location:** `src/NLightning.Infrastructure.Persistence/DependencyInjection.cs` (`WithPostgresDefaults`)
@@ -11429,3 +11429,11 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `src/NLightning.Daemon/NLightning.Daemon.csproj` (no `ServerGarbageCollection`)
 - **Evidence:** NL-1396 measurements: with `DOTNET_gcServer=1` the same build reached 90.5 and 108.2 payments/s at 16 and 32 at once (median of 3) against 61.1 and 69.2 with the default workstation GC; thread snapshots without it show many threads paused in `PollGC` and lock holders preempted mid-update.
 - **Fix sketch:** document `DOTNET_gcServer=1` (or `ServerGarbageCollection` with DATAS) for hub deployments, or make it the daemon's default after measuring the memory cost; owner decision.
+
+### NL-1407 LoopPersistenceTests hit "unable to delete/modify user-function due to active statements" in a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** flake
+- **Location:** `test/NLightning.Integration.Tests/Persistence/LoopPersistenceTests.cs` (`Given_ImportedDepositAndSpend_When_Restarted_Then_OnlyNewCommittedStatesArePublished(mode: 1)`)
+- **Evidence:** In the NL-1396 full net10.0 Release run (2026-10-11, loaded host, the cluster matrix running at the same time) the case failed while a context was created: `SqliteException: SQLite Error 5: 'unable to delete/modify user-function due to active statements'` from `SqliteConnection.CreateFunction` in `SqliteRelationalConnection.InitializeDbConnection`, i.e. EF registered its SQLite functions on a pooled connection that still had a statement running (a connection shared across two contexts, or a pool cleared under it, cf. NL-747). The class passed 3 out of 3 times alone; NL-1396 does not touch this code (it is not a peer path). Related to NL-1353 (same class, a timeout).
+- **Fix sketch:** look for a `SqliteConnection` shared by two contexts or a pool cleared by another test of the class; give each restart its own connection string or clear only this test's pool.
