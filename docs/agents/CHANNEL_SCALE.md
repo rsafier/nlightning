@@ -127,5 +127,68 @@ have taken about 15 minutes (16 dials at a time, 15 s each).
    the anchor CPFP rounds).
 3. **Readiness waits `StartupDialWait` when any stored peer does not answer** (NL-576, by design). With dead peers stored, every start
    waits the full 15 s before the chain monitor starts (by design, NL-576), whatever the channel count.
-4. **One peer connection caps payments at about 17/s** (not filed) with SQLite here (ordered per-peer processing, one fsynced save
-   per transition); more concurrency only adds latency.
+4. **One peer connection caps payments at about 17/s** (NL-1396, fixed for Postgres) with SQLite here (ordered per-peer
+   processing, one fsynced save per transition); more concurrency only adds latency. Per-channel lanes lift it on
+   Postgres ("Per-peer parallelism" below); SQLite keeps the serial loop by default (owner decision 2026-10-11).
+
+## Per-peer parallelism (NL-1396, Postgres, 2026-10-11)
+
+Plan: `docs/agents/PEER_CHANNEL_PARALLELISM_PLAN.md`. A connection's channel messages used to be handled one at a time
+by one inbound loop, so payments over many channels of one peer were serialized there. With per-channel lanes
+(`Node:ChannelLanes:Enabled`, on by default for Postgres) the loop is a dispatcher that hands each registered channel's
+messages to that channel's own FIFO lane (at most `MaxConcurrentPerPeer` 8 per connection and `MaxConcurrent` 32
+node-wide at once) and everything else (the open flow under temporary ids, unknown ids) to one serial peer lane.
+
+**Setup.** `ChannelScaleLivePeerTests.Given_Thousands*` with 1,100 hub channels, 1,000 of them to the live peer, 10
+offline peers, 200 payments per round, both nodes on one local Postgres 16.2 container (OrbStack, `max_connections`
+500, Npgsql pool 200) in one test process. New knobs: `NLTG_SCALE_POSTGRES` (connection string without a database: both
+nodes get a database of their own, dropped at the end), `NLTG_SCALE_PARALLEL` (`1,4,8,16,32,64`), `NLTG_SCALE_LANES`
+(`true`/`false`), `NLTG_SCALE_CONFIG` (`key=value;...` for both nodes), `NLTG_SCALE_PG_STATEMENTS=1` (the round's top
+`pg_stat_statements`, the extension must be loaded), `NLTG_SCALE_MARKER` (a file naming the running round, for a
+profiler started from outside). Each round also reports the process CPU per payment (both nodes are in the process) and
+the two databases' busy time and transactions per payment (`pg_stat_database`). The machine (28 cores) was shared with
+other lanes' test runs (load average 4 to 37), so single runs vary by up to 2x: the tables give the median of three
+runs per configuration, run interleaved.
+
+**Base commit** (`1a76e5da` + the plan, lanes code absent; one run): 6.7, 19.2, 22.2, 25.9 and 34.9 payments/s at 1, 4,
+8, 16 and 32 at once, p50 75, 187, 358, 612 and 860 ms.
+
+| at once | lanes off (as before) | | lanes on | | lanes on, `No Reset On Close` (shipped) | | shipped + `DOTNET_gcServer=1` | |
+|---|---|---|---|---|---|---|---|---|
+| | payments/s | p50 / p95 ms | payments/s | p50 / p95 ms | payments/s | p50 / p95 ms | payments/s | p50 / p95 ms |
+| 1 | 8.6 | 77 / 102 | 11.8 | 77 / 99 | 10.1 | 93 / 119 | 9.6 | 80 / 191 |
+| 4 | 16.0 | 215 / 493 | 29.6 | 130 / 177 | 26.5 | 126 / 343 | 29.4 | 115 / 229 |
+| 8 | 20.2 | 386 / 588 | 31.0 | 198 / 513 | 33.6 | 188 / 418 | 39.2 | 152 / 277 |
+| 16 | 9.8 (21.7 best) | 1,022 / 5,119 | 45.4 (70.3 best) | 320 / 553 | 61.1 | 238 / 428 | 90.5 | 162 / 304 |
+| 32 | 22.2 | 1,319 / 1,982 | 72.3 | 390 / 805 | 69.2 | 370 / 817 | 108.2 | 256 / 640 |
+| 64 | 27.8 | 1,803 / 2,566 | 85.0 | 640 / 1,262 | 53.5 (74.2 best) | 996 / 1,818 | 94.5 (148.5 best) | 348 / 1,394 |
+
+Reading it: with lanes off, latency grows about linearly with the payments in flight (the serial loop) and the rate
+stays in the 20s; with lanes on, the rate grows with the payments in flight up to 85-110/s at 32-64 and latency grows
+far slower: about 3x the rate at 16 to 64 at once, about 2x at 4 and 8. Reestablishing the 1,000 channels after the hub's
+start gains a little: all usable on both ends a median 12.5 s after the start with lanes (10.4-16.8 s over 11 runs),
+14.8 s without (12.5-25.2 s over 15 runs); the peer's 1,000 `channel_reestablish` are handled on their own lanes, but
+our own `channel_reestablish` prologue is still serial (NL-1401).
+Correctness under lanes: `Scale/ChannelLanesLivePeerTests` (20 channels over one connection, 48 payments 16 at once,
+both ends agree on every channel; and the peer restarted while 16 payments are in flight: no HTLC lost or doubled, what
+left the hub equals what the peer's settled invoices received) on SQLite and on Postgres.
+
+**What limits it next** (measured with lanes on, 32-128 at once):
+
+1. **Npgsql's connection reset** (NL-1404, fixed): EF takes a pooled connection around nearly every query and Npgsql
+   sent `DISCARD ALL` before each reuse: 145 of the 311 statements per payment of the two nodes (`pg_stat_statements`,
+   0.27-0.32 ms of server time each). `No Reset On Close=true` (our default for Postgres) halves the database's
+   transactions per payment (409 → 209 at one at a time, 168 → 83 at 32). The wall-clock effect was within the host's
+   noise in these runs (2-run and 3-run A/B tests both ways); the saving is database CPU that a busier database needs.
+2. **Durable commits** (NL-1405): at 64 at once the database's active backends wait mostly on the WAL flush
+   (`LWLock:WALWrite` 220 and `IO:WALSync` 53 of 417 samples of `pg_stat_activity`): about 9-10 explicit commits per
+   payment for the two nodes (each transition's save, plus the durable signer guard's own `UPDATE channel_signer_guards`
+   commits, NL-1399), on a Docker-on-macOS volume. The rate plateaus there (85-110/s) with only 4-6 cores busy.
+3. **Workstation GC** (NL-1406): the daemon and the test host run the workstation (concurrent) GC; with
+   `DOTNET_gcServer=1` the same build reached 90-150/s at 16-64 at once (thread snapshots without it show many threads
+   paused in `PollGC`). Not changed: server GC trades memory for it, an operator's choice for a hub.
+4. Per-channel signing (commitment and HTLC signatures, `CommitmentSigningService`, `LocalLightningSigner`) and EF Core
+   materialization are most of the CPU; 50-60 ms of process CPU per payment for both nodes at 32 at once.
+
+Not limits: the per-peer lane cap (8 or 64 gave the same rate at 32 at once), the per-payment-hash lock, the commit
+scheduler, the outbox (one send loop per connection) and the LND index gate (not seen in thread or wait samples).

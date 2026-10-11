@@ -41,6 +41,12 @@ using Infrastructure.Transport.Interfaces;
 /// </summary>
 public class PeerManagerBatchTests
 {
+    /// <summary>
+    /// Whether the connection runs with per-channel lanes, the batch channels registered so each gets its own lane
+    /// (<see cref="PeerManagerBatchLanedTests"/>).
+    /// </summary>
+    protected virtual bool UseChannelLanes => false;
+
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(5);
 
     private static readonly CompactPubKey s_ourNodeKey =
@@ -285,9 +291,13 @@ public class PeerManagerBatchTests
             Raise(message);
         await WaitForHandledAsync(2);
 
-        // Assert
-        var first = Assert.IsType<CommitmentSignedBatch>(Handled(0));
-        var second = Assert.IsType<CommitmentSignedBatch>(Handled(1));
+        // Assert (with lanes the two channels' batches may finish in either order)
+        var batches = new[] { Handled(0), Handled(1) }.Cast<CommitmentSignedBatch>()
+                                                      .OrderBy(b => b.ChannelId == s_channelA ? 0 : 1).ToArray();
+        if (!UseChannelLanes)
+            Assert.Same(batches[0], Handled(0));
+        var first = batches[0];
+        var second = batches[1];
         Assert.Equal(s_channelA, first.ChannelId);
         Assert.Equal(batchOne, first.Messages);
         Assert.Equal(s_channelB, second.ChannelId);
@@ -426,6 +436,12 @@ public class PeerManagerBatchTests
                                           new Mock<ILogger<PeerManager>>().Object, _mockPeerServiceFactory.Object,
                                           _mockSecureKeyManager.Object, _mockTcpService.Object,
                                           _fakeServiceProvider);
+        if (UseChannelLanes)
+        {
+            peerManager.ChannelLanes = new ChannelLaneOptions { Enabled = true };
+            LaneTestChannels.Register(_mockChannelMemoryRepository, _peerKey, s_channelA, s_channelB);
+        }
+
         _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
                        .ReturnsAsync(new ConnectedPeer(_peerKey, "127.0.0.1", 9735, new Mock<TcpClient>().Object));
         await peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_peerKey}@127.0.0.1:9735"));

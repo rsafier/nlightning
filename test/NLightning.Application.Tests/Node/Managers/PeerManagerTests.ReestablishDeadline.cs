@@ -30,10 +30,10 @@ public partial class PeerManagerTests
         var nodeOptions = Options.Create(new NodeOptions { ReestablishTimeout = TimeSpan.FromSeconds(7) });
 
         // Act
-        var configured = new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object,
+        var configured = Laned(new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object,
                                          _mockLogger.Object, _mockPeerServiceFactory.Object,
                                          _mockSecureKeyManager.Object, _mockTcpService.Object, _fakeServiceProvider,
-                                         nodeOptions);
+                                         nodeOptions));
         var unconfigured = CreatePeerManager();
 
         // Assert

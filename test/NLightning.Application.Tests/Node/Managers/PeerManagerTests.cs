@@ -136,10 +136,10 @@ public partial class PeerManagerTests
         });
 
         // Act
-        var peerManager = new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object,
+        var peerManager = Laned(new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object,
                                           _mockLogger.Object, _mockPeerServiceFactory.Object,
                                           _mockSecureKeyManager.Object, _mockTcpService.Object, _fakeServiceProvider,
-                                          nodeOptions);
+                                          nodeOptions));
 
         // Assert
         Assert.Equal(TimeSpan.FromSeconds(1), peerManager.ReconnectInitialDelay);
@@ -2007,9 +2007,9 @@ public partial class PeerManagerTests
 
     private PeerManager CreatePeerManager(IChannelUpdateService channelUpdateService)
     {
-        return new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
+        return Laned(new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
                                _mockPeerServiceFactory.Object, _mockSecureKeyManager.Object, _mockTcpService.Object,
-                               _fakeServiceProvider, null, channelUpdateService);
+                               _fakeServiceProvider, null, channelUpdateService));
     }
 
     private async Task ConnectMockPeerAsync(PeerManager peerManager)
@@ -2338,11 +2338,25 @@ public partial class PeerManagerTests
         return (entered, gate);
     }
 
+    /// <summary>
+    /// Whether every peer manager of the class runs with per-channel lanes (<see cref="PeerManagerLanedTests"/>). The
+    /// channel memory mock knows no channel, so every message goes to the serial peer lane: the class's ordering
+    /// rules must hold there as they do for the plain loop.
+    /// </summary>
+    protected virtual bool UseChannelLanes => false;
+
+    private PeerManager Laned(PeerManager peerManager)
+    {
+        if (UseChannelLanes)
+            peerManager.ChannelLanes = new ChannelLaneOptions { Enabled = true };
+        return peerManager;
+    }
+
     private PeerManager CreatePeerManager()
     {
-        return new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
+        return Laned(new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
                                _mockPeerServiceFactory.Object, _mockSecureKeyManager.Object, _mockTcpService.Object,
-                               _fakeServiceProvider);
+                               _fakeServiceProvider));
     }
 
     /// <summary>

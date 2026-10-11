@@ -1574,6 +1574,31 @@ public class NodeServiceExtensionsTests
         }
     }
 
+    [Theory]
+    [InlineData("Sqlite", null, false)]
+    [InlineData("Postgres", null, true)]
+    [InlineData("Postgres", "false", false)]
+    [InlineData("Sqlite", "true", true)]
+    public void Given_ADatabaseAndALaneSetting_When_OptionsResolved_Then_LanesFollowTheDatabaseUnlessSet(
+        string databaseProvider, string? enabled, bool expected)
+    {
+        // Arrange (unset Node:ChannelLanes:Enabled: on for Postgres, off for SQLite)
+        var extra = new List<(string, string)> { ("Database:Provider", databaseProvider) };
+        if (databaseProvider == "Postgres")
+            extra.Add(("Database:ConnectionString", "Host=127.0.0.1;Database=nltg"));
+        if (enabled is not null)
+            extra.Add(("Node:ChannelLanes:Enabled", enabled));
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration([.. extra]), NodeSigningIdentityFixture.CreateSecureKeyManager());
+        using var serviceProvider = services.BuildServiceProvider();
+
+        // Act
+        var lanes = serviceProvider.GetRequiredService<IOptions<NodeOptions>>().Value.ChannelLanes;
+
+        // Assert
+        Assert.Equal(expected, lanes.IsEnabled);
+    }
+
     private static IConfiguration BuildConfiguration(params (string Key, string Value)[] extra)
     {
         var values = new Dictionary<string, string?>

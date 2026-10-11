@@ -266,6 +266,15 @@ internal sealed class ScaleNode : IAsyncDisposable
             new("Accounting:Prices:Source", "None"),
             new("Gossip:MaxMemoryMb", "0")
         ];
+        // NLTG_SCALE_LANES: per-channel lanes on (true) or off (false) for the benchmark's nodes; unset = the host's
+        // default
+        if (Environment.GetEnvironmentVariable("NLTG_SCALE_LANES") is { Length: > 0 } lanes)
+            settings.Add(new KeyValuePair<string, string?>("Node:ChannelLanes:Enabled", lanes));
+        // NLTG_SCALE_CONFIG: more settings for both nodes, "key=value;key=value" (e.g. the lane caps)
+        foreach (var pair in (Environment.GetEnvironmentVariable("NLTG_SCALE_CONFIG") ?? string.Empty)
+                    .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (pair.Split('=', 2) is [var key, var value])
+                settings.Add(new KeyValuePair<string, string?>(key, value));
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings)
                                                       .AddInMemoryCollection(ExtraConfiguration)
                                                       .Build();

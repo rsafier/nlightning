@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace NLightning.Infrastructure.Persistence;
 
@@ -52,6 +53,11 @@ public static class DependencyInjection
 
         services.AddSingleton(new DatabaseTypeProvider(resolvedDatabaseType));
 
+        // Parsed once: the options lambda below runs for every context
+        var postgresConnectionString = resolvedDatabaseType == DatabaseType.PostgreSql
+                                           ? WithPostgresDefaults(connectionString)
+                                           : connectionString;
+
         // The compiled model (NL-708): always under NativeAOT, which cannot build a model at run time; in the JIT build
         // only when Database:UseCompiledModel is true (the model is then not built at start)
         var useCompiledModel = CompiledModelCatalog.ShouldUse(ParseOptionalBool(dbConfigSection["UseCompiledModel"]));
@@ -69,7 +75,7 @@ public static class DependencyInjection
             {
                 case DatabaseType.PostgreSql:
                     const string pgMigrationsAssembly = "NLightning.Infrastructure.Persistence.Postgres";
-                    optionsBuilder.UseNpgsql(connectionString, sqlOptions =>
+                    optionsBuilder.UseNpgsql(postgresConnectionString, sqlOptions =>
                                    {
                                        sqlOptions.MigrationsAssembly(pgMigrationsAssembly);
                                    })
@@ -98,6 +104,25 @@ public static class DependencyInjection
         });
 
         return services;
+    }
+
+    /// <summary>
+    /// The Postgres connection string with our defaults for what it leaves unset: <c>No Reset On Close=true</c>. EF
+    /// opens and returns a pooled connection around nearly every query, and without it Npgsql sends a
+    /// <c>DISCARD ALL</c> each time a connection comes back out of the pool: 140 to 150 extra round trips per payment
+    /// of the two nodes of the channel-scale benchmark, about half the database's work (NL-1404). The node keeps no
+    /// session state on a connection (no session advisory locks, temporary tables, <c>SET</c> or <c>LISTEN</c>; a
+    /// write fence takes only locks held to the commit), so nothing needs the reset. A connection string that sets the
+    /// key keeps its value.
+    /// </summary>
+    internal static string WithPostgresDefaults(string connectionString)
+    {
+        var configured = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = connectionString };
+        if (configured.Keys.Cast<string>().Any(key => string.Equals(key.Replace(" ", string.Empty), "NoResetOnClose",
+                                                                    StringComparison.OrdinalIgnoreCase)))
+            return connectionString;
+
+        return new NpgsqlConnectionStringBuilder(connectionString) { NoResetOnClose = true }.ConnectionString;
     }
 
     private static bool? ParseOptionalBool(string? value)

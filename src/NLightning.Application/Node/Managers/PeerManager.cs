@@ -55,6 +55,9 @@ using Services;
 /// <see cref="IChannelManager.OnResponseMessageReady"/>) is sent through the outbox in the order it was enqueued.
 /// A connection that goes down stops its loop (what is still queued is dropped), and the loop of the next connection
 /// to the same peer only starts once the previous one has finished, so messages of two connections never interleave.
+/// With per-channel lanes (<c>Node:ChannelLanes</c>, NL-1396) the loop is a dispatcher: each registered channel's
+/// messages are handled in arrival order on that channel's own lane and everything else on one serial peer lane, so
+/// different channels of one peer run at once (see the <c>PeerManager.Lanes.cs</c> remarks).
 /// A connection only becomes the peer's session once the init exchange is done (both inits), so neither end ever
 /// keeps a connection the other end cannot use (NL-240).
 /// A new connection from a peer we are already connected to replaces the old one (as LND and CLN do), except for a
@@ -67,7 +70,7 @@ using Services;
 /// drops has its <see cref="IOnionMessageRateLimiter"/> bucket released.
 /// </remarks>
 /// <seealso cref="IPeerManager" />
-public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMessageOutbox
+public sealed partial class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMessageOutbox
 {
     /// <inheritdoc />
     public event EventHandler<PeerStateChangedEventArgs>? OnPeerStateChanged;
@@ -199,6 +202,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             ReconnectMaxDelay = nodeOptions.Value.ReconnectMaxDelay;
             StartupDialWait = nodeOptions.Value.NetworkTimeout;
             ReestablishTimeout = nodeOptions.Value.ReestablishTimeout;
+            ChannelLanes = nodeOptions.Value.ChannelLanes;
         }
 
         _torOptions = nodeOptions?.Value.Tor ?? new TorOptions();
@@ -1092,7 +1096,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
                 NotifyPeerState(peerId, true);
 
             var previousLoop = _inboundLoops.GetValueOrDefault(peerId) ?? Task.CompletedTask;
-            session.StartInboundLoop(previousLoop, ProcessInboundMessagesAsync);
+            session.StartInboundLoop(previousLoop, SelectInboundLoop());
             _inboundLoops[peerId] = session.InboundLoop;
             _ = session.InboundLoop.ContinueWith(_ => ForgetInboundLoop(session), CancellationToken.None,
                                                  TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);

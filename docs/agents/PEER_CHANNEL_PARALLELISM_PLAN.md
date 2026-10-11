@@ -1,8 +1,9 @@
 # Per-channel parallel processing of one peer's messages (plan)
 
-Status: **proposal, awaiting owner approval** (2026-10-10, branch `wip/peer-parallel` at `wip/fafo` `49ca6b27`). No code
-is changed by this plan. Issue IDs NL-1361..NL-1368 are reserved for it; the entries in §9 are proposals and are not in
-`docs/agents/ISSUES.md` yet.
+Status: **phases P1-P3 built** (branch `wip/peer-parallel-impl`, 2026-10-11; record at the end). The plan's proposed
+IDs NL-1361..NL-1368 were taken meanwhile and were re-filed as NL-1396..NL-1403 (§9 uses the new ones). Owner decisions
+of 2026-10-11: PostgreSQL is the production backend and the baseline; SQLite's single-writer serialization is not worked
+on (P0's SQLite fix, NL-1397/NL-1398, is wontfix) and SQLite may keep serial behaviour.
 
 Background: the channel-scale benchmark (NL-1357, `docs/agents/CHANNEL_SCALE.md` on `wip/channel-scale`) measured about
 17 payments/s between a hub and one live peer over 1,000 channels on SQLite, and sending 8 payments at once added only
@@ -135,7 +136,7 @@ A connection with lanes enabled replaces the single inbound loop by a **dispatch
 | # | Case | Rule |
 |---|---|---|
 | R1 | Reply routing (`_currentSession`) | Each lane worker sets `_currentSession` to its session before handling (lanes are started by the dispatcher; never rely on flow alone). A reply raised by a lane goes to that lane's connection, never a newer one. |
-| R2 | Prologue: our `channel_reestablish` and stored errors | Unchanged in phase 1: the dispatcher runs `StartReestablishAsync` before it routes the first message (messages queue meanwhile). Phase 4 may move each channel's part into its lane's first item (NL-1366); the per-peer part (tracker reset, announcement resets) stays first and serial. The reestablish deadline is armed after the prologue, as today. |
+| R2 | Prologue: our `channel_reestablish` and stored errors | Unchanged in phase 1: the dispatcher runs `StartReestablishAsync` before it routes the first message (messages queue meanwhile). Phase 4 may move each channel's part into its lane's first item (NL-1401); the per-peer part (tracker reset, announcement resets) stays first and serial. The reestablish deadline is armed after the prologue, as today. |
 | R3 | Gating before the peer's reestablish | Unchanged and per channel: `ThrowIfNotReestablished` and `Publish` read the per-channel tracker. A channel lane may run while another channel still waits for its reestablish. |
 | R4 | Lane assignment and the open flow (temporary ids, `open_channel`/`accept_channel`/`funding_created`/`funding_signed`, `open_channel2`/`accept_channel2`, the dual-funded interactive-tx before the channel is registered, `IChannelOpenDecisionGate`) | A channel id gets a lane **at its first sight on the connection** and keeps it for the connection (sticky). It gets its own channel lane only if, at first sight, it is a registered, non-temporary channel in the memory repository; everything else (temporary ids, unknown ids, all-zero ids, open messages) goes to the peer lane. So every open flow runs serially on the peer lane exactly as today, the temporary-to-real handover never crosses two lanes inside one connection, and a channel opened on this connection stays on the peer lane until the next connection. **Barrier:** a new channel lane starts only after the peer lane has finished the items dispatched before it (rare: once per channel per connection), so a channel registered by a peer-lane handler is never touched by its new lane early. A slow open decider now stalls only the peer lane, not the steady channels. |
 | R5 | One negotiation per channel (interactive-tx, splice, dual-fund RBF, quiescence) | Per channel already (driver and quiescence keyed by channel id, under its lock). All messages of a spliced channel carry its id, so they stay in its lane. |
@@ -146,7 +147,7 @@ A connection with lanes enabled replaces the single inbound loop by a **dispatch
 | R10 | Connection end and replacement | The session's "inbound loop" task becomes dispatcher + all lanes; `RevertPeerUpdatesAsync` runs after every lane finished; the next connection's dispatcher starts only after that task completed (as today), so no message of an old connection is handled after one of the new connection, and replies raised by an old lane never go out on the new connection (R1 plus `Publish`'s gate). |
 | R11 | HTLC switch work after a message (final hop, forward, MPP, trampoline) | Stays inside the lane item (the lane awaits `RaiseDomainEventsAsync` before its next item), so per channel the semantics are today's. Across channels of one peer the switch now runs concurrently, as it already does across peers: MPP sets are guarded by the per-payment-hash lock and the invoice settle stays the set's commit point; a forward from lane A onto channel B takes B's lock (never two locks: lanes release their lock before the switch runs). |
 | R12 | Background services acting on a peer's channels (fee-update scheduler, HTLC deadline monitor, failure service, anchors CPFP, commit scheduler, link-up replays) | No change: they already run concurrently with the loop under channel locks. |
-| R13 | Write fence implementations | `INodeWriteFence.CheckSaveAsync` must not serialize saves (no exclusive row lock or process-wide lock per save; a shared lock such as Postgres `FOR SHARE`/`FOR KEY SHARE` on an epoch row is fine). Document it on the port and test that two saves overlap through a fence (NL-1368). |
+| R13 | Write fence implementations | `INodeWriteFence.CheckSaveAsync` must not serialize saves (no exclusive row lock or process-wide lock per save; a shared lock such as Postgres `FOR SHARE`/`FOR KEY SHARE` on an epoch row is fine). Document it on the port and test that two saves overlap through a fence (NL-1403). |
 | R14 | Lock order and permits | Unchanged lock rules (never two channel locks except `funding_created`'s temporary-then-real; only enqueue under a lock). New: a lane takes its concurrency permits **before** the channel lock and never waits for a permit while holding a lock; the switch work holds the permit but no lock. Deadlock argument: a permit holder only waits on channel locks, and every channel-lock holder either holds a permit and progresses or is a background worker that needs no permit. |
 | R15 | Gossip 259/260 on the channel path, `channel_update` 258, peer storage, onion messages | 259/260 follow their channel id (R4). 258, peer storage and onion messages are not on the channel path (no change). |
 | R16 | The peer's `error`/`warning` | Not on the channel path today (`OnAttentionMessageReceived`); no change. |
@@ -197,10 +198,10 @@ gains; against LND or CLN only our side matters.
   rollback journal). (macOS `fsync` does not flush the drive cache; on Linux with a real flush a commit costs more.)
   So fsync is not what limits 17 payments/s; contention and per-message work are.
 - Consequence: **lanes on SQLite without a fix would make things worse** (more concurrent writers, more 150 ms sleeps).
-  Prerequisite NL-1362: (a) set `PRAGMA busy_timeout` (for example 5,000 ms) in the durability interceptor, so SQLite's
+  Prerequisite NL-1397: (a) set `PRAGMA busy_timeout` (for example 5,000 ms) in the durability interceptor, so SQLite's
   own handler waits with short sleeps and the provider's 150 ms loop is reached only on a real timeout; (b) a
   process-wide asynchronous SQLite write gate (one `SemaphoreSlim`) around `UnitOfWork` saves and the guard store's
-  raise, so writers queue FIFO without sleeping; (c) drop `Cache=Shared` from the template (NL-1363: shared-cache table
+  raise, so writers queue FIFO without sleeping; (c) drop `Cache=Shared` from the template (NL-1398: shared-cache table
   locks return `SQLITE_LOCKED_SHAREDCACHE`, which the busy handler does not serve, and existing configuration files need
   a start-time warning).
 - Gain on SQLite: saves still run one at a time, so lanes help by overlapping everything else (EF change tracking and
@@ -228,7 +229,7 @@ Every guarded signer operation reads the guard row, and each released secret or 
 signer's lazy load; a fenced synchronous save or signature blocks on the fence's `ValueTask`. With lanes, K concurrent
 items can block K thread-pool threads on database round trips; past the pool's warm threads the pool injects threads
 slowly (hill climbing) and latency jumps. Mitigations: the node-wide cap (§3.2), a raised minimum thread count while
-lanes are on, and NL-1364 (an asynchronous guard path, or the NL-1347 epoch check that skips the read). On SQLite the
+lanes are on, and NL-1399 (an asynchronous guard path, or the NL-1347 epoch check that skips the read). On SQLite the
 guard's raise is a writer and must take the write gate (§4.1).
 
 ### 4.4 LND index allocator
@@ -236,7 +237,7 @@ guard's raise is a writer and must take the write gate (§4.1).
 `LndIndexAllocator.Gate` is held from the index assignment through the whole save (including the fence check and the
 commit) for every save that adds an invoice or a payment or settles an invoice (`UnitOfWork.cs:409-430`). The settle of
 a final-hop payment is in the fulfill's save, so with lanes every final-hop receive in the node serializes on one
-commit at a time. At a few milliseconds per commit this caps receives at a few hundred per second node-wide; NL-1367
+commit at a time. At a few milliseconds per commit this caps receives at a few hundred per second node-wide; NL-1402
 measures it and, if needed, moves the indexes to a database-side counter on Postgres (gap-free in commit order is the
 requirement, so a plain sequence is not enough).
 
@@ -251,11 +252,11 @@ books depends on cross-channel order (posting is per event). No change.
 
 | Phase | Content | Size |
 |---|---|---|
-| P0 | Measurement and SQLite contention fix, independent of lanes: per-item handler time and busy-retry counters (a `DbCommandInterceptor` that counts steps over 140 ms, `nlightning.channels.inbound.handle_ms`), NL-1362 (busy timeout + async write gate), NL-1363 (template), the scale benchmark extension NL-1365 (scenarios in §6.3). Expected on its own: the one-at-a-time p95 back near the p50, and eight-at-once no longer worse than one at a time. | M (2-3 days) |
+| P0 | Measurement and SQLite contention fix, independent of lanes: per-item handler time and busy-retry counters (a `DbCommandInterceptor` that counts steps over 140 ms, `nlightning.channels.inbound.handle_ms`), NL-1397 (busy timeout + async write gate), NL-1398 (template), the scale benchmark extension NL-1400 (scenarios in §6.3). Expected on its own: the one-at-a-time p95 back near the p50, and eight-at-once no longer worse than one at a time. | M (2-3 days) |
 | P1 | `PeerChannelDispatcher` with peer lane and sticky channel lanes (R1-R11, R14), caps and backpressure (§3.2), the flag off by default, the old loop kept for the flag off. Unit tests on the dispatcher with fakes. | L (4-6 days) |
 | P2 | Harness integration: `TwoNodeHarness`/`ThreeNodeHarness` and the splice/dual-fund harnesses deliver through the dispatcher when asked; the flag-on runs of the existing suites; crash injection; new concurrency tests (§6.2). | L (4-5 days) |
-| P3 | Thread-pool and database hardening found in P2: NL-1364 (async guard path or warm-pool policy), NL-1367 if the LND gate shows, NL-1368 (fence contract), Postgres concurrency test. | M (2-4 days) |
-| P4 | Optional: per-channel reestablish prologue (NL-1366; today 3.4 s for 1,000 channels on one connection), so a reconnecting hub peer's channels become usable in parallel. | M (2-3 days) |
+| P3 | Thread-pool and database hardening found in P2: NL-1399 (async guard path or warm-pool policy), NL-1402 if the LND gate shows, NL-1403 (fence contract), Postgres concurrency test. | M (2-4 days) |
+| P4 | Optional: per-channel reestablish prologue (NL-1401; today 3.4 s for 1,000 channels on one connection), so a reconnecting hub peer's channels become usable in parallel. | M (2-3 days) |
 | P5 | Proof: full cluster matrix with the flag on (`scripts/run-cluster.sh --matrix` with an environment switch the test node reads), the scale scenarios on SQLite and Postgres, record in `CHANNEL_SCALE.md` and this plan; the owner decides the default. | M (2-3 days plus matrix wall time) |
 
 ## 6. Test plan
@@ -296,7 +297,7 @@ books depends on cross-channel order (posting is per event). No change.
 - Postgres: concurrent saves of distinct channels through the write fence (no deadlock, no serialization failure,
   overlapping transactions observed).
 
-### 6.3 Benchmark (NL-1365, extends `test/NLightning.Integration.Tests/Scale/`)
+### 6.3 Benchmark (NL-1400, extends `test/NLightning.Integration.Tests/Scale/`)
 
 Each on SQLite and Postgres, flag off and on, reporting payments/s, p50/p95, busy retries, thread-pool queue length and
 the per-item handler time:
@@ -309,7 +310,7 @@ and peer).
 
 ## 7. Risks
 
-- **SQLite regression** if lanes ship without NL-1362: more concurrent writers, more 150 ms sleeps (measured). P0 first.
+- **SQLite regression** if lanes ship without NL-1397: more concurrent writers, more 150 ms sleeps (measured). P0 first.
 - **Thread-pool starvation** from synchronous database waits in the signer guard and signing-info source (§4.3).
 - **Hidden order dependencies** across channels of one peer that no test covers yet (§1 found none in the code; the
   property test and the flag-on matrix are the net). The sticky assignment and the peer-lane barrier keep the open flow
@@ -325,7 +326,7 @@ and peer).
 ## 8. Open questions for the owner
 
 1. Approve P0 (SQLite contention fix) as a stand-alone change first? It is a measured problem today, flag or not.
-2. Drop `Cache=Shared` from the configuration template and warn on existing files (NL-1363)?
+2. Drop `Cache=Shared` from the configuration template and warn on existing files (NL-1398)?
 3. Sticky lane assignment means channels opened on the current connection stay on the serial peer lane until the next
    reconnect. Acceptable, or should a channel move to its own lane at `channel_ready` behind a barrier?
 4. Default caps: 8 per peer, 32 node-wide? Should the node-wide cap follow the configured database pool size?
@@ -334,33 +335,66 @@ and peer).
 6. Should the flag be refused, or allowed, with the remote signer modes until they are measured?
 7. Is the per-channel reestablish prologue (P4) in scope for this work, or a follow-up?
 
-## 9. Proposed issues (not filed; NL-1361..NL-1368 reserved)
+## 9. Issues (filed in `docs/agents/ISSUES.md`, re-numbered from NL-1361..NL-1368)
 
-- **NL-1361 One peer's channel messages are handled one at a time** (feature, medium): the plan above; per-channel
+- **NL-1396 One peer's channel messages are handled one at a time** (feature, medium): the plan above; per-channel
   lanes behind a per-connection dispatcher, flag `Node:ChannelLanes:Enabled` off by default. Evidence: NL-1357 live
-  benchmark, 17/s over one connection and no gain from concurrency. Blocked by NL-1362.
-- **NL-1362 SQLite writers collide and the provider sleeps 150 ms per busy retry** (performance, medium):
+  benchmark, 17/s over one connection and no gain from concurrency. Blocked by NL-1397.
+- **NL-1397 SQLite writers collide and the provider sleeps 150 ms per busy retry** (performance, medium):
   Microsoft.Data.Sqlite 10.0.12 `SqliteDataReader.NextResult` sleeps 150 ms per `SQLITE_BUSY`/`LOCKED`; no busy timeout
   is set; 14 sampled stacks in that sleep during the benchmark's 8-at-once phase, one-at-a-time p95 196 ms against a
   p50 of 40 ms. Fix sketch: `PRAGMA busy_timeout` in `SqliteDurabilityInterceptor` plus a process-wide async SQLite
   write gate around saves and the guard store's raise; counters for busy retries.
-- **NL-1363 The configuration template opens SQLite with `Cache=Shared`** (tech-debt, low): shared-cache table locks
+- **NL-1398 The configuration template opens SQLite with `Cache=Shared`** (tech-debt, low): shared-cache table locks
   return `SQLITE_LOCKED_SHAREDCACHE`, which SQLite's busy handler does not serve, so they always take the 150 ms retry.
   Fix sketch: drop it from the template, warn at start when a configuration still has it.
-- **NL-1364 The durable signer guard and the signing-info source block thread-pool threads on database round trips**
+- **NL-1399 The durable signer guard and the signing-info source block thread-pool threads on database round trips**
   (performance, low; related NL-1347): `Task.Run(...).GetAwaiter().GetResult()` per guarded operation; with concurrent
   lanes this can starve the pool. Fix sketch: an asynchronous guard path for the async callers, or the NL-1347 epoch
   check, and a minimum-thread policy while lanes are on.
-- **NL-1365 Scale benchmark: concurrency scenarios and handler-time metrics** (test, low): scenarios (a)-(c) of §6.3
+- **NL-1400 Scale benchmark: concurrency scenarios and handler-time metrics** (test, low): scenarios (a)-(c) of §6.3
   on SQLite and Postgres, nodes in separate processes for final numbers; per-item handler time and busy-retry metrics.
-- **NL-1366 The reestablish prologue of a connection is serial over all of the peer's channels** (performance, low):
+- **NL-1401 The reestablish prologue of a connection is serial over all of the peer's channels** (performance, low):
   `OnPeerConnectedAsync` builds every channel's `channel_reestablish` one at a time before the first message is read
   (3.4 s for 1,000 channels, NL-1357). Fix sketch: each channel lane's first item sends its own reestablish; the
   per-peer resets stay first.
-- **NL-1367 The LND index gate serializes every save that settles an invoice or adds a payment** (performance, low):
+- **NL-1402 The LND index gate serializes every save that settles an invoice or adds a payment** (performance, low):
   `LndIndexAllocator.Gate` is held across the whole save; with parallel lanes all final-hop receives of the node commit
   one at a time. Fix sketch: measure under lanes; on Postgres take the indexes from a counter row updated inside the
   save's transaction (gap-free in commit order).
-- **NL-1368 The write fence contract does not say that a save check must not serialize saves** (tech-debt, low):
+- **NL-1403 The write fence contract does not say that a save check must not serialize saves** (tech-debt, low):
   document on `INodeWriteFence.CheckSaveAsync` that implementations may take shared, not exclusive, locks; add a test
   that two saves overlap through a fence.
+
+## 10. Record (2026-10-11, `wip/peer-parallel-impl`)
+
+**Built.** P1 (`src/NLightning.Application/Node/Managers/PeerManager.Lanes.cs`): the dispatcher, the sticky lanes with the
+peer-lane barrier (R1-R11, R14), the caps and backpressure of §3.2, and the plain loop kept unchanged for a connection
+without lanes. Differences from §3: the flag is `Node:ChannelLanes:Enabled` (`bool?`; unset = on for
+`Database:Provider` Postgres, off for SQLite and SQL Server, `ChannelLaneOptions.DefaultFor`; a `PeerManager` built
+without options keeps lanes off); the `start_batch` warnings are items of the batch channel's lane (they follow that
+channel's queued messages; a closing one also stops the dispatcher); P0's SQLite parts and §4.1 were dropped (owner
+decision); the harnesses (P2) were not moved onto the dispatcher, because they never used `PeerManager`: the lane
+behaviour is proven by the dispatcher tests, every existing `PeerManagerTests`/`PeerManagerBatchTests` case run again
+with lanes on (`PeerManagerLanedTests`, `PeerManagerBatchLanedTests`), and two real nodes over one connection
+(`Integration.Tests/Scale/ChannelLanesLivePeerTests`: 20 channels, 48 payments 16 at once with lanes on and off, and the
+peer restarted while 16 payments are in flight with no HTLC lost or doubled), on SQLite and Postgres; the cluster suites
+run with lanes on through `NLTG_CHANNEL_LANES=true` (read by `NLightningTestNode`). P3 found and fixed NL-1404 (Npgsql's
+`DISCARD ALL` before every pooled connection reuse: `No Reset On Close=true` by default) and filed what limits the rate
+next: durable commits per payment (NL-1405, with the signer guard's own commits, NL-1399) and the workstation GC
+(NL-1406). P4 (NL-1401) and the rest of NL-1400 are follow-ups.
+
+**Measurements** (Postgres, 1,000 channels to one live peer, median of three interleaved runs; full table in
+`docs/agents/CHANNEL_SCALE.md` "Per-peer parallelism"): lanes off (as before) 8.6 / 16.0 / 20.2 / 9.8 / 22.2 / 27.8
+payments/s at 1 / 4 / 8 / 16 / 32 / 64 at once, p50 77 / 215 / 386 / 1,022 / 1,319 / 1,803 ms; lanes on (shipped)
+10.1 / 26.5 / 33.6 / 61.1 / 69.2 / 53.5 payments/s, p50 93 / 126 / 188 / 238 / 370 / 996 ms; with `DOTNET_gcServer=1`
+9.6 / 29.4 / 39.2 / 90.5 / 108.2 / 94.5. The shared host's load moved single runs by up to 2x.
+
+**Left serial on purpose.** The prologue (our `channel_reestablish` for every channel, NL-1401), the open flow under
+temporary ids and every channel first seen unregistered on a connection (the peer lane), the `start_batch` grouping
+(the dispatcher), the connection-level messages (they never reach the dispatcher), the one `PeerOutbox` per connection,
+and every connection on SQLite unless `Node:ChannelLanes:Enabled=true`.
+
+**Default.** On for Postgres, with the gates in the commit record: the unit and integration suites with the laned
+variants, and the cluster matrix `lnd,cln,abcd,postgres` with `NLTG_CHANNEL_LANES=true`. The owner runs the full
+matrix.

@@ -317,6 +317,11 @@ public class NodeOptions
     /// <see cref="QuiescenceOptions"/>
     public QuiescenceOptions Quiescence { get; set; } = new();
 
+    /// <summary>
+    /// Per-channel lanes for one peer's channel messages (<c>Node:ChannelLanes</c>).
+    /// </summary>
+    public ChannelLaneOptions ChannelLanes { get; set; } = new();
+
     /// <summary>The longest <see cref="Alias"/> in UTF-8 bytes (the <c>alias</c> field of <c>node_announcement</c>).</summary>
     public const int AliasMaxBytes = 32;
 
@@ -422,6 +427,7 @@ public class NodeOptions
         errors.AddRange(LiquidityAds.GetValidationErrors());
         errors.AddRange(Keysend.GetValidationErrors());
         errors.AddRange(Quiescence.GetValidationErrors());
+        errors.AddRange(ChannelLanes.GetValidationErrors());
         errors.AddRange(Bootstrap.GetValidationErrors());
         errors.AddRange(Tor.GetValidationErrors(GetListenAddresses()));
         // Only an explicit Enabled = true: the mainnet default must never stop a node whose operator raised

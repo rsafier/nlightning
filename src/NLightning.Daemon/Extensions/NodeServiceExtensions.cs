@@ -560,6 +560,9 @@ public static class NodeServiceExtensions
                      }
 
                      options.Features.ChainHashes = [options.BitcoinNetwork.ChainHash];
+
+                     // Per-channel lanes (Node:ChannelLanes:Enabled): unset follows the database (on for Postgres)
+                     options.ChannelLanes.Enabled ??= ChannelLaneOptions.DefaultFor(configuration["Database:Provider"]);
                      if (signingOptions.IsVls)
                          VlsCapabilityProfile.Apply(options);
                  })

@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 111 | 113 |
+| open | 0 | 0 | 2 | 117 | 119 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 76 | 283 | 542 | 916 |
-| wontfix | 0 | 0 | 6 | 14 | 20 |
-| duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **77** | **302** | **674** | **1068** |
+| fixed | 15 | 76 | 285 | 542 | 918 |
+| wontfix | 0 | 0 | 7 | 15 | 22 |
+| duplicate | 0 | 0 | 3 | 8 | 11 |
+| **Total** | **15** | **77** | **305** | **682** | **1079** |
 
 ### Epics
 
@@ -11339,3 +11339,93 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `test/NLightning.Integration.Tests/Docker/BarkWalletFlowTests.cs` (the `bw-wallet` pod of the cluster topology)
 - **Evidence:** In all three `scripts/run-cluster.sh --matrix postgres,lnd -j 4` runs of 2026-10-11 on `wip/ha-hardening` (mx-20261011155737, mx-20261011165044, mx-20261011172205) `Given_ABarkWalletOnCaptaindOverOurLnBackend_*` failed in the full `lnd` suite with `System.TimeoutException: Pod <run>-lnd/bw-wallet-0 not ready after 00:03:00: pod not found` and passed on the runner's rerun alone each time. "Pod not found" (never created, not merely slow) points at the topology's creation of the wallet StatefulSet under the suite's load (or the namespace's quota), not at the node.
 - **Fix sketch:** look at the run's diagnostics (`TestResults/cluster/<run>/lnd/diag/BarkWalletFlowTests*`) for the StatefulSet's events; check the namespace quota against the suite's pods at that point; create the wallet pod earlier or wait for its controller's events.
+
+### NL-1396 One peer's channel messages are handled one at a time
+- **Status:** fixed (pending)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.Application/Node/Managers/PeerManager.Lanes.cs`, `PeerManager.cs` (`SelectInboundLoop`), `src/NLightning.Domain/Node/Options/ChannelLaneOptions.cs`, `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`
+- **Evidence:** Plan `docs/agents/PEER_CHANNEL_PARALLELISM_PLAN.md` (proposed as NL-1361, re-filed). Every connection had one inbound loop, so payments over many channels of one peer were serialized there: on Postgres, 1,000 channels to one live peer, 6.7 payments/s one at a time and 22-35/s at 8-32 at once, the latency growing about linearly with the payments in flight (`docs/agents/CHANNEL_SCALE.md` "Per-peer parallelism").
+- **Fix:** per-channel lanes behind a per-connection dispatcher (`Node:ChannelLanes`: `Enabled`, unset = on for `Database:Provider` Postgres and off for SQLite and SQL Server (owner decision 2026-10-11: SQLite keeps its serial behaviour); `MaxConcurrentPerPeer` 8, `MaxConcurrent` 32). The dispatcher runs the reestablish prologue first, groups `start_batch` (a batch is one lane item), and routes each message: a channel id gets its own FIFO lane at its first sight on the connection when it is a registered channel of the peer, else (temporary ids of an open, unknown, all-zero) the serial peer lane, sticky for the connection; a new channel lane waits for the peer lane's earlier items. A lane handles one item at a time exactly as the loop did, takes the per-connection then the node-wide permit before the channel lock, replies to its own connection, and a disconnecting failure drops every lane's queued items; the next connection waits for every lane and the revert. Lane work is bounded by the inbound capacity (backpressure to the socket). The plain loop is kept unchanged when lanes are off.
+- **Validation:** Application `Node/Managers/PeerManagerLaneTests` (13 rules), `PeerManagerLanedTests` and `PeerManagerBatchLanedTests` (every existing PeerManager and batch test with lanes on); Integration `Scale/ChannelLanesLivePeerTests` (two real nodes, 20 channels over one connection: parallel payments with lanes on and off, and a restart of the peer mid-load with no HTLC lost or doubled; SQLite by default, Postgres with `NLTG_SCALE_POSTGRES`); Domain `ChannelLaneOptionsTests`; Daemon `NodeServiceExtensionsTests.Given_ADatabaseAndALaneSetting_*`. Postgres benchmark (median of 3): 26.5-33.6/s at 4-8 at once and 61-69/s at 16-32 (against 16-22/s before), p50 at 16 at once 238 ms (1,022 ms before). Cluster matrix `lnd,cln,abcd,postgres` with `NLTG_CHANNEL_LANES=true` (record in the plan).
+- **Blocks/Blocked-by:** NL-1397 (wontfix: SQLite stays serial), NL-1399, NL-1401, NL-1404, NL-1405, NL-1406
+
+### NL-1397 SQLite writers collide and the provider sleeps 150 ms per busy retry
+- **Status:** wontfix (owner decision 2026-10-11: SQLite's single-writer serialization will not be worked on; lanes default off on SQLite)
+- **Severity:** medium
+- **Kind:** performance
+- **Location:** `src/NLightning.Infrastructure.Persistence/Interceptors/SqliteDurabilityInterceptor.cs`, Microsoft.Data.Sqlite `SqliteDataReader.NextResult`
+- **Evidence:** Plan §4.1 (proposed as NL-1362): Microsoft.Data.Sqlite 10.0.12 retries a busy step with `Thread.Sleep(150)`; no `busy_timeout` is set; 14 sampled stacks in that sleep during the 8-at-once phase of the NL-1357 live benchmark; one-at-a-time p95 196 ms against a p50 of 40 ms.
+- **Fix sketch (not planned):** `PRAGMA busy_timeout` plus a process-wide async SQLite write gate around saves and the guard store's raise.
+
+### NL-1398 The configuration template opens SQLite with Cache=Shared
+- **Status:** wontfix (owner decision 2026-10-11, with NL-1397)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Daemon/Extensions/NodeConfigurationExtensions.cs` (the template's `Data Source=nltg.db;Cache=Shared`)
+- **Evidence:** Plan §4.1 (proposed as NL-1363): shared-cache table locks return `SQLITE_LOCKED_SHAREDCACHE`, which SQLite's busy handler does not serve, so they always take the provider's 150 ms retry.
+- **Fix sketch (not planned):** drop it from the template, warn at start when a configuration still has it.
+
+### NL-1399 The durable signer guard and the signing-info source block thread-pool threads on database round trips
+- **Status:** open
+- **Severity:** low
+- **Kind:** performance
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs` (`RefreshDurableGuard`, `PersistDurableGuard`), `ChannelSignerGuardStore`, `ChannelSigningInfoSource`
+- **Evidence:** Plan §4.3 (proposed as NL-1364). With lanes on Postgres, thread snapshots at 64 payments in flight show threads blocked in `Task.InternalWaitCore` under `RefreshDurableGuard` and `PersistDurableGuard` (7 of the NLightning-frame threads in 8 snapshots), and each raise is its own commit (`UPDATE channel_signer_guards`, 2 per payment per node in `pg_stat_statements`), adding WAL flushes (NL-1405). Related NL-1347.
+- **Fix sketch:** an asynchronous guard path for the async callers, or the NL-1347 epoch check that skips the read; consider raising the guard in the transition's own save where the ordering allows.
+
+### NL-1400 Scale benchmark: concurrency scenarios and metrics
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Scale/`
+- **Evidence:** Plan §6.3 (proposed as NL-1365). Partly done with NL-1396: the live-peer benchmark runs on Postgres (`NLTG_SCALE_POSTGRES`), takes the rounds from `NLTG_SCALE_PARALLEL`, the lanes from `NLTG_SCALE_LANES` and extra settings from `NLTG_SCALE_CONFIG`, reports CPU, database busy time and transactions per payment, the round's top statements (`NLTG_SCALE_PG_STATEMENTS=1`) and a marker file for outside profilers (`NLTG_SCALE_MARKER`). Left: scenario (b) (10-50 peers with 4 busy channels each), scenario (c) (one channel under 8 and 32 payments in flight), and the two nodes in separate processes for final numbers (one process shares CPU, GC and the thread pool between hub and peer).
+- **Fix sketch:** add the scenarios to `ChannelScaleLivePeerTests` (or a sibling) and a runner that starts the peer node as its own process.
+
+### NL-1401 The reestablish prologue of a connection is serial over all of the peer's channels
+- **Status:** open
+- **Severity:** low
+- **Kind:** performance
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`OnPeerConnectedAsync`), `PeerManager.StartReestablishAsync`
+- **Evidence:** Plan P4 (proposed as NL-1366): `OnPeerConnectedAsync` builds every channel's `channel_reestablish` one at a time before the dispatcher reads the first message. With lanes the peer's 1,000 `channel_reestablish` are handled on their own lanes, but all channels usable on both ends still takes a median 12.5 s after the hub's start (14.8 s without lanes) on Postgres: our own prologue stays serial.
+- **Fix sketch:** each channel lane's first item sends its own reestablish; the per-peer resets stay first and serial.
+
+### NL-1402 The LND index gate serializes every save that settles an invoice or adds a payment
+- **Status:** open
+- **Severity:** low
+- **Kind:** performance
+- **Location:** `src/NLightning.Infrastructure.Repositories/UnitOfWork.cs`, `Database/Payment/LndIndexAllocator.cs`
+- **Evidence:** Plan §4.4 (proposed as NL-1367): `LndIndexAllocator.Gate` is held from the index assignment through the commit for every save that adds an invoice or payment or settles an invoice. Not seen in the NL-1396 measurements (thread and `pg_stat_activity` samples at 32-128 payments in flight): the WAL flush (NL-1405) and GC (NL-1406) dominate first. Kept for when those are lifted.
+- **Fix sketch:** on Postgres take the indexes from a counter row updated inside the save's transaction (gap-free in commit order).
+
+### NL-1403 The write fence contract does not say that a save check must not serialize saves
+- **Status:** duplicate of NL-1378
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Node/Fencing/INodeWriteFence.cs`
+- **Evidence:** Plan R13 (proposed as NL-1368). NL-1378 already documents that `CheckSaveAsync` takes only shared locks and tests that two saves' checks overlap (`UnitOfWorkWriteFenceTests.Given_AFenceThatTakesASharedLock_*`).
+
+### NL-1404 Npgsql reset every pooled connection with DISCARD ALL: half the database's statements per payment
+- **Status:** fixed (pending)
+- **Severity:** medium
+- **Kind:** performance
+- **Location:** `src/NLightning.Infrastructure.Persistence/DependencyInjection.cs` (`WithPostgresDefaults`)
+- **Evidence:** NL-1396 measurements (`pg_stat_statements` per payment of the two nodes, 1,000 channels, lanes on): `DISCARD ALL` was 145 of 311 statements per payment one at a time (76 of 138 at 32 at once), 0.27-0.32 ms of server time each: EF opens and returns a pooled connection around nearly every query, and Npgsql resets the session before each reuse.
+- **Fix:** `No Reset On Close=true` for Postgres unless the connection string sets the key (parsed once). Nothing of ours keeps session state on a connection (no session advisory locks, temporary tables, `SET`, `LISTEN`; a write fence takes locks held to the commit). Transactions per payment: 409 → 209 one at a time, 168 → 83 at 32 at once (lanes off).
+- **Validation:** Integration `Persistence/PostgresConnectionDefaultsTests`; the Postgres benchmark and `ChannelLanesLivePeerTests` on Postgres; the cluster `postgres` suite. The wall-clock effect was within the shared host's noise in A/B runs.
+
+### NL-1405 About ten durable commits per payment bound one Postgres node pair at about 100 payments/s
+- **Status:** open
+- **Severity:** low
+- **Kind:** performance
+- **Location:** the channel transition saves (`ChannelStateTransitionService.CommitAsync`, the handlers), `ChannelSignerGuardStore` (NL-1399), the payment and invoice saves
+- **Evidence:** NL-1396 measurements with lanes on, 64 payments in flight: the active backends of the two databases wait mostly on the WAL flush (`pg_stat_activity` samples: `LWLock:WALWrite` 220, `IO:WALSync` 53, `Client:ClientRead` 102, running 41), with about 9-10 explicit commits per payment for the two nodes (`pg_stat_statements` `COMMIT` calls) on a Docker-on-macOS volume; the rate plateaus at 85-110/s with only 4-6 cores busy. Each commit is required by persist-before-send, but some could share a save (the signer guard's raise, the payment row's HTLC id after the add).
+- **Fix sketch:** count the commits per transition and merge the ones whose ordering allows it; measure on a native Linux Postgres (the Docker VM's fsync is slow) before deciding; Postgres `commit_delay` for hubs.
+
+### NL-1406 The workstation GC limits a busy node's throughput
+- **Status:** open
+- **Severity:** low
+- **Kind:** performance
+- **Location:** `src/NLightning.Daemon/NLightning.Daemon.csproj` (no `ServerGarbageCollection`)
+- **Evidence:** NL-1396 measurements: with `DOTNET_gcServer=1` the same build reached 90.5 and 108.2 payments/s at 16 and 32 at once (median of 3) against 61.1 and 69.2 with the default workstation GC; thread snapshots without it show many threads paused in `PollGC` and lock holders preempted mid-update.
+- **Fix sketch:** document `DOTNET_gcServer=1` (or `ServerGarbageCollection` with DATAS) for hub deployments, or make it the daemon's default after measuring the memory cost; owner decision.

@@ -12,7 +12,7 @@ using Domain.Bitcoin.Interfaces;
 /// <see cref="ChannelCloseOptions.FeeEstimateRetryAfter"/>.
 /// </summary>
 /// <remarks>
-/// <para>Singleton. The coordinator runs under the channel's lock, inside the peer's single inbound loop, so it never
+/// <para>Singleton. The coordinator runs under the channel's lock, inside the peer's inbound loop (or its channel lane), so it never
 /// waits for a fetch longer than <see cref="ChannelCloseOptions.FeeEstimateWaitUnderLock"/>
 /// (<see cref="GetUnderLockAsync"/>); a fetch still running after that finishes in the background and serves the next
 /// negotiation. Callers that don't hold a lock (the IPC close) warm it first with <see cref="PrefetchAsync"/>, and a

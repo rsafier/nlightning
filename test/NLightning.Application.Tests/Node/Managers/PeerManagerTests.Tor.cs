@@ -222,8 +222,8 @@ public partial class PeerManagerTests
     private PeerManager CreateTorPeerManager(TorMode mode)
     {
         var options = Options.Create(new NodeOptions { Tor = new TorOptions { Mode = mode } });
-        return new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
+        return Laned(new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
                                _mockPeerServiceFactory.Object, _mockSecureKeyManager.Object, _mockTcpService.Object,
-                               _fakeServiceProvider, options);
+                               _fakeServiceProvider, options));
     }
 }

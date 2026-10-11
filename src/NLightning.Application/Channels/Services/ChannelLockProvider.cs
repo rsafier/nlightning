@@ -8,8 +8,8 @@ using Domain.Channels.ValueObjects;
 /// </summary>
 /// <remarks>
 /// A channel opened with a temporary id is locked under that id until it gets its real id, and under the real id
-/// afterwards: the per-peer inbound loop already serializes the open flow's messages, and block events only see the
-/// channel once it has its real id.
+/// afterwards: the per-peer inbound loop (with per-channel lanes, its serial peer lane, NL-1396) already serializes the
+/// open flow's messages, and block events only see the channel once it has its real id.
 /// </remarks>
 public sealed class ChannelLockProvider : IChannelLockProvider
 {

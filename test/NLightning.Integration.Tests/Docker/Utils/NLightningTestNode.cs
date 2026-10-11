@@ -166,6 +166,12 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// </summary>
     public string ChainNotifications { get; set; } = DefaultChainNotifications;
 
+    /// <summary>
+    /// The environment variable that turns per-channel lanes on (<c>true</c>) or off (<c>false</c>) for every test node
+    /// (<c>NLTG_CHANNEL_LANES=true scripts/run-cluster.sh --matrix</c>); unset leaves the daemon's default.
+    /// </summary>
+    public const string ChannelLanesVariable = "NLTG_CHANNEL_LANES";
+
     /// <summary>The environment variable that sets <see cref="ChainNotifications"/> for every test node.</summary>
     public const string ChainNotificationsVariable = "NLTG_CHAIN_NOTIFICATIONS";
 
@@ -883,6 +889,11 @@ public sealed class NLightningTestNode : IAsyncDisposable
             inMemoryConfiguration.Add(new("Bitcoin:ZmqBlockPort", endpoint.ZmqBlockPort.ToString()));
             inMemoryConfiguration.Add(new("Bitcoin:ZmqTxPort", endpoint.ZmqTxPort.ToString()));
         }
+
+        // Per-channel lanes (Node:ChannelLanes:Enabled): NLTG_CHANNEL_LANES=true|false runs a whole suite with them on or
+        // off; unset leaves the daemon's default
+        if (Environment.GetEnvironmentVariable(ChannelLanesVariable) is { Length: > 0 } lanes)
+            inMemoryConfiguration.Add(new("Node:ChannelLanes:Enabled", lanes));
 
         // A later source overrides an earlier one, so ExtraConfiguration wins over the defaults above
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemoryConfiguration)

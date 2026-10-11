@@ -23,7 +23,9 @@ using Persistence;
 /// the same channels, real keys on both sides), started together: the time until every channel with the live peer is
 /// reestablished over one connection, then payments from the hub to the peer over those channels while the rest stay
 /// idle. <c>NLTG_SCALE_LIVE_TOTAL</c> (10,000), <c>NLTG_SCALE_LIVE_CHANNELS</c> (1,000) and
-/// <c>NLTG_SCALE_PAYMENTS</c> (200) size it.
+/// <c>NLTG_SCALE_PAYMENTS</c> (200) size it. <c>NLTG_SCALE_PARALLEL</c> lists the payments sent at once per round
+/// (<c>1,8</c>), and <c>NLTG_SCALE_POSTGRES</c>, a Postgres connection string without a database name, runs both nodes on
+/// Postgres (each in a database of its own, dropped at the end) instead of SQLite files.
 /// </summary>
 public sealed class ChannelScaleLivePeerTests : IAsyncDisposable
 {
@@ -57,8 +59,9 @@ public sealed class ChannelScaleLivePeerTests : IAsyncDisposable
         var hubPort = await PortPoolUtil.GetAvailablePortAsync();
         var peerPort = await PortPoolUtil.GetAvailablePortAsync();
         var closedPort = await PortPoolUtil.GetAvailablePortAsync();
-        var hubDb = TestNodeDatabase.Sqlite(NewDbPath());
-        var peerDb = TestNodeDatabase.Sqlite(NewDbPath());
+        var hubDb = NewDatabase("hub");
+        var peerDb = NewDatabase("peer");
+        report.AppendLine($"database {hubDb.ConfigurationProviderName}");
         try
         {
             // Seed both databases: the hub's every channel, the peer's end of the live ones
@@ -150,7 +153,7 @@ public sealed class ChannelScaleLivePeerTests : IAsyncDisposable
             // Payments from the hub to the peer: one at a time, then 8 at once
             var invoices = peer.Services.GetRequiredService<IInvoiceService>();
             var payer = hub.Services.GetRequiredService<IPaymentService>();
-            foreach (var parallel in new[] { 1, 8 })
+            foreach (var parallel in s_parallel)
             {
                 var bolt11s = new List<string>();
                 var invoicing = Stopwatch.StartNew();
@@ -162,6 +165,12 @@ public sealed class ChannelScaleLivePeerTests : IAsyncDisposable
                 var latencies = new List<TimeSpan>();
                 var failed = 0;
                 var gate = new SemaphoreSlim(parallel);
+                await ResetStatementsAsync(ct);
+                var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
+                var dbBefore = await ReadDatabaseStatsAsync(ct);
+                // NLTG_SCALE_MARKER: a file that names the round running now, for a profiler started from outside
+                if (Environment.GetEnvironmentVariable("NLTG_SCALE_MARKER") is { Length: > 0 } marker)
+                    await File.WriteAllTextAsync(marker, $"{parallel}\n", ct);
                 var watch = Stopwatch.StartNew();
                 await Task.WhenAll(bolt11s.Select(async bolt11 =>
                 {
@@ -183,11 +192,23 @@ public sealed class ChannelScaleLivePeerTests : IAsyncDisposable
                     }
                 }));
                 var elapsed = watch.Elapsed;
+                var cpu = Process.GetCurrentProcess().TotalProcessorTime - cpuBefore;
                 latencies.Sort();
                 report.AppendLine($"payments x{paymentCount}, {parallel} at once: {elapsed.TotalSeconds:F1} s, "
                                 + $"{paymentCount / elapsed.TotalSeconds:F1}/s, failed {failed}, latency p50 "
                                 + $"{latencies[latencies.Count / 2].TotalMilliseconds:F0} ms, p95 "
-                                + $"{latencies[latencies.Count * 95 / 100].TotalMilliseconds:F0} ms");
+                                + $"{latencies[latencies.Count * 95 / 100].TotalMilliseconds:F0} ms, max "
+                                + $"{latencies[^1].TotalMilliseconds:F0} ms");
+                // Both nodes run in this process: CPU per payment is the pair's. The database's busy time and commits
+                // are both nodes' databases (Postgres only; its statistics lag up to a second, so the read waits)
+                var dbAfter = await ReadDatabaseStatsAsync(ct, waitForStats: true);
+                report.AppendLine($"  cpu {cpu.TotalMilliseconds / paymentCount:F1} ms/payment "
+                                + $"({cpu.TotalSeconds / elapsed.TotalSeconds:F1} cores busy)"
+                                + (dbBefore is { } b && dbAfter is { } a
+                                       ? $", db active {(a.ActiveMs - b.ActiveMs) / paymentCount:F1} ms/payment, "
+                                       + $"{(double)(a.Commits - b.Commits) / paymentCount:F1} commits/payment"
+                                       : string.Empty));
+                await ReportStatementsAsync(report, paymentCount, ct);
                 Assert.Equal(0, failed);
             }
 
@@ -219,7 +240,110 @@ public sealed class ChannelScaleLivePeerTests : IAsyncDisposable
                 // A leftover temp file is harmless
             }
 
-        await Task.CompletedTask;
+        var postgres = Environment.GetEnvironmentVariable("NLTG_SCALE_POSTGRES");
+        foreach (var database in _postgresDatabases)
+            try
+            {
+                Npgsql.NpgsqlConnection.ClearAllPools();
+                await using var connection = new Npgsql.NpgsqlConnection($"{postgres!.TrimEnd(';')};Database=postgres");
+                await connection.OpenAsync();
+                await using var command = new Npgsql.NpgsqlCommand($"DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)",
+                                                                   connection);
+                await command.ExecuteNonQueryAsync();
+            }
+            catch (Npgsql.NpgsqlException)
+            {
+                // A leftover benchmark database is harmless
+            }
+    }
+
+    private static readonly int[] s_parallel =
+        (Environment.GetEnvironmentVariable("NLTG_SCALE_PARALLEL") ?? "1,8")
+       .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+       .Select(int.Parse)
+       .ToArray();
+
+    private readonly List<string> _postgresDatabases = [];
+
+    /// <summary>
+    /// The commits and busy time of the benchmark's Postgres databases (<c>pg_stat_database</c>), or null on SQLite.
+    /// </summary>
+    private async Task<(long Commits, double ActiveMs)?> ReadDatabaseStatsAsync(CancellationToken ct,
+                                                                               bool waitForStats = false)
+    {
+        var postgres = Environment.GetEnvironmentVariable("NLTG_SCALE_POSTGRES");
+        if (string.IsNullOrEmpty(postgres) || _postgresDatabases.Count == 0)
+            return null;
+
+        if (waitForStats)
+            await Task.Delay(TimeSpan.FromSeconds(1.5), ct);
+        await using var connection = new Npgsql.NpgsqlConnection($"{postgres.TrimEnd(';')};Database=postgres");
+        await connection.OpenAsync(ct);
+        await using var command = new Npgsql.NpgsqlCommand(
+            "SELECT coalesce(sum(xact_commit), 0)::bigint, coalesce(sum(active_time), 0)::float8 FROM pg_stat_database "
+          + "WHERE datname = ANY(@names)", connection);
+        command.Parameters.AddWithValue("names", _postgresDatabases.ToArray());
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        await reader.ReadAsync(ct);
+        return (reader.GetInt64(0), reader.GetDouble(1));
+    }
+
+    /// <summary>
+    /// <c>NLTG_SCALE_PG_STATEMENTS=1</c> (Postgres with the <c>pg_stat_statements</c> extension): the statements of each
+    /// round, most called and most time first, go into the report.
+    /// </summary>
+    private static bool ReportsStatements =>
+        Environment.GetEnvironmentVariable("NLTG_SCALE_PG_STATEMENTS") == "1"
+     && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NLTG_SCALE_POSTGRES"));
+
+    private static async Task ResetStatementsAsync(CancellationToken ct)
+    {
+        if (!ReportsStatements)
+            return;
+
+        await using var connection = await OpenPostgresAsync(ct);
+        await using var command = new Npgsql.NpgsqlCommand("SELECT pg_stat_statements_reset()", connection);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private async Task ReportStatementsAsync(StringBuilder report, int paymentCount, CancellationToken ct)
+    {
+        if (!ReportsStatements)
+            return;
+
+        await using var connection = await OpenPostgresAsync(ct);
+        foreach (var order in new[] { "calls", "total_exec_time" })
+        {
+            await using var command = new Npgsql.NpgsqlCommand(
+                "SELECT s.calls, s.total_exec_time, left(regexp_replace(s.query, '\\s+', ' ', 'g'), 150) "
+              + "FROM pg_stat_statements s JOIN pg_database d ON d.oid = s.dbid WHERE d.datname = ANY(@names) "
+              + $"ORDER BY s.{order} DESC LIMIT 25", connection);
+            command.Parameters.AddWithValue("names", _postgresDatabases.ToArray());
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            report.AppendLine($"  statements by {order} (per payment):");
+            while (await reader.ReadAsync(ct))
+                report.AppendLine($"    {(double)reader.GetInt64(0) / paymentCount,8:F2} calls "
+                                + $"{reader.GetDouble(1) / paymentCount,8:F3} ms  {reader.GetString(2)}");
+        }
+    }
+
+    private static async Task<Npgsql.NpgsqlConnection> OpenPostgresAsync(CancellationToken ct)
+    {
+        var postgres = Environment.GetEnvironmentVariable("NLTG_SCALE_POSTGRES")!;
+        var connection = new Npgsql.NpgsqlConnection($"{postgres.TrimEnd(';')};Database=postgres");
+        await connection.OpenAsync(ct);
+        return connection;
+    }
+
+    private TestNodeDatabase NewDatabase(string name)
+    {
+        var postgres = Environment.GetEnvironmentVariable("NLTG_SCALE_POSTGRES");
+        if (string.IsNullOrEmpty(postgres))
+            return TestNodeDatabase.Sqlite(NewDbPath());
+
+        var database = $"nltg_scale_{name}_{Guid.NewGuid():N}"[..40];
+        _postgresDatabases.Add(database);
+        return TestNodeDatabase.Postgres($"{postgres.TrimEnd(';')};Database={database}");
     }
 
     private string NewDbPath()
