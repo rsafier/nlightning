@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 108 | 110 |
+| open | 0 | 0 | 2 | 111 | 113 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 76 | 282 | 542 | 915 |
+| fixed | 15 | 76 | 283 | 542 | 916 |
 | wontfix | 0 | 0 | 6 | 14 | 20 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **77** | **301** | **671** | **1064** |
+| **Total** | **15** | **77** | **302** | **674** | **1068** |
 
 ### Epics
 
@@ -11306,3 +11306,36 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `src/NLightning.Domain/Accounting/Financial/Classification/AccountingRuleValidator.cs` (`RegexTimeout`), `ClassificationEngine.cs` (`RegexMatchTimeoutException` handling), `test/NLightning.Domain.Tests/Accounting/Financial/ClassificationEngineTests.cs`
 - **Evidence:** In the NL-1388..NL-1390 review-fix full run (net10.0 Release, loaded host) `ClassificationEngineTests.Given_ARule_When_AnInvoiceIsClassified_Then_ItMatchesOnlyWhenEverySetFieldMatches(name: "label regex matches")` failed (expected a match, the case took 283 ms); the class passed 3 out of 3 times alone. The rule's regex runs with a 100 ms match timeout and a timeout counts as no match (the rule id is reported as timed out), so under load an operator's label rule can silently fall through to the default classification for that event. Predates this lane; not fixed here.
 - **Fix sketch:** separate a first-use (construction/JIT) cost from the match timeout, or retry a timed-out match once before reporting it; in the test, assert the timed-out report instead of a plain miss, or run the case outside the loaded collection.
+
+### NL-1392 Opens before (or during) a channel restore can take a key index a restored channel uses
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Backup/ChannelRestoreService.cs` (`ReserveKeyIndexesAsync`), `SecureKeyManagerKeyIndexReserver`, the open paths (`LocalLightningSigner.CreateNewChannel`)
+- **Evidence:** Confirmed by reading the code (review finding P4 of the NL-1388..NL-1390 lane; predates it). `restorechanbackup` runs on a running node over IPC, so peers and opens are already live: the indexes of the restored channels come from the backup (another database), and the key manager and the database's high-water mark (NL-1388) are raised to the backup's highest index only inside the restore. An open that reserved an index before that raise (an open accepted between the start of a node set up on a fresh database and the operator's restore, or one racing the restore) gets an index a restored channel also uses: the same funding key, basepoints and per-commitment seed for two channels. The mark does not help because the backup's indexes were never claimed in this database, and a failed raise is only logged by `ReserveKeyIndexesAsync` (the restore goes on).
+- **Fix sketch:** run the reservation before the node accepts opens: either a restore at start (before `PeerManager.StartAsync`, e.g. a pending restore file the start applies), or refuse opens and accepts while a restore is pending and until its raise committed; refuse the restore when an existing channel row already uses an index in the backup's range; make a failed raise fail the restore. Not small, not fixed here.
+
+### NL-1393 A stop requested while the daemon was still starting failed instead of stopping cleanly
+- **Status:** fixed (this commit)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Services/NltgDaemonService.cs` (`StopAsync`)
+- **Evidence:** A stop requested while the daemon is still starting (an orchestrator or an operator) ran every service's stop although the start had not reached them: `BlockchainMonitorService.StopAsync`, `FeeService.StopAsync`, `PeerManager.StopAsync` (and `TcpService`) throw `InvalidOperationException("... is not running")` when never started, so the first of them failed the whole stop and left the services after it running; a host that treats a failed stop as a hung node kills the process. The start sequence also kept running while the stop stopped services (`base.StopAsync`, which cancels it, ran last), so a service could start after it had been stopped.
+- **Fix:** the stop first ends the start sequence (`base.StopAsync`: cancels `ExecuteAsync` and waits for it), then stops every service through `StopQuietlyAsync`: a "not running" `InvalidOperationException` is expected (logged at debug), any other failure is logged and the stop goes on with the next service. Checked every service the daemon stops: HTLC expiry monitor, fee update scheduler, on-chain resolution executor, channel failure service, price valuation, financial and operational books, onion replay pruner, mempool reactor, splice auto-bumper, accounting sealer and backfill, peer bootstrap, Tor onion service, chain monitor, fee service, peer manager, IPC server, peer storage. `LndGrpcHost` is its own hosted service and already tolerates a stop without a start (`_app` null).
+- **Validation:** `Daemon.Tests/Services/NltgDaemonServiceStopDuringStartTests` (the start held at the fee service, the wallet load, the peer manager, the chain monitor and the IPC server in turn; services refuse a stop they were not started for, as the real ones do; the stop completes without an exception, stops what started and nothing starts after it).
+
+### NL-1394 OnchainResolutionExecutorStopTests saw a broadcast after the stop under a loaded run
+- **Status:** open
+- **Severity:** low
+- **Kind:** flake
+- **Location:** `test/NLightning.Application.Tests/Onchain/OnchainResolutionExecutorStopTests.cs` (`Given_ScheduledRoundRunning_When_Stopped_Then_StopWaitsForItAndNothingIsSavedOrPublished`), `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs`
+- **Evidence:** In the NL-1393 full run (net10.0 Release, loaded host) the test failed with `Assert.Empty() Failure: Collection was not empty: [["output 0 Broadcast", "broadcast Sweep"]]` at line 51: a round's save and broadcast were recorded after the stop; the class passed 3 out of 3 times alone. Either the test's notion of "the round is running" races the round under load, or a round started after the stop began can still save and publish (which NL-1355 meant to rule out). Not investigated here (the executor was not changed by this lane).
+- **Fix sketch:** reproduce with a stepped clock or a gate inside the round; confirm whether the executor can begin a round after `StopAsync` started, and fix the executor or the test accordingly.
+
+### NL-1395 BarkWalletFlowTests: the wallet pod is never created in the full lnd suite on the cluster
+- **Status:** open
+- **Severity:** low
+- **Kind:** flake
+- **Location:** `test/NLightning.Integration.Tests/Docker/BarkWalletFlowTests.cs` (the `bw-wallet` pod of the cluster topology)
+- **Evidence:** In all three `scripts/run-cluster.sh --matrix postgres,lnd -j 4` runs of 2026-10-11 on `wip/ha-hardening` (mx-20261011155737, mx-20261011165044, mx-20261011172205) `Given_ABarkWalletOnCaptaindOverOurLnBackend_*` failed in the full `lnd` suite with `System.TimeoutException: Pod <run>-lnd/bw-wallet-0 not ready after 00:03:00: pod not found` and passed on the runner's rerun alone each time. "Pod not found" (never created, not merely slow) points at the topology's creation of the wallet StatefulSet under the suite's load (or the namespace's quota), not at the node.
+- **Fix sketch:** look at the run's diagnostics (`TestResults/cluster/<run>/lnd/diag/BarkWalletFlowTests*`) for the StatefulSet's events; check the namespace quota against the suite's pods at that point; create the wallet pod earlier or wait for its controller's events.

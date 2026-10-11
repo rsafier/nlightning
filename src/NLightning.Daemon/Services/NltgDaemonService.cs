@@ -330,44 +330,84 @@ public class NltgDaemonService : BackgroundService
         // already; then its wait ran (or still runs) and this does nothing.
         await DrainOnSignalAsync();
 
+        // A stop can arrive while the node is still starting (an orchestrator or an operator): end the start sequence
+        // first, so nothing starts after the services below were stopped, and then stop every service, tolerating the
+        // ones the start never reached (several refuse a stop when they never ran, NL-1393)
+        await StopQuietlyAsync("the start sequence", () => base.StopAsync(cancellationToken));
+
         // The safety services, the on-chain resolution rounds and the fee rounds stop before the chain monitor and the
         // peers they use, and before the container is disposed: nothing they started saves or broadcasts after this
         // (NL-1355)
-        await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync(),
-                           _onchainResolutionExecutor?.StopAsync(cancellationToken) ?? Task.CompletedTask);
-        await _channelFailureService.StopAsync();
+        await Task.WhenAll(StopQuietlyAsync("the HTLC expiry monitor", _htlcExpiryMonitor.StopAsync),
+                           StopQuietlyAsync("the fee update scheduler", _feeUpdateScheduler.StopAsync),
+                           StopQuietlyAsync("the on-chain resolution executor",
+                                            () => _onchainResolutionExecutor?.StopAsync(cancellationToken)
+                                               ?? Task.CompletedTask));
+        await StopQuietlyAsync("the channel failure service", _channelFailureService.StopAsync);
 
         // The back-valuation stops before the books (NL-602 A3-T2), the books before the sealer that feeds them (A2)
         if (_priceValuation is not null)
-            await _priceValuation.StopAsync();
+            await StopQuietlyAsync("the price valuation", _priceValuation.StopAsync);
         // The financial projector before the operational books it reads (A3-T4)
         if (_financialBooks is not null)
-            await _financialBooks.StopAsync();
+            await StopQuietlyAsync("the financial books", _financialBooks.StopAsync);
         if (_accountingBooks is not null)
-            await _accountingBooks.StopAsync();
+            await StopQuietlyAsync("the accounting books", _accountingBooks.StopAsync);
 
         // The replay pruner and the mempool reactor stop before the chain monitor that drives them
-        await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync(),
-                           _spliceAutoBumper?.StopAsync() ?? Task.CompletedTask,
-                           _accountingEventSealer?.StopAsync() ?? Task.CompletedTask,
-                           _accountingBackfill?.StopAsync() ?? Task.CompletedTask);
+        await Task.WhenAll(StopQuietlyAsync("the onion replay pruner", _onionReplayBlockPruner.StopAsync),
+                           StopQuietlyAsync("the mempool reactor", _mempoolReactor.StopAsync),
+                           StopQuietlyAsync("the splice auto-bumper",
+                                            () => _spliceAutoBumper?.StopAsync() ?? Task.CompletedTask),
+                           StopQuietlyAsync("the accounting sealer",
+                                            () => _accountingEventSealer?.StopAsync() ?? Task.CompletedTask),
+                           StopQuietlyAsync("the accounting backfill",
+                                            () => _accountingBackfill?.StopAsync() ?? Task.CompletedTask));
 
         // The bootstrap dials through the peer manager, so it stops first (NL-113)
         if (_peerBootstrapService is not null)
-            await _peerBootstrapService.StopAsync(cancellationToken);
+            await StopQuietlyAsync("the peer bootstrap", () => _peerBootstrapService.StopAsync(cancellationToken));
 
         // Closing the control connection takes our onion service down before the listener goes
         if (_torOnionService is not null)
-            await _torOnionService.StopAsync();
+            await StopQuietlyAsync("the Tor onion service", _torOnionService.StopAsync);
 
-        await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
-                           _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));
+        await Task.WhenAll(StopQuietlyAsync("the chain monitor", _blockchainMonitor.StopAsync),
+                           StopQuietlyAsync("the fee service", _feeService.StopAsync),
+                           StopQuietlyAsync("the peer manager", _peerManager.StopAsync),
+                           StopQuietlyAsync("the IPC server", _namedPipeIpcService.StopAsync));
 
         // Peer storage writes its delayed blobs once the peers stopped, before the container is disposed (NL-010)
         if (_peerStorageService is not null)
-            await _peerStorageService.StopAsync();
+            await StopQuietlyAsync("peer storage", _peerStorageService.StopAsync);
 
         _logger.LogInformation("NLTG daemon service stopped");
+    }
+
+    /// <summary>
+    /// Stops one service as part of the node's stop (NL-1393): a service the start never reached refuses with an
+    /// <see cref="InvalidOperationException"/> ("not running"), which is expected when the stop arrived during the start;
+    /// any other failure is logged and the stop goes on with the next service, so one service never keeps the others
+    /// running or makes the whole stop fail.
+    /// </summary>
+    private async Task StopQuietlyAsync(string name, Func<Task> stop)
+    {
+        try
+        {
+            await stop();
+        }
+        catch (InvalidOperationException e)
+        {
+            _logger.LogDebug(e, "Not stopping {Service}: it was not running", name);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Stopping {Service} was cancelled", name);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not stop {Service}; stopping the rest of the node", name);
+        }
     }
 
     /// <summary>
