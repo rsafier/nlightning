@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 105 | 107 |
+| open | 0 | 0 | 2 | 106 | 108 |
 | in-progress | 0 | 1 | 8 | 1 | 10 |
-| fixed | 15 | 74 | 272 | 539 | 900 |
+| fixed | 15 | 75 | 276 | 540 | 906 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **291** | **667** | **1048** |
+| **Total** | **15** | **76** | **295** | **669** | **1055** |
 
 ### Epics
 
@@ -11139,6 +11139,75 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the end-to-end proof of NL-1369 (two full nodes behind an in-test relay: channel, payments both ways, a restart) is `Explicit` and starts its own bitcoind through the Tor fixture's Docker chain host, so `scripts/run-cluster.sh --matrix` never runs it.
 - **Fix sketch:** move it onto a cluster fixture's bitcoind (e.g. the `lnd` suite's `LightningRegtestNetworkFixture` through `NLightningTestNode.CreateAsync(fixture, ...)`) and add the class to that suite in `SuiteCatalog`.
 - **Blocks/Blocked-by:** NL-1369
+
+### NL-1373 RevealPerCommitmentSecret did not ask the node write fence
+- **Status:** fixed (778d1601)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs` (`RevealPerCommitmentSecret`)
+- **Evidence:** every signing method calls `CheckSignFence` first (NL-1341), but the release of a per-commitment secret relied only on the durable guard's write (NL-1345), which is skipped when the in-memory guard already covers it and when no guard store is registered: a fenced instance could still hand a secret to the peer.
+- **Fix:** the fence (`NodeEffect.Sign`) is asked first, before any argument or guard is looked at.
+- **Validation:** `Infrastructure.Bitcoin.Tests` `Signers/LocalLightningSignerWriteFenceTests` (the reflection theory now includes `RevealPerCommitmentSecret`, and the kind list requires it).
+- **Blocks/Blocked-by:** NL-1341, NL-1345
+
+### NL-1374 A commitment was signed for the peer without the remote-commitment guard when the obscuring factor was unknown
+- **Status:** fixed (778d1601)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.DurableGuard.cs` (`GetCommitmentNumber`), `LocalLightningSigner.cs` (`RegisterChannel`)
+- **Evidence:** `GetCommitmentNumber` returned null when `ChannelSigningInfo.CommitmentObscuringFactor` was unknown or the transaction did not parse, and `SignChannelTransaction` (both overloads) and `SignRemoteCommitmentPartial` then signed with no remote-commitment guard (NL-1345). A registration from data without the factor also replaced a known one.
+- **Fix:** a transaction that does not parse is refused; a transaction with the BOLT 3 commitment locktime/sequence form (one input, 0x20/0x80 upper bytes) is refused when the factor is unknown; closing transactions (never that form) are signed as before. Every production source carries the factor (the channel rows, `ChannelSigningInfoDbRepository`; the channel model once the peer's payment basepoint is known; the native remote signer's JSON wire), so v1 and legacy channels keep working. A re-registration without the factor keeps the known one.
+- **Validation:** `LocalLightningSignerBroadcastTests` (unknown factor: commitment refused on both overloads, closing signed; unparseable refused; re-registration keeps the guard); test signing data given Appendix C's factor (`0x2bb038521914`) where it lacked one.
+- **Blocks/Blocked-by:** NL-1345
+
+### NL-1375 A failed guard synchronization at registration was only logged; splice and HTLC signatures skipped the durable guard
+- **Status:** fixed (778d1601)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.DurableGuard.cs` (`SyncDurableGuardAtRegistration`, `RefreshDurableGuard`), `LocalLightningSigner{,.Splicing,.TaprootSplicing}.cs`
+- **Evidence:** when the registration could not read or persist the durable guard, operations that write nothing durable (e.g. `SignRemoteHtlcTransactions`) went on from memory alone; `SignSpliceSharedInput`, `SignSpliceSharedInputPartial` and `SignRemoteHtlcTransactions` never read the durable guard, so a broadcast mark or data loss another process over the same database persisted did not stop them.
+- **Fix:** a failed registration synchronization marks the channel unsynchronized (a per-registration token); `RefreshDurableGuard`, which every guarded operation calls first, then persists what the registration brought and refuses while it fails, clearing the mark only once it succeeded. The three methods read the durable guard before the commitment lock and refuse on a broadcast mark or data loss.
+- **Validation:** Integration `DurableSignerGuardTests` (an unsynchronized registration refuses `SignRemoteHtlcTransactions` until a retry persists the guard; another process's broadcast mark refuses HTLC signatures; the failed-write case now also refuses the advance); `LocalLightningSignerSplicingTests` (another process's broadcast mark or data loss refuses the shared input; an unreadable guard refuses it until readable).
+- **Blocks/Blocked-by:** NL-1345
+
+### NL-1376 The MuSig2 broadcast-session record of a taproot verification nonce was memory only
+- **Status:** fixed (778d1601)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.Taproot.cs` (`RecordBroadcastSession`, `ClaimBroadcastSessionDurably`), Domain `Channels/ValueObjects/ChannelBroadcastSession`, `IChannelSignerGuardStore.ClaimBroadcastSession`, `IChannelSignerGuardDbRepository.ClaimBroadcastSessionAsync`, `ChannelSignerGuard{Store,DbRepository}`, entity `ChannelSignerBroadcastSessionEntity`, migration `AddSignerBroadcastSessions`
+- **Evidence:** verification nonces are derived per (funding, commitment number) and never stored, so every process derives the same one; the refusal of a second session over one nonce (`_taprootBroadcastSessions`) lived in memory and the durable guard stored only the S1 number. Two processes over one database (or one after a restart) broadcast-signing commitment N over different sessions (another peer partial signature, another transaction) would make two partial signatures with one nonce and reveal the funding key.
+- **Fix:** table `ChannelSignerBroadcastSessions` (key channel id, nonce funding txid (zero for the txid-free v1 commitment-0 context), commitment number; SHA-256 of the session's sighash and aggregate nonce). After the in-memory record and before the signed commitment leaves the signer, every broadcast signature claims its nonce durably (insert under the write fence; a key conflict lets the stored digest decide, so of two sessions only one ever wins); another session is refused in every process, the same session again is allowed. A table rather than a column on `ChannelSignerGuards`: one commitment number may be broadcast on several fundings (SP-I4), each with its own nonce. A failed or lost claim removes the memory record this call added and refuses.
+- **Validation:** `Infrastructure.Bitcoin.Tests` `Taproot/SimpleTaprootDurableBroadcastSessionTests` (two signers over one store: the second process refuses another session and gives the first's transaction for the same one; a claim that cannot be written releases nothing and a retry may claim); migration applied on Postgres 16, SQLite and SQL Server 2022; `HasPendingModelChanges` false for all three.
+- **Blocks/Blocked-by:** NL-1345
+
+### NL-1377 Our legacy closing_signed was signed and sent without any save
+- **Status:** fixed (e9dcd4dc)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Close/ChannelCloseCoordinator.cs` (`CreateClosingSignedAsync`, `FinalizeAsync`), Domain `Channels/Closing/SentClosingSigned`, `ChannelModel.LastSentClosingSigned`, `ChannelEntity`, `ChannelDbRepository`, migration `AddSentClosingSigned`
+- **Evidence:** with the local signer, our `closing_signed` (a signature the peer can broadcast) left with no save; only the VLS branch saved its workflow (NL-1330). A process taking the channel over from the same database could not see what we had signed, and no write-fence save check stood before the message.
+- **Fix:** the fee, the txid of the closing transaction our signature is for and the signature are saved on the channel row (`Channels.LastSentClosingFeeSatoshis`/`LastSentClosingTxId`/`LastSentClosingSignature`) before the message is returned, in the same save as the VLS workflow's consume, and with `Closing` for our final echo. The BOLT 2 negotiation is unchanged.
+- **Validation:** `CooperativeCloseHarnessTests.Given_OurClosingSigned_When_ItIsSent_Then_ItWasSavedFirstWithTheTransactionItSigns`, `ChannelCloseCoordinatorTests` (the proposal's save precedes its return), `ChannelRoundTripTests` (the three columns reload), the Application `Channels.Close` namespace 181/181; migration applied on Postgres 16, SQLite and SQL Server 2022.
+- **Blocks/Blocked-by:** follow-up NL-1379
+
+### NL-1378 The fence contract did not say saves need shared locks and durable commits
+- **Status:** fixed (f34d992f)
+- **Severity:** low
+- **Kind:** docs
+- **Location:** `src/NLightning.Domain/Node/Fencing/INodeWriteFence.cs`, `src/NLightning.Infrastructure.Repositories/CLAUDE.md`
+- **Evidence:** nothing told a fence implementer that `CheckSaveAsync` runs for every save (an exclusive lock there serializes the node) or that the fence's guarantees assume a commit is durable before its effect leaves (an asynchronous commit or a promoted asynchronous replica can lose it).
+- **Fix:** `CheckSaveAsync` documents that implementations take only shared locks (the change of the authorized instance takes the exclusive one); the interface remarks state that the host must provide durable commits (synchronous commit on a single primary or a synchronous quorum).
+- **Validation:** Integration `UnitOfWorkWriteFenceTests.Given_AFenceThatTakesASharedLock_When_TwoSavesRun_Then_TheirChecksOverlap` (two saves' checks are inside the fence at once).
+- **Blocks/Blocked-by:** NL-1341
+
+### NL-1379 A non-taproot closing_complete is signed and sent without a save
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (`CreateProposalAsync`)
+- **Evidence:** as NL-1377 for the legacy close: our `closing_complete` signatures (each a closing transaction the peer can complete and broadcast) are kept in the registry's memory only and leave without a save, so a process taking the channel over does not see them and no fence save check precedes them.
+- **Fix sketch:** save the proposal's fee, lock time and per-variant txids and signatures on the channel row (or a small table) before the message is returned, as `ChannelCloseCoordinator` does since NL-1377.
+- **Blocks/Blocked-by:** NL-1377
 
 ### NL-1361 Block- and timer-driven work outside the stopped services can still run after the host's stop
 - **Status:** open
