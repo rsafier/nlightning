@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NLightning.Infrastructure.Protocol.Models;
@@ -15,6 +16,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Events;
+using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
@@ -23,6 +25,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
 using Domain.Transport;
 using Infrastructure.Node.ValueObjects;
 using Infrastructure.Transport.Interfaces;
@@ -216,9 +219,10 @@ public class PeerManagerLaneTests
     }
 
     [Fact]
-    public async Task Given_AChannelFirstSeenUnregistered_When_ItIsRegisteredLater_Then_ItStaysOnThePeerLane()
+    public async Task Given_AChannelFirstSeenUnregistered_When_ItIsRegisteredLater_Then_ItsNewLaneWaitsForThePeerLane()
     {
-        // Arrange (sticky assignment: a channel opened on this connection stays serial until the next one)
+        // Arrange (a channel opened on this connection moves to its own lane once registered, behind the peer lane's
+        // earlier items: its own order holds across the move)
         var late = Channel(0x5A);
         await ConnectAsync();
         var early = Fee(late);
@@ -234,7 +238,7 @@ public class PeerManagerLaneTests
         var after = Fee(late);
         Raise(after);
 
-        // Assert (still behind the peer lane's busy item)
+        // Assert (its new lane waits for the peer lane's busy item)
         await AssertStaysAsync(() => Handled().Count == 1);
         gate.SetResult();
         await WaitUntilAsync(() => Handled().Count == 3);
@@ -265,26 +269,87 @@ public class PeerManagerLaneTests
     }
 
     [Fact]
-    public async Task Given_ANodeWideCapOfOne_When_TwoChannelsArrive_Then_TheyNeverOverlap()
+    public async Task Given_ANodeWideCapOfOne_When_ThreeChannelsArrive_Then_TheReservedSlotAndOnePermitRun()
     {
-        // Arrange
-        var (a, b) = (Channel(0xA1), Channel(0xB2));
-        Register(a, b);
-        await ConnectAsync(new ChannelLaneOptions { Enabled = true, MaxConcurrent = 1 });
-        var first = Fee(a);
-        var gate = Block(first);
+        // Arrange (the connection's reserved slot needs no node-wide permit; further items share the cap)
+        var channels = new[] { Channel(0xA1), Channel(0xB2), Channel(0xC3) };
+        Register(channels);
+        var peerManager = await ConnectAsync(new ChannelLaneOptions { Enabled = true, MaxConcurrent = 1 });
+        var messages = channels.Select(Fee).ToArray();
+        var gates = messages.Select(Block).ToArray();
 
         // Act
-        Raise(first);
-        await StartedAsync(first);
-        var second = Fee(b);
-        Raise(second);
+        foreach (var message in messages)
+            Raise(message);
+        await WaitUntilAsync(() => Volatile.Read(ref _inFlight) == 2);
+        await AssertStaysAsync(() => Volatile.Read(ref _inFlight) == 2);
+        Assert.Equal(0, peerManager.LaneGlobalPermitsAvailable);
+        foreach (var gate in gates)
+            gate.TrySetResult();
+        await WaitUntilAsync(() => Handled().Count == 3);
 
         // Assert
-        await AssertStaysAsync(() => Handled().Count == 0);
-        gate.SetResult();
-        await WaitUntilAsync(() => Handled().Count == 2);
-        Assert.Equal(1, _maxInFlight);
+        Assert.Equal(2, _maxInFlight);
+        await WaitUntilAsync(() => peerManager.LaneGlobalPermitsAvailable == 1);
+    }
+
+    [Fact]
+    public async Task Given_ThirtyTwoPeersBlockedInTheirPeerLanes_When_AnotherPeersChannelMessagesArrive_Then_TheyProgress()
+    {
+        // Arrange (C1: 32 throwaway peers' opens wait on a slow open decider; their serial peer lanes take no node-wide
+        // permit, so the 33rd peer's steady channels go on)
+        var steady = Channel(0xA1);
+        Register(steady);
+        var peerManager = await ConnectAsync();
+        var gates = new List<TaskCompletionSource>();
+        for (var i = 0; i < 32; i++)
+        {
+            var (_, connection) = await ConnectOtherPeerAsync(peerManager);
+            var open = Fee(RandomChannel());
+            gates.Add(Block(open));
+            Raise(connection, open);
+            await StartedAsync(open);
+        }
+
+        // Act
+        var messages = Enumerable.Range(0, 5).Select(_ => Fee(steady)).ToArray();
+        foreach (var message in messages)
+            Raise(message);
+
+        // Assert
+        await WaitUntilAsync(() => messages.All(Handled().Contains));
+        Assert.Equal(32, peerManager.LaneGlobalPermitsAvailable);
+        foreach (var gate in gates)
+            gate.SetResult();
+        await WaitUntilAsync(() => Handled().Count == 37);
+    }
+
+    [Fact]
+    public async Task Given_APeerHoldingEveryNodeWidePermit_When_AnotherPeersChannelMessageArrives_Then_ItRunsOnItsReservedSlot()
+    {
+        // Arrange (C1: a node-wide cap of 2 taken by one busy peer's channel items)
+        var peerManager = await ConnectAsync(new ChannelLaneOptions { Enabled = true, MaxConcurrent = 2 });
+        var (busyKey, busy) = await ConnectOtherPeerAsync(peerManager);
+        var busyChannels = Enumerable.Range(0, 4).Select(i => Channel((byte)(0x40 + i))).ToArray();
+        LaneTestChannels.Register(_channelMemory, busyKey, busyChannels);
+        var busyMessages = busyChannels.Select(Fee).ToArray();
+        var gates = busyMessages.Select(Block).ToArray();
+        foreach (var busyMessage in busyMessages)
+            Raise(busy, busyMessage);
+        await WaitUntilAsync(() => Volatile.Read(ref _inFlight) == 3);
+        Assert.Equal(0, peerManager.LaneGlobalPermitsAvailable);
+        var ours = Channel(0xA1);
+        Register(ours);
+
+        // Act
+        var message = Fee(ours);
+        Raise(message);
+
+        // Assert
+        await WaitForHandledAsync(message);
+        foreach (var gate in gates)
+            gate.SetResult();
+        await WaitUntilAsync(() => Handled().Count == 5);
     }
 
     [Fact]
@@ -450,6 +515,143 @@ public class PeerManagerLaneTests
         Assert.Equal("connected", Events()[0]);
     }
 
+    [Fact]
+    public async Task Given_AChannelRegisteredLater_When_ThePeerLaneIsIdle_Then_ItRunsBesideThePeerLane()
+    {
+        // Arrange (once registered and past the barrier, the channel no longer waits for the peer lane)
+        var late = Channel(0x5A);
+        await ConnectAsync();
+        var early = Fee(late);
+        Raise(early);
+        await WaitForHandledAsync(early);
+        Register(late);
+        var after = Fee(late);
+        Raise(after);
+        await WaitForHandledAsync(after);
+        var openFlow = Fee(Channel(0x7E));
+        var gate = Block(openFlow);
+
+        // Act
+        Raise(openFlow);
+        await StartedAsync(openFlow);
+        var steady = Fee(late);
+        Raise(steady);
+
+        // Assert
+        await WaitForHandledAsync(steady);
+        Assert.DoesNotContain(openFlow, Handled());
+        gate.SetResult();
+        await WaitForHandledAsync(openFlow);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_AcceptChannel2BeingHandled_When_ATxMessageOfTheRealIdArrives_Then_ItWaitsForIt(
+        bool registeredDuringTheHandling)
+    {
+        // Arrange (the opener's accept_channel2 under the temporary id is on the peer lane; the accepter's tx_add_input
+        // already carries the real (v2) id, which the accept's handler registers; stand-in messages of those ids)
+        var temporary = Channel(0x7E);
+        var real = Channel(0x2A);
+        await ConnectAsync();
+        var accept = Fee(temporary);
+        var gate = Block(accept);
+        Raise(accept);
+        await StartedAsync(accept);
+        if (registeredDuringTheHandling)
+            Register(real);
+
+        // Act
+        var txAddInput = Fee(real);
+        Raise(txAddInput);
+
+        // Assert: whichever lane it lands on, it is handled after the accept
+        await AssertStaysAsync(() => Handled().Count == 0);
+        gate.SetResult();
+        await WaitUntilAsync(() => Handled().Count == 2);
+        Assert.Equal([accept, txAddInput], Handled());
+    }
+
+    [Fact]
+    public async Task Given_AClosingBatchWarning_When_OtherLanesHaveQueuedWork_Then_TheSessionClosesAtOnce()
+    {
+        // Arrange (C2: a start_batch with batch_size above 20 is a warning and close; the dispatcher closes the session
+        // itself instead of queueing the failure behind channel A's work)
+        var (a, b) = (Channel(0xA1), Channel(0xB2));
+        Register(a, b);
+        await ConnectAsync();
+        var busy = Fee(b);
+        var gate = Block(busy);
+        Raise(busy);
+        await StartedAsync(busy);
+        var queued = Fee(b);
+        Raise(queued);
+
+        // Act
+        Raise(new StartBatchMessage(new StartBatchPayload(a, 21), StartBatchMessageTypeTlv.CommitmentSigned()));
+        var reason = await _disconnect.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert: the warning went out while channel B's item was still running; B's queued item is dropped
+        var warning = Assert.IsType<ChannelWarningException>(reason);
+        Assert.Equal(a, warning.ChannelId);
+        Assert.DoesNotContain(busy, Handled());
+        gate.SetResult();
+        await WaitUntilAsync(() => Events().Contains("reverted"));
+        Assert.Contains(busy, Handled());
+        Assert.DoesNotContain(queued, Handled());
+    }
+
+    [Fact]
+    public async Task Given_TheDispatcherFails_When_AMessageArrives_Then_TheConnectionClosesWithAWarning()
+    {
+        // Arrange (C3: an unexpected exception in the dispatcher, here from the lane assignment)
+        await ConnectAsync();
+        var broken = Channel(0x0B);
+        ChannelModel? none;
+        _channelMemory.Setup(r => r.TryGetChannel(broken, out none)).Throws(new ArgumentException("boom"));
+
+        // Act
+        Raise(Fee(broken));
+        var reason = await _disconnect.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.IsType<WarningException>(reason);
+        await WaitUntilAsync(() => Events().Contains("reverted"));
+        Assert.Empty(Handled());
+    }
+
+    [Fact]
+    public async Task Given_AFenceRefusalInOneLane_When_OtherLanesAreSending_Then_TheConnectionClosesAndNothingQueuedRuns()
+    {
+        // Arrange (a fenced save throws from channel A's handler while channel B's item is running and more is queued)
+        var (a, b) = (Channel(0xA1), Channel(0xB2));
+        Register(a, b);
+        await ConnectAsync();
+        var running = Fee(b);
+        _replies[running] = new UpdateFeeMessage(new UpdateFeePayload(b, 1));
+        var gate = Block(running);
+        Raise(running);
+        await StartedAsync(running);
+        var queued = Fee(b);
+        Raise(queued);
+        var fenced = Fee(a);
+        _failures[fenced] = new NodeFencedException("not the authorized instance");
+
+        // Act
+        Raise(fenced);
+        var reason = await _disconnect.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        gate.SetResult();
+        await WaitUntilAsync(() => Events().Contains("reverted"));
+
+        // Assert: an internal-failure warning for channel A (never an error), B's running item finished but its reply
+        // raised after the disconnect was not sent, B's queued item never ran
+        Assert.Equal(a, Assert.IsType<ChannelWarningException>(reason).ChannelId);
+        Assert.Contains(running, Handled());
+        Assert.DoesNotContain(queued, Handled());
+        Assert.Empty(Sent());
+    }
+
     private async Task HandleAsync(UpdateFeeMessage message)
     {
         var channelId = message.Payload.ChannelId;
@@ -488,9 +690,11 @@ public class PeerManagerLaneTests
                 return;
     }
 
-    private void SetupConnection(Mock<IPeerService> connection)
+    private void SetupConnection(Mock<IPeerService> connection) => SetupConnection(connection, _peerKey);
+
+    private void SetupConnection(Mock<IPeerService> connection, CompactPubKey peerKey)
     {
-        connection.SetupGet(p => p.PeerPubKey).Returns(_peerKey);
+        connection.SetupGet(p => p.PeerPubKey).Returns(peerKey);
         connection.SetupGet(p => p.Features).Returns(new FeatureOptions());
         connection.Setup(p => p.SendMessageAsync(It.IsAny<IChannelMessage>()))
                   .Callback((IChannelMessage m) =>
@@ -514,12 +718,28 @@ public class PeerManagerLaneTests
             ChannelLanes = lanes ?? new ChannelLaneOptions { Enabled = true }
         };
         _tcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
-                   .ReturnsAsync(new ConnectedPeer(_peerKey, "127.0.0.1", 9735, new Mock<TcpClient>().Object));
+                   .ReturnsAsync((PeerAddress address) =>
+                                     new ConnectedPeer(address.PubKey, "127.0.0.1", 9735, new Mock<TcpClient>().Object));
         await peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_peerKey}@127.0.0.1:9735"));
         return peerManager;
     }
 
+    /// <summary>Connects another peer to <paramref name="peerManager"/>; its disconnects are not recorded.</summary>
+    private async Task<(CompactPubKey Key, Mock<IPeerService> Connection)> ConnectOtherPeerAsync(
+        PeerManager peerManager)
+    {
+        CompactPubKey key = new Key().PubKey.ToBytes();
+        var connection = new Mock<IPeerService>();
+        SetupConnection(connection, key);
+        connection.Setup(p => p.Disconnect(It.IsAny<Exception?>()));
+        _connections.Enqueue(connection);
+        await peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{key}@127.0.0.1:9735"));
+        return (key, connection);
+    }
+
     private static ChannelId Channel(byte fill) => new(Enumerable.Repeat(fill, 32).ToArray());
+
+    private static ChannelId RandomChannel() => new(RandomNumberGenerator.GetBytes(32));
 
     private void Register(params ChannelId[] channelIds) =>
         LaneTestChannels.Register(_channelMemory, _peerKey, channelIds);
@@ -542,7 +762,7 @@ public class PeerManagerLaneTests
 
     private void Raise(Mock<IPeerService> connection, IChannelMessage message) =>
         connection.Raise(p => p.OnChannelMessageReceived += null, connection.Object,
-                         new ChannelMessageEventArgs(message, _peerKey));
+                         new ChannelMessageEventArgs(message, connection.Object.PeerPubKey));
 
     private void Event(string name)
     {

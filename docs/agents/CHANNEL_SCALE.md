@@ -136,8 +136,10 @@ have taken about 15 minutes (16 dials at a time, 15 s each).
 Plan: `docs/agents/PEER_CHANNEL_PARALLELISM_PLAN.md`. A connection's channel messages used to be handled one at a time
 by one inbound loop, so payments over many channels of one peer were serialized there. With per-channel lanes
 (`Node:ChannelLanes:Enabled`, on by default for Postgres) the loop is a dispatcher that hands each registered channel's
-messages to that channel's own FIFO lane (at most `MaxConcurrentPerPeer` 8 per connection and `MaxConcurrent` 32
-node-wide at once) and everything else (the open flow under temporary ids, unknown ids) to one serial peer lane.
+messages to that channel's own FIFO lane (at most `MaxConcurrentPerPeer` 8 per connection at once; each connection's
+first channel item runs on a reserved slot and only the others take one of the `MaxConcurrent` 32 node-wide permits)
+and everything else (the open flow under temporary ids, unknown ids) to one serial peer lane, which takes no permit.
+The daemon runs the server GC since NL-1406 (owner decision 2026-10-11).
 
 **Setup.** `ChannelScaleLivePeerTests.Given_Thousands*` with 1,100 hub channels, 1,000 of them to the live peer, 10
 offline peers, 200 payments per round, both nodes on one local Postgres 16.2 container (OrbStack, `max_connections`
@@ -171,7 +173,9 @@ start gains a little: all usable on both ends a median 12.5 s after the start wi
 our own `channel_reestablish` prologue is still serial (NL-1401).
 Correctness under lanes: `Scale/ChannelLanesLivePeerTests` (20 channels over one connection, 48 payments 16 at once,
 both ends agree on every channel; and the peer restarted while 16 payments are in flight: no HTLC lost or doubled, what
-left the hub equals what the peer's settled invoices received) on SQLite and on Postgres.
+left the hub equals what the peer's settled invoices received; 8 circular rebalances at once, each out over one channel
+and back over another, so the peer's switch forwards between lanes of one connection; and an MPP payment larger than any
+one channel, its parts on several lanes) on SQLite and on Postgres.
 
 **What limits it next** (measured with lanes on, 32-128 at once):
 
@@ -184,11 +188,26 @@ left the hub equals what the peer's settled invoices received) on SQLite and on 
    (`LWLock:WALWrite` 220 and `IO:WALSync` 53 of 417 samples of `pg_stat_activity`): about 9-10 explicit commits per
    payment for the two nodes (each transition's save, plus the durable signer guard's own `UPDATE channel_signer_guards`
    commits, NL-1399), on a Docker-on-macOS volume. The rate plateaus there (85-110/s) with only 4-6 cores busy.
-3. **Workstation GC** (NL-1406): the daemon and the test host run the workstation (concurrent) GC; with
+3. **Workstation GC** (NL-1406, fixed): the daemon and the test host ran the workstation (concurrent) GC; with
    `DOTNET_gcServer=1` the same build reached 90-150/s at 16-64 at once (thread snapshots without it show many threads
-   paused in `PollGC`). Not changed: server GC trades memory for it, an operator's choice for a hub.
+   paused in `PollGC`). Owner decision 2026-10-11: server GC always on; `ServerGarbageCollection` is set in the daemon
+   (JIT, and AOT through the ILC knob `System.GC.Server`) and in `NLightning.Integration.Tests`, so the benchmark and
+   the test nodes measure with it.
 4. Per-channel signing (commitment and HTLC signatures, `CommitmentSigningService`, `LocalLightningSigner`) and EF Core
    materialization are most of the CPU; 50-60 ms of process CPU per payment for both nodes at 32 at once.
+
+**After the review fixes and server GC by default** (2026-10-11; the connection's reserved slot, a peer lane without a
+permit, a closing failure closing the session from the dispatcher, server GC in the test host's runtimeconfig; median of
+three runs, rounds 8/16/32/64 in one process so the 16 round is warm):
+
+| at once | lanes off | | lanes on (shipped) | |
+|---|---|---|---|---|
+| | payments/s | p50 / p95 ms | payments/s | p50 / p95 ms |
+| 16 | 34.2 | 473 / 552 | 85.6 | 179 / 245 |
+| 32 | 38.4 | 799 / 1,035 | 106.9 | 277 / 492 |
+| 64 | 48.2 | 1,159 / 1,630 | 140.4 | 366 / 1,081 |
+
+A first round in a cold process is slower (16 at once as the first round: 45-55/s), which is why the rounds start at 8.
 
 Not limits: the per-peer lane cap (8 or 64 gave the same rate at 32 at once), the per-payment-hash lock, the commit
 scheduler, the outbox (one send loop per connection) and the LND index gate (not seen in thread or wait samples).

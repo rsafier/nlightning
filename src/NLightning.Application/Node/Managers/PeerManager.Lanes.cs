@@ -23,21 +23,34 @@ using Domain.Protocol.Models;
 /// lane. It never awaits a handler. A lane handles one item at a time, exactly as the serial loop does (the channel
 /// manager's call including the HTLC switch work after the lock), so each lane is FIFO and different lanes run at the
 /// same time.</para>
-/// <para>Lane assignment (plan R4) is sticky per connection: a channel id gets its own lane at its first sight only when
-/// it is then a registered (not temporary) channel of this peer in memory; every other id (temporary ids of an open,
-/// unknown ids, an all-zero or missing id) goes to the one serial peer lane, and stays there for the connection. So an
-/// open flow runs serially as before, and the temporary-to-real handover never crosses lanes. A channel lane created
-/// while the peer lane still has work waits for the items dispatched to the peer lane before it (the barrier), so a
-/// channel the peer lane registered is never touched by its new lane early.</para>
+/// <para>Lane assignment (plan R4): a channel id gets its own lane once it is a registered (not temporary) channel of
+/// this peer in memory, and keeps it for the connection; until then (temporary ids of an open, unknown ids, an all-zero
+/// or missing id) its messages go to the one serial peer lane. So an open flow runs serially as before. A channel lane
+/// created while the peer lane still has work waits for every item dispatched to the peer lane before it (the barrier):
+/// the channel's earlier messages there are handled first, so its own order holds across the move, and a channel the
+/// peer lane registered is never touched by its new lane early. Only the ids that got a lane are remembered, so a peer
+/// spraying unknown ids costs no memory.</para>
 /// <para>Replies go to the lane's connection (<see cref="_currentSession"/>) through the connection's one outbox: a
-/// channel's replies are enqueued under its lock, so each channel's wire order is its handling order. A lane's failure
-/// that disconnects closes the session: the dispatcher stops, queued items of every lane are dropped, each lane
-/// finishes the item it is handling. The connection's loop task (that the next connection waits for) ends only after
-/// every lane finished and the peer's uncommitted updates were reverted.</para>
-/// <para>Caps: a lane takes a per-connection permit (<see cref="ChannelLaneOptions.MaxConcurrentPerPeer"/>) and then a
-/// node-wide one (<see cref="ChannelLaneOptions.MaxConcurrent"/>) before it calls the channel manager, so never while
-/// it holds a channel lock, and releases both after each item. The work queued in a connection's lanes is bounded by
-/// the inbound queue's capacity: the dispatcher stops reading (and the peer's receive path waits) when it is reached.</para>
+/// channel's replies are enqueued under its lock, so each channel's wire order is its handling order; replies of
+/// different channels interleave in completion order, which BOLT allows.</para>
+/// <para>Failures that close the connection (cross-lane semantics): when a lane's item fails that way, or the dispatcher
+/// finds such a failure itself (a malformed <c>start_batch</c> group), the disconnect is queued on the outbox (it is
+/// terminal: nothing queued after it is sent) and the session closes at once: the dispatcher reads nothing more, the
+/// items still queued in every lane are dropped and each lane finishes only the item it is handling, whose replies the
+/// closed outbox drops. Unlike the serial loop, items that arrived before the failure but were still queued on other
+/// lanes are dropped too: the connection is gone between their save and their send, which every transition tolerates
+/// (persist before send; the next connection's <c>channel_reestablish</c> retransmits). The connection's loop task
+/// (that the next connection waits for) ends only after every lane finished and the peer's uncommitted updates were
+/// reverted. A failure that keeps the connection (a channel's <c>error</c> or <c>warning</c>) stays in its lane.</para>
+/// <para>Caps: a channel lane takes a per-connection permit (<see cref="ChannelLaneOptions.MaxConcurrentPerPeer"/>)
+/// before it calls the channel manager, so never while it holds a channel lock. Each connection also owns one reserved
+/// slot: the first of its channel items to run takes it, and only further concurrent items take a node-wide permit
+/// (<see cref="ChannelLaneOptions.MaxConcurrent"/>). The serial peer lane takes no permit at all: like the old loop, it
+/// runs one item at a time per connection, and its items may wait outside any channel lock for a long time (the open
+/// decision gate, up to <c>LndGrpc:AcceptorTimeout</c>). So no peer can be starved by others: every connection always
+/// progresses as the serial loop would, and the node-wide permits only bound the extra parallelism. The work queued in
+/// a connection's lanes is bounded by the inbound queue's capacity: the dispatcher stops reading (and the peer's
+/// receive path waits) when it is reached.</para>
 /// </remarks>
 public sealed partial class PeerManager
 {
@@ -56,6 +69,9 @@ public sealed partial class PeerManager
             _laneGlobalPermits = new SemaphoreSlim(_channelLanes.MaxConcurrent);
         }
     }
+
+    /// <summary>The node-wide permits free now (tests).</summary>
+    internal int LaneGlobalPermitsAvailable => _laneGlobalPermits.CurrentCount;
 
     /// <summary>The loop of a connection installed now: laned or serial for its whole lifetime.</summary>
     private Func<PeerSession, ChannelReader<IChannelMessage>, CancellationToken, Task> SelectInboundLoop()
@@ -95,9 +111,17 @@ public sealed partial class PeerManager
                     return;
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // The connection closed
+        }
+        catch (Exception e)
+        {
+            // Our bug in the dispatcher: never leave the connection half served. Tell the peer (never with an error,
+            // which would fail its channels) and close the session, as the serial loop does for an internal failure
+            _logger.LogError(e, "The channel message dispatcher of peer {Peer} failed", session.Peer.NodeId);
+            session.Outbox.TryEnqueueDisconnect(new WarningException("Sorry, we had an internal error"));
+            session.Close();
         }
         finally
         {
@@ -231,22 +255,30 @@ public sealed partial class PeerManager
     }
 
     /// <summary>
-    /// Hands a failure found by the dispatcher to the channel's lane, so it follows that channel's queued messages.
-    /// Returns false (stop reading) when the failure closes the connection.
+    /// A failure found by the dispatcher. One that keeps the connection goes to the channel's lane, so it follows that
+    /// channel's queued messages. One that closes the connection is sent at once and the session closed (see the class
+    /// remarks): returns false, the dispatcher stops reading.
     /// </summary>
     private async ValueTask<bool> DispatchFailureAsync(PeerSession session, ConnectionLanes lanes,
                                                        ChannelWarningException warning, MessageTypes messageType,
                                                        ChannelId channelId)
     {
+        if (warning.CloseConnection)
+        {
+            HandleChannelMessageFailure(session, warning, messageType, channelId);
+            session.Close();
+            return false;
+        }
+
         await lanes.EnqueueAsync(channelId,
                                  () => Task.FromResult(HandleChannelMessageFailure(session, warning, messageType,
                                                                                    channelId)));
-        return !warning.CloseConnection;
+        return true;
     }
 
     /// <summary>
-    /// Whether a channel id gets a lane of its own at its first sight on a connection (plan R4): a registered channel
-    /// of this peer (never a temporary one, which lives elsewhere in the memory repository).
+    /// Whether a channel id gets a lane of its own (plan R4): a registered channel of this peer (never a temporary one,
+    /// which lives elsewhere in the memory repository).
     /// </summary>
     private bool HasOwnLane(PeerSession session, ChannelId channelId)
     {
@@ -276,8 +308,11 @@ public sealed partial class PeerManager
         private readonly CancellationToken _cancellationToken;
         private readonly Lock _gate = new();
 
-        /// <summary>Sticky lane assignment of every channel id seen on the connection: true = a lane of its own.</summary>
-        private readonly Dictionary<ChannelId, bool> _ownLane = new();
+        /// <summary>
+        /// The channel ids that got a lane of their own on this connection (they keep it). Bounded by the peer's
+        /// registered channels: ids that went to the peer lane are not remembered.
+        /// </summary>
+        private readonly HashSet<ChannelId> _ownLane = [];
 
         /// <summary>The channel lanes with work (an idle lane is dropped; its assignment stays).</summary>
         private readonly Dictionary<ChannelId, Lane> _channelLanes = new();
@@ -291,6 +326,9 @@ public sealed partial class PeerManager
 
         /// <summary>Completes when every item dispatched to the peer lane so far has finished.</summary>
         private Task _peerLaneTail = Task.CompletedTask;
+
+        /// <summary>1 while a channel item runs on the connection's reserved slot (no node-wide permit needed).</summary>
+        private int _reservedSlotInUse;
 
         public ConnectionLanes(PeerManager manager, PeerSession session, int maxConcurrentPerPeer,
                                SemaphoreSlim globalPermits, CancellationToken cancellationToken)
@@ -355,21 +393,19 @@ public sealed partial class PeerManager
             if (channelId is not { } id || id == ChannelId.Zero)
                 return _peerLane;
 
-            if (!_ownLane.TryGetValue(id, out var own))
+            if (!_ownLane.Contains(id))
             {
-                own = _manager.HasOwnLane(_session, id);
-                _ownLane[id] = own;
-                if (own)
-                {
-                    // First sight: wait for whatever the peer lane still has to do (it may have registered the channel)
-                    var lane = new Lane(id) { Barrier = _peerLaneTail.IsCompleted ? null : _peerLaneTail };
-                    _channelLanes[id] = lane;
-                    return lane;
-                }
-            }
+                // Not (yet) a channel of its own: the serial peer lane, asked again at its next message
+                if (!_manager.HasOwnLane(_session, id))
+                    return _peerLane;
 
-            if (!own)
-                return _peerLane;
+                // First lane of the channel: wait for whatever the peer lane still has to do (the channel's earlier
+                // messages may be there, and a handler there may have registered it)
+                _ownLane.Add(id);
+                var lane = new Lane(id) { Barrier = _peerLaneTail.IsCompleted ? null : _peerLaneTail };
+                _channelLanes[id] = lane;
+                return lane;
+            }
 
             if (_channelLanes.TryGetValue(id, out var existing))
                 return existing;
@@ -407,7 +443,7 @@ public sealed partial class PeerManager
 
                 try
                 {
-                    await RunItemAsync(item).ConfigureAwait(false);
+                    await RunItemAsync(lane, item).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -417,21 +453,35 @@ public sealed partial class PeerManager
             }
         }
 
-        private async Task RunItemAsync(LaneItem item)
+        private async Task RunItemAsync(Lane lane, LaneItem item)
         {
             // The connection closed: drop what is still queued (the one being handled elsewhere finishes)
             if (_cancellationToken.IsCancellationRequested)
                 return;
 
+            var isPeerLane = ReferenceEquals(lane, _peerLane);
             var peerPermit = false;
+            var reservedSlot = false;
             var globalPermit = false;
             try
             {
-                // Permits before the channel lock, never while holding one (plan R14)
-                await _peerPermits.WaitAsync(_cancellationToken).ConfigureAwait(false);
-                peerPermit = true;
-                await _globalPermits.WaitAsync(_cancellationToken).ConfigureAwait(false);
-                globalPermit = true;
+                // The peer lane runs as the serial loop did: no permit (C1). A channel lane takes its permits before
+                // the channel lock, never while holding one (plan R14): the connection's own, then its reserved slot
+                // or, when that is busy, a node-wide one
+                if (!isPeerLane)
+                {
+                    await _peerPermits.WaitAsync(_cancellationToken).ConfigureAwait(false);
+                    peerPermit = true;
+                    if (Interlocked.CompareExchange(ref _reservedSlotInUse, 1, 0) == 0)
+                    {
+                        reservedSlot = true;
+                    }
+                    else
+                    {
+                        await _globalPermits.WaitAsync(_cancellationToken).ConfigureAwait(false);
+                        globalPermit = true;
+                    }
+                }
 
                 if (!await item.Run().ConfigureAwait(false))
                     _session.Close();
@@ -444,12 +494,16 @@ public sealed partial class PeerManager
             {
                 // Every item maps its own failure; anything left is our bug: close the connection as the loop would
                 _manager._logger.LogError(e, "Channel lane of peer {Peer} failed", _session.Peer.NodeId);
+                _session.Outbox.TryEnqueueDisconnect(new WarningException("Sorry, we had an internal error"));
                 _session.Close();
             }
             finally
             {
                 if (globalPermit)
                     _globalPermits.Release();
+
+                if (reservedSlot)
+                    Volatile.Write(ref _reservedSlotInUse, 0);
                 if (peerPermit)
                     _peerPermits.Release();
             }

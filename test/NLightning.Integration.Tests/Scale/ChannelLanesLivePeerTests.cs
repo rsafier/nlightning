@@ -3,6 +3,7 @@ using NLightning.Tests.Utils;
 
 namespace NLightning.Integration.Tests.Scale;
 
+using Application.Gossip.Interfaces;
 using Docker.Mock;
 using Docker.Utils;
 using Domain.Bitcoin.Interfaces;
@@ -13,6 +14,7 @@ using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Persistence;
@@ -102,6 +104,96 @@ public sealed class ChannelLanesLivePeerTests : IAsyncDisposable
         var received = settledInvoices.Aggregate(0UL, (sum, i) => sum + i.AmountReceived!.MilliSatoshi);
         Assert.Equal(received, before.HubLocalMsat - after.HubLocalMsat);
         Assert.Equal(received, after.PeerLocalMsat - before.PeerLocalMsat);
+    }
+
+    [Fact]
+    public async Task Given_ManyChannelsToOnePeer_When_TheHubRebalancesInCircles_Then_ThePeerForwardsBetweenItsLanes()
+    {
+        // Arrange: the hub knows the peer's policy on every channel (the direct channel_update)
+        var ct = TestContext.Current.CancellationToken;
+        await using var pair = await StartPairAsync(20, lanes: true, ct);
+        GiveTheHubThePeerUpdates(pair);
+        var channels = pair.Hub.Channels.FindChannels(_ => true).OrderByDescending(c => c.LocalBalance.MilliSatoshi)
+                           .Select(c => c.ChannelId).ToList();
+        var before = Snapshot(pair);
+        var invoices = pair.Hub.Services.GetRequiredService<IInvoiceService>();
+        var payer = pair.Hub.Services.GetRequiredService<IPaymentService>();
+
+        // Act: 8 circular payments at once, each out through one channel and back in through another, so the peer's
+        // real switch takes each HTLC in on one channel's lane and offers it on another's, and fulfills back across
+        var loops = new List<(ChannelId Out, ChannelId In, string Bolt11)>();
+        for (var i = 0; i < 8; i++)
+            loops.Add((channels[i], channels[^(i + 1)],
+                       (await invoices.CreateInvoiceAsync(LightningMoney.Satoshis(PaymentSat), $"loop {i}", 3_600, ct))
+                      .Bolt11!));
+        var results = await Task.WhenAll(loops.Select(loop => payer.PayInvoiceAsync(loop.Bolt11, null,
+            new PayInvoiceOptions
+            {
+                Timeout = TimeSpan.FromSeconds(60),
+                OutgoingChannelId = loop.Out,
+                IncomingChannelId = loop.In
+            }, ct)));
+
+        // Assert: every loop settled over its two channels; the hub lost only the fees, which the peer earned
+        Assert.All(results, r => Assert.True(r.Payment.Status == PaymentStatus.Succeeded, r.Payment.FailureReason));
+        await WaitSettledAsync(pair, ct);
+        var after = Snapshot(pair);
+        AssertBothEndsAgree(after);
+        var fees = results.Aggregate(0UL, (sum, r) => sum + r.Payment.Fee.MilliSatoshi);
+        Assert.Equal(fees, before.HubLocalMsat - after.HubLocalMsat);
+        Assert.Equal(fees, after.PeerLocalMsat - before.PeerLocalMsat);
+        foreach (var (outId, inId, _) in loops)
+        {
+            Assert.True(after.Hub[outId].Local < before.Hub[outId].Local, $"{outId} did not carry its loop out");
+            Assert.True(after.Hub[inId].Local > before.Hub[inId].Local, $"{inId} did not carry its loop back");
+        }
+
+        var settled = (await ListInvoicesAsync(pair.Hub.Services)).Count(i => i.Status == InvoiceStatus.Settled);
+        Assert.Equal(loops.Count, settled);
+    }
+
+    [Fact]
+    public async Task Given_AnAmountNoChannelCarries_When_TheHubPays_Then_ThePartsSettleOverSeveralLanes()
+    {
+        // Arrange: more than the hub can send over any one channel, less than over all of them
+        var ct = TestContext.Current.CancellationToken;
+        await using var pair = await StartPairAsync(20, lanes: true, ct);
+        var before = Snapshot(pair);
+        var largestSat = before.Hub.Values.Max(b => b.Local) / 1_000;
+        var amount = LightningMoney.Satoshis(largestSat + 200_000);
+        var invoice = await pair.Peer.Services.GetRequiredService<IInvoiceService>()
+                                .CreateInvoiceAsync(amount, "mpp over lanes", 3_600, ct);
+
+        // Act
+        var result = await pair.Hub.Services.GetRequiredService<IPaymentService>()
+                               .PayInvoiceAsync(invoice.Bolt11!, null,
+                                                new PayInvoiceOptions
+                                                {
+                                                    Timeout = TimeSpan.FromSeconds(90),
+                                                    MaxParts = 16
+                                                }, ct);
+
+        // Assert: one payment, its parts on at least two channels (two lanes on the peer, one HTLC set in its switch)
+        Assert.True(result.Payment.Status == PaymentStatus.Succeeded, result.Payment.FailureReason);
+        await WaitSettledAsync(pair, ct);
+        var after = Snapshot(pair);
+        AssertBothEndsAgree(after);
+        Assert.Equal(amount.MilliSatoshi, before.HubLocalMsat - after.HubLocalMsat);
+        Assert.True(after.Hub.Count(c => c.Value.Local < before.Hub[c.Key].Local) >= 2, "the payment was not split");
+        var stored = Assert.Single(await ListInvoicesAsync(pair.Peer.Services),
+                                   i => i.PaymentHash == invoice.PaymentHash);
+        Assert.Equal(InvoiceStatus.Settled, stored.Status);
+        Assert.Equal(amount, stored.AmountReceived);
+    }
+
+    private static void GiveTheHubThePeerUpdates(LanePair pair)
+    {
+        var hubUpdates = pair.Hub.Services.GetRequiredService<IChannelUpdateService>();
+        var peerUpdates = pair.Peer.Services.GetRequiredService<IChannelUpdateService>();
+        foreach (var channel in pair.Peer.Channels.FindChannels(_ => true))
+            if (!hubUpdates.TryGetRemoteChannelUpdate(channel.ChannelId, out _))
+                Assert.True(hubUpdates.HandleRemoteChannelUpdate(pair.Peer.NodeId,
+                                                                 peerUpdates.CreateChannelUpdate(channel)));
     }
 
     private async Task<LanePair> StartPairAsync(int channelCount, bool lanes, CancellationToken ct)
@@ -205,14 +297,14 @@ public sealed class ChannelLanesLivePeerTests : IAsyncDisposable
         }
     }
 
-    private static async Task<IReadOnlyList<Domain.Payments.Models.PaymentModel>> ListPaymentsAsync(
+    private static async Task<IReadOnlyList<PaymentModel>> ListPaymentsAsync(
         IServiceProvider services)
     {
         using var scope = services.CreateScope();
         return await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().PaymentDbRepository.ListAsync(0, 10_000);
     }
 
-    private static async Task<IReadOnlyList<Domain.Payments.Models.InvoiceModel>> ListInvoicesAsync(
+    private static async Task<IReadOnlyList<InvoiceModel>> ListInvoicesAsync(
         IServiceProvider services)
     {
         using var scope = services.CreateScope();

@@ -391,7 +391,7 @@ payments/s at 1 / 4 / 8 / 16 / 32 / 64 at once, p50 77 / 215 / 386 / 1,022 / 1,3
 9.6 / 29.4 / 39.2 / 90.5 / 108.2 / 94.5. The shared host's load moved single runs by up to 2x.
 
 **Left serial on purpose.** The prologue (our `channel_reestablish` for every channel, NL-1401), the open flow under
-temporary ids and every channel first seen unregistered on a connection (the peer lane), the `start_batch` grouping
+temporary ids and every message of a channel not yet registered (the peer lane), the `start_batch` grouping
 (the dispatcher), the connection-level messages (they never reach the dispatcher), the one `PeerOutbox` per connection,
 and every connection on SQLite unless `Node:ChannelLanes:Enabled=true`.
 
@@ -405,3 +405,23 @@ green, none rerun (`mx-20261011212338`: lnd 69, cln 91, abcd 11, postgres 44 pas
 **Default.** On for Postgres (`ChannelLaneOptions.DefaultFor`), off for SQLite and SQL Server. The cluster test nodes run
 SQLite, so the default matrix runs them without lanes: run it with `NLTG_CHANNEL_LANES=true` to cover lanes (the
 owner runs the full matrix).
+
+**Review fixes (2026-10-11, after the merge of `wip/fafo` at `4264a667`).** C1: the node-wide cap could let one peer's
+blocked lanes stall every other peer; the peer lane now takes no permit (it is the old loop) and each connection has one
+reserved slot for its first channel item, so only further items take one of the `MaxConcurrent` node-wide permits
+(test: 32 peers blocked in their peer lanes and a 33rd peer's channel messages still run; a peer holding every node-wide
+permit and another peer's channel message running on its reserved slot). C2: a failure that closes the connection (a
+`ChannelWarningException` with `CloseConnection`, a closing batch warning) is sent and closes the session from the
+dispatcher at once instead of waiting behind the lane's queue; cross-lane semantics: a closing failure is connection-wide,
+other lanes finish the item they are handling and drop what is queued, which the next connection's reestablish
+retransmits. C3: every exception of the dispatcher is logged and closes the connection with a warning. P2: only
+registered channel ids are remembered for a lane, so the set is bounded by the peer's channels and a channel registered
+later gets its lane at its next message (behind the peer lane's barrier). P1: `MaxConcurrent` documents that one item may
+hold several database contexts and that NL-1399 comes before a higher cap. NL-1404: the embedding-host contract
+(`src/NLightning.Infrastructure.Persistence/CLAUDE.md`, `INodeWriteFence` remarks) and a Postgres test that an open
+transaction and its transaction-scoped lock are gone when the connection returns to the pool (cluster `postgres` suite
+42/42). NL-1406 fixed: server GC in the daemon and the integration test host. New tests: a `tx_*` message of the real id
+while `accept_channel2` is still handled, a fence refusal in one lane with others sending, a failing dispatcher; live
+circular rebalances forwarded by the peer's switch between two lanes and an MPP payment over several lanes (SQLite and
+Postgres). Re-measured with server GC (`CHANNEL_SCALE.md`): 85.6 / 106.9 / 140.4 payments/s at 16 / 32 / 64 at once
+with lanes, 34.2 / 38.4 / 48.2 without.

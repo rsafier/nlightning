@@ -5,6 +5,9 @@
     <Version>0.0.1</Version>
     <Configurations>Debug;Release;Debug.Native;Debug.Wasm;Release.Native;Release.Wasm</Configurations>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- NL-1406 (owner decision 2026-10-11): server GC, JIT and NativeAOT alike (DATAS adapts the heap count to the
+         load); the workstation GC held a busy node at about two thirds of its payment rate -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
 
   <PropertyGroup Condition="$(Configuration.Contains('Debug'))">

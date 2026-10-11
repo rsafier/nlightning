@@ -200,9 +200,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 117 | 119 |
+| open | 0 | 0 | 2 | 116 | 118 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 76 | 285 | 543 | 919 |
+| fixed | 15 | 76 | 285 | 544 | 920 |
 | wontfix | 0 | 0 | 7 | 15 | 22 |
 | duplicate | 0 | 0 | 3 | 8 | 11 |
 | **Total** | **15** | **77** | **305** | **683** | **1080** |
@@ -11350,6 +11350,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** Plan `docs/agents/PEER_CHANNEL_PARALLELISM_PLAN.md` (proposed as NL-1361, re-filed). Every connection had one inbound loop, so payments over many channels of one peer were serialized there: on Postgres, 1,000 channels to one live peer, 6.7 payments/s one at a time and 22-35/s at 8-32 at once, the latency growing about linearly with the payments in flight (`docs/agents/CHANNEL_SCALE.md` "Per-peer parallelism").
 - **Fix:** per-channel lanes behind a per-connection dispatcher (`Node:ChannelLanes`: `Enabled`, unset = on for `Database:Provider` Postgres and off for SQLite and SQL Server (owner decision 2026-10-11: SQLite keeps its serial behaviour); `MaxConcurrentPerPeer` 8, `MaxConcurrent` 32). The dispatcher runs the reestablish prologue first, groups `start_batch` (a batch is one lane item), and routes each message: a channel id gets its own FIFO lane at its first sight on the connection when it is a registered channel of the peer, else (temporary ids of an open, unknown, all-zero) the serial peer lane, sticky for the connection; a new channel lane waits for the peer lane's earlier items. A lane handles one item at a time exactly as the loop did, takes the per-connection then the node-wide permit before the channel lock, replies to its own connection, and a disconnecting failure drops every lane's queued items; the next connection waits for every lane and the revert. Lane work is bounded by the inbound capacity (backpressure to the socket). The plain loop is kept unchanged when lanes are off.
 - **Validation:** Application `Node/Managers/PeerManagerLaneTests` (13 rules), `PeerManagerLanedTests` and `PeerManagerBatchLanedTests` (every existing PeerManager and batch test with lanes on); Integration `Scale/ChannelLanesLivePeerTests` (two real nodes, 20 channels over one connection: parallel payments with lanes on and off, and a restart of the peer mid-load with no HTLC lost or doubled; SQLite by default, Postgres with `NLTG_SCALE_POSTGRES`); Domain `ChannelLaneOptionsTests`; Daemon `NodeServiceExtensionsTests.Given_ADatabaseAndALaneSetting_*`. Postgres benchmark (median of 3): 26.5-33.6/s at 4-8 at once and 61-69/s at 16-32 (against 16-22/s before), p50 at 16 at once 238 ms (1,022 ms before). Cluster matrix `lnd,cln,abcd,postgres -j 6` with `NLTG_CHANNEL_LANES=true` (every test node laned): 4 suites green, none rerun (mx-20261011212338: lnd 69, cln 91, abcd 11, postgres 44 passed).
+- **Review fixes (2026-10-11):** C1 the node-wide cap let one peer's blocked lanes stall every other peer: the peer lane takes no permit and each connection has one reserved slot, the node-wide permits only beyond it; C2 a failure that closes the connection (a warning with `CloseConnection`, a closing batch warning) closes the session from the dispatcher at once (connection-wide: other lanes finish their current item and drop the queue, which the next reestablish retransmits); C3 every dispatcher exception is logged and closes the connection with a warning; P2 only registered channel ids are remembered for a lane (bounded by the peer's channels; a channel registered later gets its lane at its next message, behind the peer-lane barrier); P1 `MaxConcurrent` documents several DB contexts per item and NL-1399 before a higher cap. Tests: `PeerManagerLaneTests` (21: 32 peers blocked and a 33rd progressing, the reserved slot, a `tx_*` message during `accept_channel2`, a closing batch warning and a fence refusal with other lanes busy, a failing dispatcher), `ChannelLanesLivePeerTests` (circular rebalances forwarded by the peer's switch between two lanes, an MPP payment over several lanes).
 - **Blocks/Blocked-by:** NL-1397 (wontfix: SQLite stays serial), NL-1399, NL-1401, NL-1404, NL-1405, NL-1406
 
 ### NL-1397 SQLite writers collide and the provider sleeps 150 ms per busy retry
@@ -11415,6 +11416,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** NL-1396 measurements (`pg_stat_statements` per payment of the two nodes, 1,000 channels, lanes on): `DISCARD ALL` was 145 of 311 statements per payment one at a time (76 of 138 at 32 at once), 0.27-0.32 ms of server time each: EF opens and returns a pooled connection around nearly every query, and Npgsql resets the session before each reuse.
 - **Fix:** `No Reset On Close=true` for Postgres unless the connection string sets the key (parsed once). Nothing of ours keeps session state on a connection (no session advisory locks, temporary tables, `SET`, `LISTEN`; a write fence takes locks held to the commit). Transactions per payment: 409 → 209 one at a time, 168 → 83 at 32 at once (lanes off).
 - **Validation:** Integration `Persistence/PostgresConnectionDefaultsTests`; the Postgres benchmark and `ChannelLanesLivePeerTests` on Postgres; the cluster `postgres` suite. The wall-clock effect was within the shared host's noise in A/B runs.
+- **Review follow-up:** the embedding-host contract is written down (`src/NLightning.Infrastructure.Persistence/CLAUDE.md`, `INodeWriteFence` remarks): pooled node connections are not reset, so per-identity settings go in the connection string (`Search Path`, `Options=-c ...`) or a connection string of their own, never a session `SET`/`SET ROLE`, temporary table or session advisory lock on a node connection; `No Reset On Close=false` opts back in. `Docker/PostgresTests.NoResetOnClose` (cluster `postgres` suite, 42/42) proves on one pooled backend that a transaction left open with a table and `pg_advisory_xact_lock` is rolled back when its connection returns, and that EF's migration lock (Npgsql's `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` in the migration transaction) leaves no lock and no open transaction.
 
 ### NL-1405 About ten durable commits per payment bound one Postgres node pair at about 100 payments/s
 - **Status:** open
@@ -11425,12 +11427,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** count the commits per transition and merge the ones whose ordering allows it; measure on a native Linux Postgres (the Docker VM's fsync is slow) before deciding; Postgres `commit_delay` for hubs.
 
 ### NL-1406 The workstation GC limits a busy node's throughput
-- **Status:** open
+- **Status:** fixed (this branch, review-fix commit)
 - **Severity:** low
 - **Kind:** performance
 - **Location:** `src/NLightning.Daemon/NLightning.Daemon.csproj` (no `ServerGarbageCollection`)
 - **Evidence:** NL-1396 measurements: with `DOTNET_gcServer=1` the same build reached 90.5 and 108.2 payments/s at 16 and 32 at once (median of 3) against 61.1 and 69.2 with the default workstation GC; thread snapshots without it show many threads paused in `PollGC` and lock holders preempted mid-update.
 - **Fix sketch:** document `DOTNET_gcServer=1` (or `ServerGarbageCollection` with DATAS) for hub deployments, or make it the daemon's default after measuring the memory cost; owner decision.
+- **Fix:** owner decision 2026-10-11: server GC always on. `<ServerGarbageCollection>true</ServerGarbageCollection>` in the daemon (JIT; the NativeAOT publish passes `--runtimeknob:System.GC.Server=true` to ILC, checked in its `ilc.rsp`) and in `NLightning.Integration.Tests` (its runtimeconfig has `System.GC.Server: true`), so the benchmark and the in-process test nodes measure with it.
+- **Validation:** Postgres benchmark, 1,000 channels to one live peer, median of 3, lanes on: 85.6 / 106.9 / 140.4 payments/s at 16 / 32 / 64 at once (61.1 / 69.2 / 53.5 with the workstation GC before); lanes off: 34.2 / 38.4 / 48.2 (`CHANNEL_SCALE.md`).
 
 ### NL-1407 LoopPersistenceTests hit "unable to delete/modify user-function due to active statements" in a loaded full run
 - **Status:** open

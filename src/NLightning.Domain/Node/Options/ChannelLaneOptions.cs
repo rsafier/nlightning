@@ -26,14 +26,23 @@ public class ChannelLaneOptions
     public bool? Enabled { get; set; }
 
     /// <summary>
-    /// How many lanes of one connection handle a message at the same time (default 8).
+    /// How many channel lanes of one connection handle a message at the same time (default 8). The serial peer lane
+    /// (opens under temporary ids) runs besides them, without a permit.
     /// </summary>
     public int MaxConcurrentPerPeer { get; set; } = 8;
 
     /// <summary>
-    /// How many lane items of every connection together are handled at the same time (default 32): each holds a
-    /// database context, so keep it well under the database's connection pool.
+    /// How many channel items of every connection together run beyond each connection's one reserved slot (default
+    /// 32). Every connection always runs one channel item and its peer lane without a node-wide permit, so no peer is
+    /// starved by others; this cap only bounds the extra parallelism.
     /// </summary>
+    /// <remarks>
+    /// One item can hold several database contexts at once: its message scope's, plus the scopes of the durable signer
+    /// guard's reads and raises (NL-1399), the switch's work after the lock and the payment service it calls, each a
+    /// pooled connection while it runs. Keep the items that can run at once (two per busy connection, its peer lane and
+    /// its reserved slot, plus this cap) times a few contexts each well under the database's connection pool, and fix
+    /// NL-1399 (the guard's synchronous round trips on thread-pool threads) before raising it.
+    /// </remarks>
     public int MaxConcurrent { get; set; } = 32;
 
     /// <summary>

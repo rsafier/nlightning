@@ -17,6 +17,11 @@ namespace NLightning.Domain.Node.Fencing;
 /// make the database commit durably, with synchronous commit on a single primary or a synchronous replication quorum;
 /// a commit acknowledged before it is durable (asynchronous commit, an asynchronous replica promoted after a failover)
 /// can lose a write whose effect already left, and no fence can make up for it (NL-1378).</para>
+/// <para>The node's pooled Postgres connections are not reset when they return to the pool (<c>No Reset On Close</c>,
+/// NL-1404): a fence may take transaction-scoped locks (released by the commit or the rollback) but must not leave a
+/// session <c>SET</c>/<c>SET ROLE</c>, a temporary table or a session advisory lock on a connection it is given.
+/// Per-identity settings belong in the connection string (<c>Search Path</c>, <c>Options=-c ...</c>) or a connection
+/// string of their own; a host that needs session state sets <c>No Reset On Close=false</c>.</para>
 /// </remarks>
 public interface INodeWriteFence
 {
