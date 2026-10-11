@@ -10980,7 +10980,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** NL-1341
 
 ### NL-1343 Peer sends outside the `PeerOutbox` are not fenced
-- **Status:** fixed (PENDING)
+- **Status:** fixed (e8e17a48)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Infrastructure/Node/Services/PeerService.cs` (gossip query replies `SendGossipReplyAsync`, the `peer_storage_retrieval` reply), `Infrastructure/Node/Services/PeerCommunicationService.cs` (init, ping, pong, connection warnings), `Application/Gossip/Sync/GossipSyncManager.cs` (our queries and warnings), `Application/Gossip/Graph/GossipIngress.cs` (misbehaviour warning), `PeerGossipSender`'s direct fallback without an outbox
@@ -11037,7 +11037,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** find the wall-clock wait in the durable imported-history case and make it event-driven or give it a stepped clock.
 
 ### NL-1369 Peer transport seams: a host's outbound dialer and inbound acceptor
-- **Status:** fixed (PENDING)
+- **Status:** fixed (e8e17a48)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.Domain/Transport/PeerConnection.cs`, `src/NLightning.Infrastructure/Transport/Interfaces/{IPeerConnectionDialer,IPeerInboundAcceptor,ITcpService}.cs`, `Transport/Services/{TcpService,TransportService}.cs`, `Transport/Factories/TransportServiceFactory.cs`, `Node/Factories/PeerServiceFactory.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs`, `NodeOptions.ListenEnabled`
