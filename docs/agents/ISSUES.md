@@ -11239,7 +11239,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation:** `LndGrpcHostTests.Stop` (SendPaymentV2 in flight, whose payment keeps the uncancelable token; TrackPaymentV2; TrackPayments; SubscribeInvoices; SubscribeSingleInvoice; SubscribeState; SubscribeChannelBackups; OpenChannel; CloseChannel; the fenced status for a unary and a streaming call), `SubscriptionHostTests.Given_AnOpenFeed_When_TheNodeStops_*` (peer, channel, transaction, graph and HTLC events, block epochs, confirmations, spends), `LndGrpcWave3HostTests.Stop` (the interceptor's held forward resumed, the acceptor's pending open rejected and the gate left without deciders), `GrpcStopInterceptorTests`, `LnBackendHostTests.Given_AnOpenTrackAllStream_*`, `CdkPaymentProcessorSafetyTests.Given_AnOpenEventStream_*`: each stop ends well under the 5 s bound with the defined status; with the host's stop signal removed, the SendPaymentV2 case fails (the stream is aborted at the bound instead).
 
 ### NL-1385 A peer stored inbound-only was never dialed after a restart; its channels waited for the peer's backoff
-- **Status:** fixed
+- **Status:** fixed (8fc59609)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs` (`StartAsync`, `DialInboundOnlyPeerOnStartup`, `DialOnStartupAsync`, `ReconnectWithBackoffAsync`, `ReconnectIfNeeded`, `GetAnnouncedPeers`)
@@ -11248,7 +11248,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation:** `PeerManagerTests.AnnouncedRedial` (the dial order of announced IPv4/IPv6/onion/DNS addresses with a loopback IP and `localhost` left out, per Tor mode; no announcement: never dialed; a dial that connects saves the announced address; failed dials save nothing; an announcement learned after the start dialed by the backoff; startup failures retried until connected; an inbound-only session that drops redialed at its announcement, never at its loopback host; our held dial racing the peer's inbound connection resolved by the lower-key rule, the announced address saved only when our connection is kept) and `Integration.Tests/Node/InboundOnlyPeerRedialTests` (two nodes of the daemon's composition on SQLite with three real channels: the hub stores the peer inbound-only, the peer waits an hour to redial; the hub's restart dials the peer's announced address through its host dialer, every channel reestablishes on both ends, and the row is dialable at that address).
 
 ### NL-1386 A pong's last-seen update wrote the whole peer row back and lost a concurrent address save
-- **Status:** fixed
+- **Status:** fixed (8fc59609)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Node/PeerDbRepository.cs` (`UpdatePeerLastSeenAsync`, called by `PeerCommunicationService.HandlePongReceived`)
