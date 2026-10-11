@@ -43,4 +43,9 @@
     <ProjectReference Include="..\NLightning.Domain\NLightning.Domain.csproj"/>
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Shared by the node's gRPC hosts: streams end when the node stops, a fenced node has its own status (NL-1381) -->
+    <Compile Include="..\Shared\Grpc\*.cs" Link="Shared\Grpc\%(Filename)%(Extension)"/>
+  </ItemGroup>
+
 </Project>

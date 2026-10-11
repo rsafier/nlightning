@@ -62,6 +62,9 @@ public abstract class CdkProcessorTestBase : IAsyncLifetime
 
     protected CdkPaymentProcessor.CdkPaymentProcessorClient Client => new(_channel!);
 
+    /// <summary>The processor's server, started by <see cref="InitializeAsync"/>.</summary>
+    protected CashuPaymentProcessorHost Host => _host!;
+
     protected CdkPaymentProcessorService Service => _provider!.GetRequiredService<CdkPaymentProcessorService>();
 
     protected static CancellationToken Ct => TestContext.Current.CancellationToken;

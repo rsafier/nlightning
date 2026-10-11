@@ -202,10 +202,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 107 | 109 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 75 | 276 | 542 | 908 |
+| fixed | 15 | 75 | 277 | 542 | 909 |
 | wontfix | 0 | 0 | 6 | 14 | 20 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **76** | **295** | **670** | **1056** |
+| **Total** | **15** | **76** | **296** | **670** | **1057** |
 
 ### Epics
 
@@ -11228,3 +11228,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `JsonSerializer` reflection overloads in `Application/Channels/Services/NativeV1ChannelOpening.cs` and `NativeV1FundedInboundOpening.cs`, `Infrastructure.RemoteSigning/` (`SignerWire`, `NativeSignerAuthority*`, `RemoteSigningWorkflowCoordinator*`, `NativeAuthorizedChannelStateStore`, `DurableSignerState`, ...), `Infrastructure.VlsSigning/`, `Infrastructure.Bitcoin` (`SwapSessionStateStore`, `NativeNonceStateStore`, `WalletSpendService`, `WalletPsbtService.Publication`, `BlockPrevoutSource`), `Application/Onchain/Fees/SweepScheduler.cs`, `LndGrpc/LndUnknownMethods.cs`
 - **Evidence:** `dotnet build src/NLightning.Daemon -c Release.Native -r osx-arm64 -p:PublishAot=true --no-incremental` at `wip/fafo` `ed23e0ba` (NL-1352 lane, 2026-10-11): 144 IL2026/IL3050 warnings (72 sites, each reported twice), none in the files that lane changed; CLAUDE.md says the gate must stay at 0.
 - **Fix sketch:** move those serializations to source-generated `JsonSerializerContext`s (as `KeyProvisioningJsonContext` and `KeyFileDataJsonContext` do), then put the gate back at 0.
+
+### NL-1381 An open gRPC stream held the node's stop for the whole shutdown timeout
+- **Status:** fixed (pending)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.LndGrpc/LndGrpcHost.cs`, `src/NLightning.LnBackend/LnBackendHost.cs`, `src/NLightning.Cashu.PaymentProcessor/CashuPaymentProcessorHost.cs`, `src/Shared/Grpc/`
+- **Evidence:** each gRPC host's `StopAsync` ran its `WebApplication.StopAsync` with the node's stop token; Kestrel's graceful stop waits for the calls still running, and a streaming handler ends only on its own condition or its caller's token. With a client holding a stream open (an LND `SendPaymentV2` of a hold invoice the payee never settles, `TrackPaymentV2`, `SubscribeInvoices`, `SubscribeSingleInvoice`, the subscriptions, the interceptor, the acceptor, the chain notifier, the LN backend's `TrackAll`, the Cashu processor's `WaitPaymentEvent`), the node's stop waited the host's whole shutdown timeout (30 s by default) after "Application is shutting down...". A `NodeFencedException` from a handler reached the client as `UNKNOWN` "Exception was thrown by handler".
+- **Fix:** one interceptor shared by the three hosts (`src/Shared/Grpc/GrpcStopInterceptor.cs` and `GrpcServerStopping.cs`, linked into each project): every streaming call (server, client, bidirectional) runs with a context whose cancellation token also fires when the server starts stopping (the host's `StopAsync`, or the node's `ApplicationStopping` when the host has one), so each handler ends through the path it already takes when its caller leaves (the HTLC interceptor resumes its held forwards, the channel acceptor rejects its pending opens, payments go on), and the caller gets `UNAVAILABLE` "node is shutting down" however the handler ended (a status the handler chose itself, other than `CANCELLED`, is kept); a call that arrives while the server stops gets the same status. Each server's own graceful stop is bounded to 5 s (`GrpcServerStopping.GracefulStopTimeout`, the inner host's `ShutdownTimeout`) for unary calls still running. A `NodeFencedException` anywhere in a call's exception chain is answered `FAILED_PRECONDITION` "node is fenced".
+- **Validation:** `LndGrpcHostTests.Stop` (SendPaymentV2 in flight, whose payment keeps the uncancelable token; TrackPaymentV2; TrackPayments; SubscribeInvoices; SubscribeSingleInvoice; SubscribeState; SubscribeChannelBackups; OpenChannel; CloseChannel; the fenced status for a unary and a streaming call), `SubscriptionHostTests.Given_AnOpenFeed_When_TheNodeStops_*` (peer, channel, transaction, graph and HTLC events, block epochs, confirmations, spends), `LndGrpcWave3HostTests.Stop` (the interceptor's held forward resumed, the acceptor's pending open rejected and the gate left without deciders), `GrpcStopInterceptorTests`, `LnBackendHostTests.Given_AnOpenTrackAllStream_*`, `CdkPaymentProcessorSafetyTests.Given_AnOpenEventStream_*`: each stop ends well under the 5 s bound with the defined status; with the host's stop signal removed, the SendPaymentV2 case fails (the stream is aborted at the bound instead).

@@ -17,6 +17,7 @@ namespace NLightning.LndGrpc;
 using Domain.Node.Provisioning;
 using Macaroons;
 using Services;
+using Shared.Grpc;
 using Tls;
 
 /// <summary>What the host prepared at the start for the services of its own web host.</summary>
@@ -42,6 +43,8 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
 
     private WebApplication? _app;
     private X509Certificate2? _certificate;
+    private CancellationTokenRegistration _nodeStopping;
+    private GrpcServerStopping? _stopping;
     private X509Certificate2? _clientCa;
 
     public LndGrpcHost(IServiceProvider serviceProvider, IOptions<LndGrpcOptions> options, string dataDirectory,
@@ -108,9 +111,17 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         builder.Services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
         builder.Services.AddSingleton(new LndGrpcRuntime(verifier));
         builder.Services.AddSingleton<MacaroonAuthInterceptor>();
+        // Streams end when the node starts stopping, and the server's own stop is bounded (NL-1381)
+        _stopping = new GrpcServerStopping();
+        if (_serviceProvider.GetService<IHostApplicationLifetime>() is { } lifetime)
+            _nodeStopping = lifetime.ApplicationStopping.Register(_stopping.Signal);
+        builder.Services.AddSingleton(_stopping);
+        builder.Services.AddSingleton<GrpcStopInterceptor>();
+        builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = GrpcServerStopping.GracefulStopTimeout);
         builder.Services.AddGrpc(grpc =>
         {
             grpc.Interceptors.Add<MacaroonAuthInterceptor>();
+            grpc.Interceptors.Add<GrpcStopInterceptor>();
             // DescribeGraph answers can be large (LND clients raise their receive limit too)
             grpc.MaxSendMessageSize = null;
         });
@@ -207,12 +218,19 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
     /// <inheritdoc />
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        // Every open stream ends first (NL-1381): Kestrel's graceful stop waits for the calls still running
+        await _nodeStopping.DisposeAsync();
+        if (_stopping is not null)
+            await _stopping.SignalAsync();
         if (_app is not null)
         {
             await _app.StopAsync(cancellationToken);
             await _app.DisposeAsync();
             _app = null;
         }
+
+        _stopping?.Dispose();
+        _stopping = null;
 
         _certificate?.Dispose();
         _certificate = null;
@@ -223,8 +241,12 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        await _nodeStopping.DisposeAsync();
+        if (_stopping is not null)
+            await _stopping.SignalAsync();
         if (_app is not null)
             await _app.DisposeAsync();
+        _stopping?.Dispose();
         _certificate?.Dispose();
     }
 

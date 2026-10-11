@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -279,6 +280,32 @@ public sealed class CdkPaymentProcessorSafetyTests : CdkProcessorTestBase
         // Assert: the stream's first message is the success
         Assert.True(await stream.ResponseStream.MoveNext(Bounded));
         Assert.Equal("melt-retrying", stream.ResponseStream.Current.PaymentSuccessful.QuoteId);
+    }
+
+    [Fact]
+    public async Task Given_AnOpenEventStream_When_TheNodeStops_Then_ItEndsAtOnceUnavailable()
+    {
+        // Arrange: the mint's event stream waits for the next payment (NL-1381)
+        using var stream = Client.WaitPaymentEvent(new EmptyRequest(), cancellationToken: Ct);
+        await WaitForStreamAsync();
+        var reading = Task.Run(async () =>
+        {
+            while (await stream.ResponseStream.MoveNext(CancellationToken.None))
+            {
+            }
+        }, Ct);
+
+        // Act
+        var stopwatch = Stopwatch.StartNew();
+        await Host.StopAsync(CancellationToken.None);
+        stopwatch.Stop();
+
+        // Assert: well under the server's own 5 s graceful stop, with the stop's status
+        var error = await Assert.ThrowsAsync<RpcException>(() => reading.WaitAsync(TimeSpan.FromSeconds(10), Ct));
+        Assert.Equal(StatusCode.Unavailable, error.StatusCode);
+        Assert.Equal("node is shutting down", error.Status.Detail);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"the stop took {stopwatch.Elapsed}");
+        Assert.Equal(0, Service.StreamCount);
     }
 
     [Fact]

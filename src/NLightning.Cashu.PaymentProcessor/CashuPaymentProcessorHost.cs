@@ -14,6 +14,8 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Cashu.PaymentProcessor;
 
+using Shared.Grpc;
+
 /// <summary>
 /// Runs the gRPC server of <see cref="CdkPaymentProcessorService"/> on its own Kestrel instance inside the node's host
 /// (Cashu plan C1, NL-992). It does nothing unless <c>Cashu:PaymentProcessor:Enabled</c>.
@@ -37,6 +39,8 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     private const string ClientAuthenticationOid = "1.3.6.1.5.5.7.3.2";
 
     private WebApplication? _app;
+    private CancellationTokenRegistration _nodeStopping;
+    private GrpcServerStopping? _stopping;
     private CdkPaymentProcessorService? _service;
 
     public CashuPaymentProcessorHost(IServiceProvider serviceProvider,
@@ -73,7 +77,14 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<ILoggerFactory>());
         builder.Services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
-        builder.Services.AddGrpc();
+        // Streams end when the node starts stopping, and the server's own stop is bounded (NL-1381)
+        _stopping = new GrpcServerStopping();
+        if (_serviceProvider.GetService<IHostApplicationLifetime>() is { } lifetime)
+            _nodeStopping = lifetime.ApplicationStopping.Register(_stopping.Signal);
+        builder.Services.AddSingleton(_stopping);
+        builder.Services.AddSingleton<GrpcStopInterceptor>();
+        builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = GrpcServerStopping.GracefulStopTimeout);
+        builder.Services.AddGrpc(grpc => grpc.Interceptors.Add<GrpcStopInterceptor>());
         var service = _serviceProvider.GetRequiredService<CdkPaymentProcessorService>();
         builder.Services.AddSingleton(service);
         builder.WebHost.ConfigureKestrel(kestrel =>
@@ -121,12 +132,19 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     /// <inheritdoc />
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        // Every open stream ends first (NL-1381): Kestrel's graceful stop waits for the calls still running
+        await _nodeStopping.DisposeAsync();
+        if (_stopping is not null)
+            await _stopping.SignalAsync();
         if (_app is not null)
         {
             await _app.StopAsync(cancellationToken);
             await _app.DisposeAsync();
             _app = null;
         }
+
+        _stopping?.Dispose();
+        _stopping = null;
 
         if (_service is not null)
         {
@@ -138,8 +156,12 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        await _nodeStopping.DisposeAsync();
+        if (_stopping is not null)
+            await _stopping.SignalAsync();
         if (_app is not null)
             await _app.DisposeAsync();
+        _stopping?.Dispose();
     }
 
     private void ConfigureListener(ListenOptions listen)

@@ -14,6 +14,8 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.LnBackend;
 
+using Shared.Grpc;
+
 /// <summary>
 /// Runs the <c>hold.Hold</c> and <c>cln.Node</c> gRPC services on their own Kestrel instance inside the node's host
 /// (the Bark/ASP backend). It does nothing unless <c>LnBackend:Enabled</c>. The TLS story is the Cashu payment
@@ -30,6 +32,8 @@ public sealed class LnBackendHost : IHostedService, IAsyncDisposable
     private readonly IServiceProvider _serviceProvider;
 
     private WebApplication? _app;
+    private CancellationTokenRegistration _nodeStopping;
+    private GrpcServerStopping? _stopping;
 
     public LnBackendHost(IServiceProvider serviceProvider, IOptions<LnBackendOptions> options,
                          ILogger<LnBackendHost> logger)
@@ -62,7 +66,14 @@ public sealed class LnBackendHost : IHostedService, IAsyncDisposable
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<ILoggerFactory>());
         builder.Services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
-        builder.Services.AddGrpc();
+        // Streams end when the node starts stopping, and the server's own stop is bounded (NL-1381)
+        _stopping = new GrpcServerStopping();
+        if (_serviceProvider.GetService<IHostApplicationLifetime>() is { } lifetime)
+            _nodeStopping = lifetime.ApplicationStopping.Register(_stopping.Signal);
+        builder.Services.AddSingleton(_stopping);
+        builder.Services.AddSingleton<GrpcStopInterceptor>();
+        builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = GrpcServerStopping.GracefulStopTimeout);
+        builder.Services.AddGrpc(grpc => grpc.Interceptors.Add<GrpcStopInterceptor>());
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<HoldBackendService>());
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<ClnNodeBackendService>());
         builder.WebHost.ConfigureKestrel(kestrel =>
@@ -105,19 +116,30 @@ public sealed class LnBackendHost : IHostedService, IAsyncDisposable
     /// <inheritdoc />
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        // Every open stream ends first (NL-1381): Kestrel's graceful stop waits for the calls still running
+        await _nodeStopping.DisposeAsync();
+        if (_stopping is not null)
+            await _stopping.SignalAsync();
         if (_app is not null)
         {
             await _app.StopAsync(cancellationToken);
             await _app.DisposeAsync();
             _app = null;
         }
+
+        _stopping?.Dispose();
+        _stopping = null;
     }
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        await _nodeStopping.DisposeAsync();
+        if (_stopping is not null)
+            await _stopping.SignalAsync();
         if (_app is not null)
             await _app.DisposeAsync();
+        _stopping?.Dispose();
     }
 
     private void ConfigureListener(ListenOptions listen)

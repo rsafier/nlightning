@@ -31,11 +31,13 @@ using Domain.Node.Options;
 using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 using Domain.Protocol.ValueObjects;
+using Google.Protobuf;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using LndGrpc.Macaroons;
 using LndGrpc.Services;
 using LndGrpc.Tls;
 using Testing.Lnd;
+using Testing.Lnd.Chainrpc;
 using Testing.Lnd.Lnrpc;
 using Testing.Lnd.Routerrpc;
 
@@ -51,6 +53,8 @@ public sealed class SubscriptionHostTests : IAsyncLifetime
     private readonly Mock<IBlockchainMonitor> _monitor = new();
     private readonly Mock<IGraphStore> _graph = new();
     private readonly HtlcEventHub _htlcs = new();
+    private readonly Mock<IBitcoinChainService> _chain = new();
+    private int _blockReads;
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
     private int _peerReaders, _channelReaders, _transactionReaders, _graphReaders;
@@ -113,6 +117,14 @@ public sealed class SubscriptionHostTests : IAsyncLifetime
                   Interlocked.Decrement(ref _transactionReaders);
               });
         _graph.Setup(x => x.GetSnapshot()).Returns(new Mock<IGraphView>().Object);
+        // A chain at the monitor's height 150 with empty blocks, for the chain notifier streams
+        _chain.Setup(x => x.GetCurrentBlockHeightAsync()).ReturnsAsync(150U);
+        _chain.Setup(x => x.GetBlockHashAsync(It.IsAny<uint>())).ReturnsAsync((uint height) => new uint256(height + 1));
+        _chain.Setup(x => x.GetBlockAsync(It.IsAny<uint>())).ReturnsAsync(() =>
+        {
+            Interlocked.Increment(ref _blockReads);
+            return Network.RegTest.Consensus.ConsensusFactory.CreateBlock();
+        });
         _graph.SetupAdd(x => x.GraphChanged += It.IsAny<EventHandler<GraphChange>>())
               .Callback((EventHandler<GraphChange> handler) =>
               {
@@ -140,6 +152,8 @@ public sealed class SubscriptionHostTests : IAsyncLifetime
         services.AddSingleton(new HtlcInterceptorHub(NullLogger<HtlcInterceptorHub>.Instance));
         services.AddSingleton<LightningService>();
         services.AddSingleton<RouterService>();
+        services.AddSingleton(new ChainNotifierService(_chain.Object, _monitor.Object,
+                                                       Options.Create(new LndGrpcOptions())));
         _services = services.BuildServiceProvider();
         _host = new LndGrpcHost(_services, Options.Create(new LndGrpcOptions { Enabled = true, Port = 0 }),
                                 _directory, NullLogger<LndGrpcHost>.Instance);
@@ -313,6 +327,86 @@ public sealed class SubscriptionHostTests : IAsyncLifetime
         await WaitUntilAsync(() => Volatile.Read(ref _transactionReaders) == 1);
         transactions.Dispose();
         await WaitUntilAsync(() => Volatile.Read(ref _transactionReaders) == 0);
+    }
+
+    [Theory]
+    [InlineData("peers")]
+    [InlineData("channels")]
+    [InlineData("transactions")]
+    [InlineData("graph")]
+    [InlineData("htlcs")]
+    [InlineData("blocks")]
+    [InlineData("confirmations")]
+    [InlineData("spends")]
+    public async Task Given_AnOpenFeed_When_TheNodeStops_Then_TheStreamEndsUnavailableAndDetaches(string feed)
+    {
+        // Arrange: the stream is waiting for its next event (NL-1381)
+        using var client = Connect(LndMacaroonFiles.AdminFileName);
+        var script = ByteString.CopyFrom(0x51);
+        IDisposable call;
+        Func<Task> stop;
+        switch (feed)
+        {
+            case "peers":
+                var peers = client.LightningClient.SubscribePeerEvents(new PeerEventSubscription(), cancellationToken: Ct);
+                await WaitUntilAsync(() => Volatile.Read(ref _peerReaders) == 1);
+                (call, stop) = (peers, () => StopAssertions.AssertStopEndsStreamAsync(_host!, peers.ResponseStream));
+                break;
+            case "channels":
+                var channels = client.LightningClient.SubscribeChannelEvents(new ChannelEventSubscription(),
+                                                                             cancellationToken: Ct);
+                await WaitUntilAsync(() => Volatile.Read(ref _channelReaders) == 1);
+                (call, stop) = (channels,
+                                () => StopAssertions.AssertStopEndsStreamAsync(_host!, channels.ResponseStream));
+                break;
+            case "transactions":
+                var transactions = client.LightningClient.SubscribeTransactions(new GetTransactionsRequest(),
+                                                                                cancellationToken: Ct);
+                await WaitUntilAsync(() => Volatile.Read(ref _transactionReaders) == 1);
+                (call, stop) = (transactions,
+                                () => StopAssertions.AssertStopEndsStreamAsync(_host!, transactions.ResponseStream));
+                break;
+            case "graph":
+                var graph = client.LightningClient.SubscribeChannelGraph(new GraphTopologySubscription(),
+                                                                         cancellationToken: Ct);
+                await WaitUntilAsync(() => Volatile.Read(ref _graphReaders) == 1);
+                (call, stop) = (graph, () => StopAssertions.AssertStopEndsStreamAsync(_host!, graph.ResponseStream));
+                break;
+            case "htlcs":
+                var htlcs = client.RouterClient.SubscribeHtlcEvents(new SubscribeHtlcEventsRequest(),
+                                                                    cancellationToken: Ct);
+                Assert.True(await NextAsync(htlcs));
+                (call, stop) = (htlcs, () => StopAssertions.AssertStopEndsStreamAsync(_host!, htlcs.ResponseStream));
+                break;
+            case "blocks":
+                var blocks = client.ChainNotifierClient.RegisterBlockEpochNtfn(new BlockEpoch(), cancellationToken: Ct);
+                Assert.True(await NextAsync(blocks));
+                Assert.Equal(150U, blocks.ResponseStream.Current.Height);
+                (call, stop) = (blocks, () => StopAssertions.AssertStopEndsStreamAsync(_host!, blocks.ResponseStream));
+                break;
+            case "confirmations":
+                var confirmations = client.ChainNotifierClient.RegisterConfirmationsNtfn(
+                    new ConfRequest { Script = script, NumConfs = 1, HeightHint = 150 }, cancellationToken: Ct);
+                await WaitUntilAsync(() => Volatile.Read(ref _blockReads) > 0);
+                (call, stop) = (confirmations,
+                                () => StopAssertions.AssertStopEndsStreamAsync(_host!, confirmations.ResponseStream));
+                break;
+            default:
+                var spends = client.ChainNotifierClient.RegisterSpendNtfn(
+                    new SpendRequest { Script = script, HeightHint = 150 }, cancellationToken: Ct);
+                await WaitUntilAsync(() => Volatile.Read(ref _blockReads) > 0);
+                (call, stop) = (spends, () => StopAssertions.AssertStopEndsStreamAsync(_host!, spends.ResponseStream));
+                break;
+        }
+
+        // Act and assert
+        using (call)
+            await stop();
+        Assert.Equal(0, Volatile.Read(ref _peerReaders));
+        Assert.Equal(0, Volatile.Read(ref _channelReaders));
+        Assert.Equal(0, Volatile.Read(ref _transactionReaders));
+        Assert.Equal(0, Volatile.Read(ref _graphReaders));
+        Assert.Equal(0, _htlcs.SubscriberCount);
     }
 
     private static CompactPubKey PubKey() => new(Convert.FromHexString(

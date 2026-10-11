@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -220,6 +221,34 @@ public sealed class LnBackendHostTests
     }
 
     /// <summary>The node around one backend host: the mocked services, the event hub and the in-memory invoices.</summary>
+    [Fact]
+    public async Task Given_AnOpenTrackAllStream_When_TheNodeStops_Then_ItEndsAtOnceUnavailable()
+    {
+        // Arrange: a client tracking every invoice, waiting for the next change (NL-1381)
+        await using var node = await Node.StartAsync();
+        using var stream = node.Client.TrackAll(new Hold.TrackAllRequest(), cancellationToken: Ct);
+        var reading = Task.Run(async () =>
+        {
+            while (await stream.ResponseStream.MoveNext(CancellationToken.None))
+            {
+            }
+        }, Ct);
+        while (node.Hub.SubscriberCount == 0)
+            await Task.Delay(10, Bounded);
+
+        // Act
+        var stopwatch = Stopwatch.StartNew();
+        await node.Host.StopAsync(CancellationToken.None);
+        stopwatch.Stop();
+
+        // Assert: well under the server's own 5 s graceful stop, with the stop's status
+        var error = await Assert.ThrowsAsync<RpcException>(() => reading.WaitAsync(TimeSpan.FromSeconds(10), Ct));
+        Assert.Equal(StatusCode.Unavailable, error.StatusCode);
+        Assert.Equal("node is shutting down", error.Status.Detail);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"the stop took {stopwatch.Elapsed}");
+        Assert.Equal(0, node.Hub.SubscriberCount);
+    }
+
     private sealed class Node : IAsyncDisposable
     {
         private readonly ServiceProvider _provider;

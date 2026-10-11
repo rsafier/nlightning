@@ -625,21 +625,28 @@ public sealed partial class LndGrpcHostTests
     private sealed class FakeDispatcher : INodeCommandDispatcher
     {
         private readonly Dictionary<Type, Func<object, object?>> _handlers = [];
+        private readonly Dictionary<Type, Func<object, CancellationToken, Task<object?>>> _asyncHandlers = [];
 
         public List<object> Requests { get; } = [];
 
         public void On<TRequest, TResponse>(Func<TRequest, TResponse> handler) =>
             _handlers[typeof(TRequest)] = request => handler((TRequest)request);
 
-        public Task<TResponse> DispatchAsync<TRequest, TResponse>(TRequest request,
-                                                                  CancellationToken cancellationToken)
+        /// <summary>A handler that waits (with the call's token) before it answers.</summary>
+        public void OnAsync<TRequest, TResponse>(Func<TRequest, CancellationToken, Task<TResponse>> handler) =>
+            _asyncHandlers[typeof(TRequest)] = async (request, ct) => await handler((TRequest)request, ct);
+
+        public async Task<TResponse> DispatchAsync<TRequest, TResponse>(TRequest request,
+                                                                        CancellationToken cancellationToken)
             where TRequest : notnull
         {
             lock (Requests)
                 Requests.Add(request);
+            if (_asyncHandlers.TryGetValue(typeof(TRequest), out var asyncHandler))
+                return (TResponse)(await asyncHandler(request, cancellationToken))!;
             return _handlers.TryGetValue(typeof(TRequest), out var handler)
-                       ? Task.FromResult((TResponse)handler(request)!)
-                       : Task.FromResult(default(TResponse)!);
+                       ? (TResponse)handler(request)!
+                       : default(TResponse)!;
         }
     }
 }
