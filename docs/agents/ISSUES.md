@@ -10932,7 +10932,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** NL-1307, NL-1320, NL-1325
 
 ### NL-1341 No node write fence: a paused or partitioned former instance of a node could still commit state and act
-- **Status:** fixed (branch `wip/node-fence`)
+- **Status:** fixed (25e1b033)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.Domain/Node/Fencing/` (`INodeWriteFence`, `NodeEffect`, `NodeFencedException`, `NodeWriteFenceExtensions`), `src/NLightning.Infrastructure.Repositories/UnitOfWork.cs`, `src/NLightning.Application/Node/Services/PeerOutbox.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs`, `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs`, `src/NLightning.Application/Payments/Invoices/InvoiceService.cs`, `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs`, `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner*.cs`
