@@ -7539,6 +7539,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Abcd/` (network build)
 - **Evidence:** One of two failed ABCD attempts in the wave spr integration failed while building the test network: LND david refused carol's open with 'funding failed due to internal error'; the other failed because bitcoind was still loading its banlist when the fixture started (the known LNUnit start flake). The next three runs were 10/10 (reported by the integrator).
+- **Seen again 2026-10-11** in two full cluster matrices (scale integration `mx-20261011024832` and provisioned-secrets integration `mx-20261011081031`): the ABCD network build failed with david's 'funding failed due to internal error' and all 9 ABCD tests reported 'never built'; the suite alone was green both times (11/11).
 - **Fix sketch:** Retry the fixture's LND-to-LND open once on this error and log david's funding state.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
