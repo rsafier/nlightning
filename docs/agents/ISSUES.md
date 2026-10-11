@@ -200,9 +200,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 106 | 108 |
+| open | 0 | 0 | 2 | 107 | 109 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 75 | 279 | 543 | 912 |
+| fixed | 15 | 75 | 279 | 542 | 911 |
 | wontfix | 0 | 0 | 6 | 14 | 20 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **76** | **298** | **670** | **1059** |
@@ -2074,6 +2074,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnPeerStorageTests.cs` (`Given_AChannelWithCln_When_Reconnected_Then_BothSidesHandBackTheOthersBlob`; `Assert.NotNull` at the blob CLN keeps, the retrieval's contents or the stored blob after our restart)
 - **Evidence:** Cluster run `tap-mx1` (wip/taproot-plan 78907b32, 2026-10-03, cln suite run alongside lnd/eclair): `Xunit.Sdk.NotNullException: Assert.NotNull() Failure: Value is null` at 18:50:06 UTC; the class rerun alone was green. Diagnostics in `/Users/ms/nlightning-taproot/TestResults/cluster/tap-mx1/cln/diag/ClnPeerStorageTests.Given_AChannelWithCln_When_Reconnected_Then_BothSidesHandBackTheOthersBlob/` (CLN log, `listpeerchannels`, `getinfo`). Which of the three `NotNull`s failed is not in the summary; a likely candidate is CLN's datastore holding an earlier blob of ours that `TryReadBlobAsync` does not decode, or a retrieval without contents, as in NL-428's ordering.
+- **Seen again 2026-10-11:** matrix `mx-20261011122833` (inbound-redial integration) failed it in the matrix and on the in-matrix class rerun (same `Assert.NotNull` on the blob CLN keeps, under matrix load); alone twice afterwards: 1/1 green each. Earlier the same day it was rerun-green in `mx-20261011105605`.
 - **Fix sketch:** Log which assertion failed (the message), read the full test output of the run, and make the polls wait for the blob naming the test's channel.
 - **Blocks/Blocked-by:** Related NL-428, NL-010
 - **Plan ref:** —
@@ -7439,7 +7440,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Plan ref:** `SPLICING_PLAN.md` Proof Q
 
 ### NL-482 PeerManagerConnectTests two-node connect case fails under a loaded full run
-- **Status:** fixed (de3898ac)
+- **Status:** open (reopened 2026-10-11: `PeerManagerConnectTests` simultaneous-connect case timed out twice under loaded full runs; was fixed (de3898ac))
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerConnectTests.cs` (`Given_TwoNodes_When_OneConnectsToTheOther_*`)
@@ -7448,6 +7449,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Fix sketch:** Loop the class under load; look for a read that races the init exchange. De-flaked: The connect-completion check is event-driven/bounded (init exchanged + connection stable) instead of racing the init exchange.
 - **Blocks/Blocked-by:** Related NL-434
 - **Plan ref:** —
+- **Seen again 2026-10-11:** the peer-transport lane's full Application run (3 failures in `PeerManagerConnectTests` incl. the existing two-node connect test after 1 m 54 s, class 3x green alone, then 10/10 alone on the M1 integration) and the inbound-redial lane's full run (`Given_TwoNodes_When_ConnectingToEachOtherAtTheSameTime_*` round 5 timed out after 3 min; class 8/8 twice alone).
 
 ### NL-485 ChannelRestoreServiceTests connect-budget case fails under a loaded run (sp2 integration)
 - **Status:** duplicate (NL-472)
