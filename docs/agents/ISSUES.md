@@ -11034,7 +11034,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1353 `LoopPersistenceTests.Given_ADurableImportedHistory_*` times out in loaded full Integration runs
-- **Status:** fixed
+- **Status:** fixed (dbd02719)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests` `LoopPersistenceTests`
