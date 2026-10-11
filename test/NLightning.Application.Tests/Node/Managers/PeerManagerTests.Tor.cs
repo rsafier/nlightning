@@ -67,6 +67,50 @@ public partial class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_ManyDeadPeersListedFirst_When_StartAsync_Then_ThePeerSeenLastIsDialedFirst()
+    {
+        // Arrange - NL-1357: 16 peers last seen a month ago that never answer (the startup dials run 16 at a time)
+        // are listed before the one seen an hour ago; dialed in list order, it waited for a whole round of timeouts
+        var peerManager = CreatePeerManager();
+        peerManager.StartupDialWait = TimeSpan.FromMilliseconds(100);
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMinutes(1);
+        var peers = Enumerable.Range(1, 16)
+                              .Select(i => new PeerModel(new Key().PubKey.ToBytes(), "203.0.113.7", (uint)(9_000 + i),
+                                                         "IPv4")
+                              {
+                                  LastSeenAt = DateTime.UtcNow - TimeSpan.FromDays(30),
+                                  Channels = [CreateChannel(ChannelState.Open, (byte)i)]
+                              })
+                              .ToList();
+        peers.Add(new PeerModel(new Key().PubKey.ToBytes(), "203.0.113.8", 9_735, "IPv4")
+        {
+            LastSeenAt = DateTime.UtcNow - TimeSpan.FromHours(1),
+            Channels = [CreateChannel(ChannelState.Open, 17)]
+        });
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync(peers);
+        var dialed = new List<uint>();
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .Returns(async (PeerAddress address) =>
+                        {
+                            lock (dialed)
+                                dialed.Add((uint)address.Port);
+                            await Task.Delay(TimeSpan.FromSeconds(1));
+                            throw new ConnectionException("Timeout connecting to peer");
+                        });
+
+        // Act
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        List<uint> firstRound;
+        lock (dialed)
+            firstRound = [.. dialed];
+        await peerManager.StopAsync();
+
+        // Assert: the recent peer is in the first round of 16 dials (it was the 17th, behind every dead one)
+        Assert.Equal(16, firstRound.Count);
+        Assert.Contains(9_735u, firstRound);
+    }
+
+    [Fact]
     public async Task Given_ASlowStartupDial_When_StartAsyncReturned_Then_TheDialStillConnectsThePeer()
     {
         // Arrange - NL-576: the dial outlives the startup wait and is kept, not thrown away

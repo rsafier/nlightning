@@ -27,6 +27,13 @@ public interface IChannelFundingDbRepository
     Task<IReadOnlyList<ChannelFunding>> GetByChannelIdAsync(ChannelId channelId);
 
     /// <summary>
+    /// The channels with a <see cref="Splicing.Enums.ChannelFundingStatus.Replaced"/> funding that has a short channel
+    /// id (a locked splice retired it), read from the stored rows only: the channels whose retired short channel ids
+    /// the startup rebuilds (NL-1358), so it never loads every channel.
+    /// </summary>
+    Task<IReadOnlyList<ChannelId>> GetChannelIdsWithRetiredFundingsAsync();
+
+    /// <summary>
     /// The channel's <see cref="FundingSet"/>: its <see cref="Splicing.Enums.ChannelFundingStatus.Current"/> funding and
     /// its pending ones in creation order, or null when the channel has no current funding row (not funded yet).
     /// </summary>

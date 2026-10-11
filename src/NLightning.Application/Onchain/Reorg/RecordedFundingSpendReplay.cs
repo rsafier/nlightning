@@ -11,6 +11,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
@@ -74,8 +75,13 @@ internal sealed class RecordedFundingSpendReplay
         }
 
         var spends = new List<(ChannelId ChannelId, TxId FundingTxId, uint Vout, TxId SpentBy, uint Height)>();
-        using (var scope = _serviceScopeFactory.CreateScope())
+        foreach (var channel in channels)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // A unit of work per channel: one for every channel tracked each row read so far, and each funding read
+            // went over all of them, so the first round after a start was quadratic in the channel count (NL-1359)
+            using var scope = _serviceScopeFactory.CreateScope();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             if (unitOfWork.WatchedOutpointDbRepository is not { } watches)
             {
@@ -83,29 +89,35 @@ internal sealed class RecordedFundingSpendReplay
                 return 0;
             }
 
-            foreach (var channel in channels)
+            var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
+            ChannelCloseModel? close = null;
+            var closeRead = false;
+            foreach (var funding in fundings)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
-                var close = unitOfWork.OnchainResolutionDbRepository is { } resolutions
+                var watch = await watches.GetAsync(funding.FundingTxId, funding.OutputIndex);
+                if (watch is not { SpentByTransactionId: { } spentBy, SpentAtHeight: { } height })
+                    continue;
+
+                // The close is read only for a channel with a recorded spend (most channels have none)
+                if (!closeRead)
+                {
+                    close = unitOfWork.OnchainResolutionDbRepository is { } resolutions
                                 ? await resolutions.GetCloseAsync(channel.ChannelId)
                                 : null;
-                foreach (var funding in fundings)
-                {
-                    var watch = await watches.GetAsync(funding.FundingTxId, funding.OutputIndex);
-                    if (watch is not { SpentByTransactionId: { } spentBy, SpentAtHeight: { } height }
-                     || close?.CommitmentTransactionId == spentBy)
-                        continue;
-
-                    var spender = fundings.FirstOrDefault(f => f.FundingTxId == spentBy);
-                    if (spender is not null
-                     && (spender.Status is ChannelFundingStatus.Current or ChannelFundingStatus.Replaced
-                      || channel.State is not (ChannelState.Failed or ChannelState.OnchainResolving)))
-                        continue;
-
-                    if (!_handed.Contains((channel.ChannelId, funding.FundingTxId, funding.OutputIndex, spentBy)))
-                        spends.Add((channel.ChannelId, funding.FundingTxId, funding.OutputIndex, spentBy, height));
+                    closeRead = true;
                 }
+
+                if (close?.CommitmentTransactionId == spentBy)
+                    continue;
+
+                var spender = fundings.FirstOrDefault(f => f.FundingTxId == spentBy);
+                if (spender is not null
+                 && (spender.Status is ChannelFundingStatus.Current or ChannelFundingStatus.Replaced
+                  || channel.State is not (ChannelState.Failed or ChannelState.OnchainResolving)))
+                    continue;
+
+                if (!_handed.Contains((channel.ChannelId, funding.FundingTxId, funding.OutputIndex, spentBy)))
+                    spends.Add((channel.ChannelId, funding.FundingTxId, funding.OutputIndex, spentBy, height));
             }
         }
 

@@ -208,10 +208,13 @@ public class RetiredScidForwardTests
                                                               IReadOnlyList<ChannelFunding> fundings)
     {
         var channelDb = new Mock<IChannelDbRepository>();
-        channelDb.Setup(r => r.GetReadyChannelsAsync())
+        channelDb.Setup(r => r.GetByIdAsync(ThreeNodeHarness.BobCarolChannelId))
                  .ReturnsAsync(() => bob.GetRequiredService<IChannelMemoryRepository>()
-                                        .FindChannels(c => c.ChannelId == ThreeNodeHarness.BobCarolChannelId));
+                                        .FindChannels(c => c.ChannelId == ThreeNodeHarness.BobCarolChannelId)
+                                        .SingleOrDefault());
         var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetChannelIdsWithRetiredFundingsAsync())
+                 .ReturnsAsync([ThreeNodeHarness.BobCarolChannelId]);
         fundingDb.Setup(r => r.GetByChannelIdAsync(ThreeNodeHarness.BobCarolChannelId)).ReturnsAsync(fundings);
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);

@@ -810,6 +810,9 @@ internal sealed class InMemoryChannelFundingRepository : IChannelFundingDbReposi
     public Task<IReadOnlyList<ChannelFunding>> GetByChannelIdAsync(ChannelId channelId) =>
         Task.FromResult<IReadOnlyList<ChannelFunding>>(_staged.Values.ToList());
 
+    public Task<IReadOnlyList<ChannelId>> GetChannelIdsWithRetiredFundingsAsync() =>
+        throw new NotSupportedException("The splice harness has no retired short channel id map");
+
     public Task<FundingSet?> GetFundingSetAsync(ChannelId channelId) =>
         throw new NotSupportedException("The splice harness reads the fundings from the engine");
 

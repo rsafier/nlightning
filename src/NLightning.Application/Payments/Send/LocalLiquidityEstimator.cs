@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace NLightning.Application.Payments.Send;
 
 using Domain.Channels.Commitments;
@@ -17,11 +19,16 @@ using Domain.Protocol.Onion.Constants;
 /// trimmed HTLC can pass where a slightly larger untrimmed one fails, and the search may then settle below the true
 /// maximum, which is safe. The real offer can still be refused when the channel changed meanwhile; the payment then
 /// bounds that channel and plans again.
+/// <para>The answer without planned HTLCs is a function of the snapshot alone, so it is kept per snapshot instance
+/// (and <c>cltvExpiry</c>) until the snapshot is collected: every payment plans over all our channels to its first hop,
+/// and the search costs about 30 dry runs per channel, so with a thousand channels to one peer the plan of each
+/// payment repeated some 30,000 dry runs for channels that had not changed (NL-1360).</para>
 /// </remarks>
 public static class LocalLiquidityEstimator
 {
     private static readonly ReadOnlyMemory<byte> s_dryRunOnion = new byte[OnionConstants.PacketLength];
     private static readonly Hash s_dryRunHash = new(new byte[32]);
+    private static readonly ConditionalWeakTable<ChannelCommitments, Unplanned> s_unplanned = new();
 
     /// <summary>
     /// The largest amount, in msat, of one more HTLC on <paramref name="commitments"/> after the HTLCs of
@@ -35,6 +42,10 @@ public static class LocalLiquidityEstimator
     {
         ArgumentNullException.ThrowIfNull(commitments);
         ArgumentNullException.ThrowIfNull(plannedMsat);
+
+        if (plannedMsat.Count == 0 && s_unplanned.TryGetValue(commitments, out var known)
+         && known.CltvExpiry == cltvExpiry)
+            return known.SendableMsat;
 
         var state = commitments;
         foreach (var amount in plannedMsat)
@@ -60,6 +71,8 @@ public static class LocalLiquidityEstimator
             }
         }
 
+        if (plannedMsat.Count == 0)
+            s_unplanned.AddOrUpdate(commitments, new Unplanned(cltvExpiry, best));
         return best;
     }
 
@@ -77,4 +90,7 @@ public static class LocalLiquidityEstimator
             return false;
         }
     }
+
+    /// <summary>The answer for a snapshot without planned HTLCs, at the <c>cltv_expiry</c> it was asked with.</summary>
+    private sealed record Unplanned(uint CltvExpiry, ulong SendableMsat);
 }

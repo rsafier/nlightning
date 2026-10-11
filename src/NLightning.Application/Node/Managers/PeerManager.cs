@@ -270,7 +270,9 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         // Not disposed: dials still waiting on it outlive StartAsync (it holds no wait handle)
         var dialGate = new SemaphoreSlim(MaxParallelStartupDials);
         var dials = new List<Task>();
-        foreach (var peer in peers)
+        // The peers seen last first: at most MaxParallelStartupDials dial at once, so a live peer listed behind many
+        // that never answer waited for all of them, NetworkTimeout per round of dials (NL-1357)
+        foreach (var peer in peers.OrderByDescending(p => p.LastSeenAt))
         {
             // A peer we know no address of (it connected to us from a loopback address, NL-497): its channels are
             // registered above and we wait for it to connect again

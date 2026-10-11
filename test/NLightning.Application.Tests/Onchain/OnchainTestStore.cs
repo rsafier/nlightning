@@ -186,6 +186,8 @@ internal sealed class OnchainTestStore
         var repository = new Mock<IWatchedTransactionDbRepository>();
         repository.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
                   .ReturnsAsync((TxId txId) => TransactionWatches.GetValueOrDefault(txId));
+        repository.Setup(r => r.GetAllPendingAsync())
+                  .ReturnsAsync(() => TransactionWatches.Values.Where(w => !w.IsCompleted).ToList());
         return repository;
     }
 
