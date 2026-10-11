@@ -1,116 +1,93 @@
+using System.Collections.Concurrent;
+
 namespace NLightning.Domain.Channels.KeyIndexes;
 
 /// <summary>The node's channel key index gate (NL-1392); see <see cref="IChannelKeyIndexGate"/>.</summary>
 /// <remarks>
-/// One lock serializes the allocations and the start of a restore: an allocation runs entirely under it (the signer's
-/// key manager reservation and its database claim), so once <see cref="BeginRestore"/> returns no allocation is running
-/// and every index handed out before is in <see cref="IsAllocatedByThisProcess"/>. Memory only: a restart forgets the
-/// handed-out indexes (their channels, if saved, are channel rows the restore checks) and the start hold (the daemon
-/// sets it again at a start that asks for it).
+/// The hold state is plain fields read with <see cref="Volatile"/>, so <see cref="HoldReason"/> never waits for a slow
+/// signer. Allocations run one at a time under a separate allocation semaphore (the signer's key manager reservation and
+/// its database claim run inside it) and check the hold under it; <see cref="BeginRestoreAsync"/> raises the restore
+/// counter first and then awaits that semaphore once, so when it returns no allocation is running, none can start, and
+/// every index handed out before is in <see cref="IsAllocatedByThisProcess"/>. Memory only: a restart forgets the
+/// handed-out indexes (their channels, if saved, are channel rows; the native remote signer's unconsumed allocations
+/// are read from their workflows) and the start hold (the daemon sets it again at a start on an empty database).
 /// </remarks>
 public sealed class ChannelKeyIndexGate : IChannelKeyIndexGate
 {
-    private readonly Lock _lock = new();
-    private readonly HashSet<uint> _allocated = [];
+    private readonly SemaphoreSlim _allocation = new(1, 1);
+    private readonly ConcurrentDictionary<uint, byte> _allocated = new();
     private int _restores;
-    private bool _awaitingRestore;
+    private int _awaitingRestore;
 
     /// <inheritdoc />
-    public string? HoldReason
-    {
-        get
-        {
-            lock (_lock)
-                return GetHoldReasonLocked();
-        }
-    }
+    public string? HoldReason =>
+        Volatile.Read(ref _restores) > 0 ? ChannelKeyIndexHold.RestoreInProgressReason
+        : Volatile.Read(ref _awaitingRestore) != 0 ? ChannelKeyIndexHold.AwaitingRestoreReason
+        : null;
 
     /// <inheritdoc />
-    public bool IsAwaitingRestore
-    {
-        get
-        {
-            lock (_lock)
-                return _awaitingRestore;
-        }
-    }
+    public bool IsAwaitingRestore => Volatile.Read(ref _awaitingRestore) != 0;
 
     /// <inheritdoc />
-    public bool IsRestoreInProgress
-    {
-        get
-        {
-            lock (_lock)
-                return _restores > 0;
-        }
-    }
+    public bool IsRestoreInProgress => Volatile.Read(ref _restores) > 0;
 
     /// <inheritdoc />
     public uint Allocate(Func<uint> allocate)
     {
         ArgumentNullException.ThrowIfNull(allocate);
-        lock (_lock)
+
+        // Refused before waiting, and again under the semaphore: a restore may have begun meanwhile
+        if (HoldReason is { } early)
+            throw new ChannelKeyIndexHeldException(early);
+
+        _allocation.Wait();
+        try
         {
-            if (GetHoldReasonLocked() is { } reason)
+            if (HoldReason is { } reason)
                 throw new ChannelKeyIndexHeldException(reason);
 
             var index = allocate();
-            _allocated.Add(index);
+            _allocated.TryAdd(index, 0);
             return index;
         }
-    }
-
-    /// <inheritdoc />
-    public IDisposable BeginRestore()
-    {
-        lock (_lock)
-            _restores++;
-
-        return new RestoreHold(this);
-    }
-
-    /// <inheritdoc />
-    public void CompleteRestore()
-    {
-        lock (_lock)
-            _awaitingRestore = false;
-    }
-
-    /// <inheritdoc />
-    public void HoldUntilRestore()
-    {
-        lock (_lock)
-            _awaitingRestore = true;
-    }
-
-    /// <inheritdoc />
-    public bool ReleaseRestoreHold()
-    {
-        lock (_lock)
+        finally
         {
-            var wasHeld = _awaitingRestore;
-            _awaitingRestore = false;
-            return wasHeld;
+            _allocation.Release();
         }
     }
 
     /// <inheritdoc />
-    public bool IsAllocatedByThisProcess(uint index)
+    public async Task<IDisposable> BeginRestoreAsync(CancellationToken cancellationToken = default)
     {
-        lock (_lock)
-            return _allocated.Contains(index);
+        Interlocked.Increment(ref _restores);
+        var hold = new RestoreHold(this);
+        try
+        {
+            // A barrier: an allocation that was running when the counter rose has ended once this is acquired
+            await _allocation.WaitAsync(cancellationToken).ConfigureAwait(false);
+            _allocation.Release();
+            return hold;
+        }
+        catch
+        {
+            hold.Dispose();
+            throw;
+        }
     }
 
-    private string? GetHoldReasonLocked() =>
-        _restores > 0 ? ChannelKeyIndexHold.RestoreInProgressReason
-        : _awaitingRestore ? ChannelKeyIndexHold.AwaitingRestoreReason
-        : null;
+    /// <inheritdoc />
+    public void CompleteRestore() => Volatile.Write(ref _awaitingRestore, 0);
 
-    private void EndRestore()
-    {
-        lock (_lock)
-            _restores--;
-    }
+    /// <inheritdoc />
+    public void HoldUntilRestore() => Volatile.Write(ref _awaitingRestore, 1);
+
+    /// <inheritdoc />
+    public bool ReleaseRestoreHold() => Interlocked.Exchange(ref _awaitingRestore, 0) != 0;
+
+    /// <inheritdoc />
+    public bool IsAllocatedByThisProcess(uint index) => _allocated.ContainsKey(index);
+
+    private void EndRestore() => Interlocked.Decrement(ref _restores);
 
     private sealed class RestoreHold(ChannelKeyIndexGate gate) : IDisposable
     {

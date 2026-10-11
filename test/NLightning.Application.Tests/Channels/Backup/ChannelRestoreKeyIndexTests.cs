@@ -11,7 +11,9 @@ using Domain.Channels.Enums;
 using Domain.Channels.KeyIndexes;
 using Domain.Channels.ValueObjects;
 using Domain.Node.Fencing;
+using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Node.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Services;
@@ -78,7 +80,7 @@ public partial class ChannelRestoreServiceTests
     }
 
     [Fact]
-    public async Task Given_ALiveChannelAtABackedUpIndex_When_Restored_Then_OnlyThatChannelIsRefused()
+    public async Task Given_ALiveChannelAtABackedUpIndex_When_Restored_Then_ItIsRestoredAndTheLiveOneFlaggedCompromised()
     {
         // Arrange: another channel of this database (a new open with a stale key file) holds key index 2; a closed one
         // holds key index 3
@@ -93,20 +95,23 @@ public partial class ChannelRestoreServiceTests
         // Act
         var result = await service.RestoreAsync(backup, ct);
 
-        // Assert: 1 and 3 restored, 2 refused with what to do; nothing of channel 2 stored or dialed
-        Assert.Equal([ChannelRestoreAction.Restore, ChannelRestoreAction.KeyIndexInUse, ChannelRestoreAction.Restore],
-                     result.Channels.Select(c => c.Action));
-        var refused = result.Channels[1];
-        Assert.Contains("key index 2", refused.Detail);
-        Assert.Contains(live.ChannelId.ToString(), refused.Detail);
-        Assert.Contains("closechannel", refused.Detail);
-        Assert.Equal(2, result.RestoredCount);
-        Assert.DoesNotContain(_registered, c => c.ChannelId == refused.Entry.ChannelId);
-        Assert.DoesNotContain(_storedChannels, c => c.ChannelId == refused.Entry.ChannelId);
+        // Assert: all three restored (a recovery channel signs nothing); 2 carries the warning about the live channel,
+        // which advises a cooperative close and forbids a force close; the Closed row at 3 is no conflict
+        Assert.All(result.Channels, c => Assert.Equal(ChannelRestoreAction.Restore, c.Action));
+        Assert.Equal(3, result.RestoredCount);
+        var shared = result.Channels[1].Detail;
+        Assert.Contains("KEYS SHARED", shared);
+        Assert.Contains("key index 2", shared);
+        Assert.Contains(live.ChannelId.ToString(), shared);
+        Assert.Contains("cooperatively", shared);
+        Assert.Contains("never force close", shared);
+        Assert.DoesNotContain("KEYS SHARED", result.Channels[0].Detail);
+        Assert.DoesNotContain("KEYS SHARED", result.Channels[2].Detail);
+        Assert.Contains(_registered, c => c.ChannelId == result.Channels[1].Entry.ChannelId);
     }
 
     [Fact]
-    public async Task Given_AnIndexThisProcessHandedOut_When_Restored_Then_ThatChannelIsRefused()
+    public async Task Given_AnIndexThisProcessHandedOut_When_Restored_Then_ItIsRestoredWithTheWarning()
     {
         // Arrange: an open of this process took key index 2 and stored nothing yet
         var ct = TestContext.Current.CancellationToken;
@@ -119,9 +124,47 @@ public partial class ChannelRestoreServiceTests
         var result = await service.RestoreAsync(backup, ct);
 
         // Assert
-        Assert.Equal(ChannelRestoreAction.Restore, result.Channels[0].Action);
-        Assert.Equal(ChannelRestoreAction.KeyIndexInUse, result.Channels[1].Action);
-        Assert.Contains("handed out by this process", result.Channels[1].Detail);
+        Assert.All(result.Channels, c => Assert.Equal(ChannelRestoreAction.Restore, c.Action));
+        Assert.DoesNotContain("KEYS SHARED", result.Channels[0].Detail);
+        Assert.Contains("handed out to an open not stored yet", result.Channels[1].Detail);
+    }
+
+    [Fact]
+    public async Task Given_AnUnconsumedRemoteAllocation_When_Restored_Then_ItsIndexCountsAsInUse()
+    {
+        // Arrange: the native remote signer's saved allocation of key index 2 (a restart replays it when the peer
+        // sends its open again), no channel row and nothing handed out in this process
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false), (2, false));
+        var pending = new Mock<IPendingChannelKeyIndexSource>();
+        pending.Setup(p => p.GetPendingKeyIndexesAsync(It.IsAny<CancellationToken>())).ReturnsAsync([2u]);
+        var service = CreateService(pendingKeyIndexSources: [pending.Object]);
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert
+        Assert.Contains("KEYS SHARED: key index 2", result.Channels[1].Detail);
+        Assert.DoesNotContain("KEYS SHARED", result.Channels[0].Detail);
+    }
+
+    [Fact]
+    public async Task Given_TwoBackedUpChannelsAtOneIndex_When_Restored_Then_BothCarryTheWarning()
+    {
+        // Arrange: an inconsistent backup
+        var ct = TestContext.Current.CancellationToken;
+        var source = new BackupTestData();
+        source.AddChannel(2);
+        source.AddChannel(2, channelId: new ChannelId(Enumerable.Repeat((byte)0xD2, 32).ToArray()));
+        var backup = (await source.CreateService().ExportAsync(null, ct)).Backup;
+        var service = CreateService();
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert
+        Assert.Equal(2, result.Channels.Count);
+        Assert.All(result.Channels, c => Assert.Contains("also used by backed-up channel", c.Detail));
     }
 
     [Fact]
@@ -142,11 +185,18 @@ public partial class ChannelRestoreServiceTests
                  })
                 .ReturnsAsync(1u);
         var service = CreateService(keyIndexReserver: reserver.Object, keyIndexGate: gate);
+        var reasonWhileDialing = "not dialed";
+        _peerManager.Setup(p => p.ConnectToPeerAsync(It.IsAny<PeerAddressInfo>()))
+                    .Callback(() => reasonWhileDialing = gate.HoldReason)
+                    .ReturnsAsync((PeerAddressInfo _) => new PeerModel(BackupTestData.Key(0x03, 1, 9), "h", 1,
+                                                                       "IPv4"));
 
         // Act
         await service.RestoreAsync(backup, ct);
 
-        // Assert: refused during the restore with a retryable reason, allowed after it
+        // Assert: refused while the key indexes are raised with a retryable reason; the hold is gone before the
+        // peers are dialed, so a peer's open meanwhile is not refused; allowed after it
+        Assert.Null(reasonWhileDialing);
         Assert.Equal(ChannelKeyIndexHold.RestoreInProgressReason, reasonDuringRestore);
         Assert.NotNull(refusal);
         Assert.Contains("try again later", refusal.Message);
@@ -156,14 +206,14 @@ public partial class ChannelRestoreServiceTests
     }
 
     [Fact]
-    public async Task Given_TheStartHold_When_ARestoreCompletes_Then_OpensAreAllowedAgain()
+    public async Task Given_TheStartHold_When_ARestoreRaisesTheKeyIndexes_Then_OpensAreAllowedAgain()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         var backup = await ExportAsync(ct, (1, false));
         var gate = new ChannelKeyIndexGate();
         gate.HoldUntilRestore();
-        var service = CreateService(keyIndexGate: gate);
+        var service = CreateService(keyIndexReserver: Reserver(), keyIndexGate: gate);
         Assert.Equal(ChannelKeyIndexHold.AwaitingRestoreReason, gate.HoldReason);
 
         // Act
@@ -172,6 +222,37 @@ public partial class ChannelRestoreServiceTests
         // Assert
         Assert.False(gate.IsAwaitingRestore);
         Assert.Null(gate.HoldReason);
+    }
+
+    [Fact]
+    public async Task Given_TheStartHold_When_TheRestoreRaisesNothing_Then_TheHoldStays()
+    {
+        // Arrange: a backup whose only channel is already stored, and one restore without a reserver
+        var ct = TestContext.Current.CancellationToken;
+        var gate = new ChannelKeyIndexGate();
+        gate.HoldUntilRestore();
+        var existing = await ExportAsync(ct, (1, false));
+        _storedChannels.Add(new BackupTestData().AddChannel(1));
+        var withReserver = CreateService(keyIndexReserver: Reserver(), keyIndexGate: gate);
+        var withoutReserver = CreateService(keyIndexGate: gate);
+        var fresh = await ExportAsync(ct, (2, false));
+
+        // Act
+        await withReserver.RestoreAsync(existing, ct);
+        var afterNothingToRestore = gate.IsAwaitingRestore;
+        await withoutReserver.RestoreAsync(fresh, ct);
+
+        // Assert
+        Assert.True(afterNothingToRestore);
+        Assert.True(gate.IsAwaitingRestore);
+    }
+
+    private static IChannelKeyIndexReserver Reserver()
+    {
+        var reserver = new Mock<IChannelKeyIndexReserver>();
+        reserver.Setup(r => r.ReserveThroughAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((uint index, CancellationToken _) => index);
+        return reserver.Object;
     }
 
     [Fact]
@@ -219,15 +300,12 @@ public partial class ChannelRestoreServiceTests
             var handedOut = (await Task.WhenAll(opens)).OfType<uint>().ToList();
             var result = await restore;
 
-            // Assert: distinct indexes, none of them a restored channel's; every open refused got a retryable error
+            // Assert: the opens' indexes are distinct; a backed-up channel at an index an open took is never
+            // restored silently: it carries the shared-keys warning, and only those do
             Assert.Equal(handedOut.Count, handedOut.Distinct().Count());
-            var restored = result.Channels.Where(c => c.Action == ChannelRestoreAction.Restore)
-                                 .Select(c => c.Entry.KeyIndex).ToList();
-            Assert.Empty(restored.Intersect(handedOut));
-            foreach (var channel in result.Channels.Where(c => c.Action == ChannelRestoreAction.KeyIndexInUse))
-                Assert.Contains(channel.Entry.KeyIndex, handedOut);
-            Assert.All(result.Channels, c => Assert.True(c.Action is ChannelRestoreAction.Restore
-                                                                  or ChannelRestoreAction.KeyIndexInUse));
+            Assert.All(result.Channels, c => Assert.Equal(ChannelRestoreAction.Restore, c.Action));
+            foreach (var channel in result.Channels)
+                Assert.Equal(handedOut.Contains(channel.Entry.KeyIndex), channel.Detail.Contains("KEYS SHARED"));
 
             // An open after the restore gets an index past every backed-up one
             var later = signer.CreateNewChannel(out _, out _);

@@ -31,6 +31,7 @@ using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Serialization.Interfaces;
+using Domain.Signing.Vls;
 using Gossip.Graph.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
@@ -63,17 +64,16 @@ using Onchain.Interfaces;
 /// within <see cref="ConnectBudget"/> (it holds the restore lock); the rest are tried at once by a background loop,
 /// which then retries all of them (the graph read again each round) with the node's reconnect backoff until the peer
 /// is connected, its recovery channels are no longer waiting for its close, or the node stops.</para>
-/// <para>Key indexes (NL-1392): the restore first holds the channel key index gate
-/// (<see cref="IChannelKeyIndexGate.BeginRestore"/>), so no open of any kind gets a new channel key index while it runs
-/// and every index this process handed out before is known. Before anything is stored, the database's high-water mark
-/// and the key manager's last used channel index are raised past the backup's highest key index
-/// (<see cref="IChannelKeyIndexReserver"/>), so a stale key file never hands a restored channel's keys to a new one; a
-/// raise that fails (or a fenced process) aborts the whole restore with <see cref="ChannelBackupException"/> before
-/// anything is written. A backed-up channel whose key index a live channel of this database (any state but Closed and
-/// Stale) or an open of this process already uses is not restored (<see cref="ChannelRestoreAction.KeyIndexInUse"/>,
-/// the detail names that channel): only that channel is refused, the others are restored, and running the restore
-/// again once the conflicting channel is closed restores it. A restore that completed lifts the start hold of
-/// <c>Node:Backup:HoldOpensUntilRestore</c> (<see cref="IChannelKeyIndexGate.CompleteRestore"/>).</para>
+/// <para>Key indexes (NL-1392): the restore holds the channel key index gate
+/// (<see cref="IChannelKeyIndexGate.BeginRestoreAsync"/>) only while it raises the database's high-water mark and the
+/// key manager's last used channel index past the backup's highest key index (<see cref="IChannelKeyIndexReserver"/>)
+/// and reads the indexes in use, so no open gets one of them; a raise that fails (or a fenced process) aborts the whole
+/// restore with <see cref="ChannelBackupException"/> before anything is written. A backed-up channel whose key index a
+/// live channel of this database, an open in progress or another backed-up channel already uses is still restored (a
+/// recovery channel signs nothing and releases no secret); the other channel is key-compromised: the result's detail,
+/// a critical log and <c>listchannels</c> say so, and it must be closed cooperatively, never force closed. A restore
+/// whose raise ran lifts the start hold of <c>Node:Backup:HoldOpensUntilRestore</c>
+/// (<see cref="IChannelKeyIndexGate.CompleteRestore"/>).</para>
 /// <para>Splices (lane SP2-E, NL-478): a backup's funding is the channel's current one when the backup was written, so
 /// a channel spliced since then has that funding spent by the splice. Before a recovery channel is made, the funding
 /// is followed from spend to spend (<see cref="IFundingSpendLocator.FollowSpliceAsync"/>: a pending splice of the
@@ -129,6 +129,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     private readonly IChannelFundingKeySource _fundingKeySource;
     private readonly IChannelLockProvider? _channelLockProvider;
     private readonly IChannelKeyIndexGate? _keyIndexGate;
+    private readonly IReadOnlyList<IPendingChannelKeyIndexSource> _pendingKeyIndexSources;
     private readonly SemaphoreSlim _restoreLock = new(1, 1);
     private readonly CancellationTokenSource _backgroundCts = new();
     private readonly ConcurrentDictionary<ChannelId, Task> _rescans = new();
@@ -181,9 +182,11 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                  IChannelLockProvider? channelLockProvider = null,
                                  TimeProvider? timeProvider = null,
                                  Func<IPeerStorageService?>? peerStorage = null,
-                                 IChannelKeyIndexGate? keyIndexGate = null)
+                                 IChannelKeyIndexGate? keyIndexGate = null,
+                                 IEnumerable<IPendingChannelKeyIndexSource>? pendingKeyIndexSources = null)
     {
         _keyIndexGate = keyIndexGate;
+        _pendingKeyIndexSources = pendingKeyIndexSources?.ToList() ?? [];
         _peerStorage = peerStorage;
         _graphStore = graphStore;
         _fundingKeySource = fundingKeySource ?? new SignerChannelFundingKeySource(signer);
@@ -352,19 +355,32 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         await _restoreLock.WaitAsync(cancellationToken);
         try
         {
-            // NL-1392: no new channel key index from here on; an allocation still running ends first
-            using var keyIndexHold = _keyIndexGate?.BeginRestore();
-
-            var existing = await LoadExistingStatesAsync(snapshot.Channels);
-            var plan = ChannelRestorePlanner.Plan(snapshot.Channels,
+            // NL-1392: no new channel key index while the backup's indexes are raised and the ones in use are read;
+            // an allocation still running ends first. Released before the channels are stored and their peers dialed
+            Dictionary<ChannelId, (ChannelState? State, bool IsWaitingRecovery)> existing;
+            IReadOnlyList<ChannelRestorePlanItem> plan;
+            bool raised;
+            using (_keyIndexGate is null ? null : await _keyIndexGate.BeginRestoreAsync(cancellationToken))
+            {
+                existing = await LoadExistingStatesAsync(snapshot.Channels);
+                plan = ChannelRestorePlanner.Plan(snapshot.Channels,
                                                   id => existing.TryGetValue(id, out var row)
                                                             ? (true, row.State)
                                                             : (false, null),
                                                   _signer.GetChannelBasepoints, _fundingKeySource.GetFundingPubKey);
 
-            // Fails closed: nothing is written when the raise fails
-            await ReserveKeyIndexesAsync(plan, cancellationToken);
-            plan = await RefuseKeyIndexConflictsAsync(plan);
+                // Fails closed: nothing is written when the raise fails
+                raised = await ReserveKeyIndexesAsync(plan, cancellationToken);
+                plan = await FindSharedKeyIndexesAsync(plan, cancellationToken);
+            }
+
+            // The key indexes are raised: a node that held its opens until a restore may open channels again. Only
+            // after a raise that ran (not for a backup with nothing to restore, or without a reserver)
+            if (raised && _keyIndexGate is { IsAwaitingRestore: true })
+            {
+                _keyIndexGate.CompleteRestore();
+                _logger.LogInformation("Channel opens are allowed again: the backup's channel key indexes are raised");
+            }
 
             var results = new List<ChannelRestoreChannelResult>(plan.Count);
             // A peer of a new recovery channel is reconnected; one of a recovery channel restored before only when it
@@ -379,6 +395,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                 var result = waitingRecovery
                                  ? await RecheckRecoveryChannelAsync(item.Entry, cancellationToken)
                                  : await ApplyAsync(item, cancellationToken);
+                if (result.Action == ChannelRestoreAction.Restore && item.Detail is { } sharedKeys)
+                    result = result with { Detail = $"{result.Detail}; {sharedKeys}" };
                 results.Add(result);
                 if (result.Action == ChannelRestoreAction.Restore)
                     restoredPeers[item.Entry.RemoteNodeId] = (item.Entry, false);
@@ -393,14 +411,6 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
             _logger.LogWarning("Restored {Count} of {Total} backed-up channel(s) as recovery channels; their peers are "
                              + "asked to force close", results.Count(r => r.Action == ChannelRestoreAction.Restore),
                                snapshot.Channels.Count);
-
-            // The key indexes are raised: a node that held its opens until a restore may open channels again
-            if (_keyIndexGate is { IsAwaitingRestore: true })
-            {
-                _keyIndexGate.CompleteRestore();
-                _logger.LogInformation("Channel opens are allowed again: the channel restore completed");
-            }
-
             return new ChannelRestoreResult(snapshot, results, peers);
         }
         finally
@@ -444,19 +454,26 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     /// <summary>
     /// Raises the database's high-water mark and the key manager's channel index past the backup's highest key index
     /// (every entry whose index derives our keys) when a channel is about to be restored. A failure aborts the restore
-    /// before anything is written (NL-1392): a new channel could otherwise get a restored channel's keys.
+    /// before anything is written (NL-1392): a new channel could otherwise get a restored channel's keys. True when a
+    /// raise ran.
     /// </summary>
+    /// <remarks>
+    /// Not for a VLS signer: VLS keys are derived from the peer and the channel's VLS id, not from our index, and VLS
+    /// hands out max(mapping) + 1 whatever the mark says (SECURITY_REVIEW SR-40); its restore stays as it was.
+    /// </remarks>
     /// <exception cref="ChannelBackupException">The raise failed or was fenced.</exception>
-    private async Task ReserveKeyIndexesAsync(IReadOnlyList<ChannelRestorePlanItem> plan,
-                                              CancellationToken cancellationToken)
+    private async Task<bool> ReserveKeyIndexesAsync(IReadOnlyList<ChannelRestorePlanItem> plan,
+                                                    CancellationToken cancellationToken)
     {
-        if (_keyIndexReserver is null || plan.All(i => i.Action != ChannelRestoreAction.Restore))
-            return;
+        if (_keyIndexReserver is null || _signer is IVlsChannelSigner
+         || plan.All(i => i.Action != ChannelRestoreAction.Restore))
+            return false;
 
         var highest = plan.Where(i => i.Action != ChannelRestoreAction.KeysMismatch).Max(i => i.Entry.KeyIndex);
         try
         {
             await _keyIndexReserver.ReserveThroughAsync(highest, cancellationToken);
+            return true;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -470,13 +487,15 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     }
 
     /// <summary>
-    /// Refuses every channel to restore whose key index a live channel of this database (any state but Closed and
-    /// Stale, another channel id) or an open of this process (<see cref="IChannelKeyIndexGate"/>) already uses: the two
-    /// channels would share their funding key, basepoints and per-commitment secrets (NL-1392). Only that channel is
-    /// refused; the others do not share keys and are restored.
+    /// Finds every channel to restore whose key index is already in use (NL-1392): a live channel row of another id
+    /// (any state but Closed and Stale), an open of this process (<see cref="IChannelKeyIndexGate"/>), an unconsumed
+    /// allocation a restart resumes (<see cref="IPendingChannelKeyIndexSource"/>) or another channel of the backup.
+    /// The channel is still restored: a recovery channel signs nothing and releases no secret, so refusing it removes
+    /// no risk. The other channel is key-compromised; the warning goes into the result's detail and the log, and
+    /// <c>listchannels</c> marks it.
     /// </summary>
-    private async Task<IReadOnlyList<ChannelRestorePlanItem>> RefuseKeyIndexConflictsAsync(
-        IReadOnlyList<ChannelRestorePlanItem> plan)
+    private async Task<IReadOnlyList<ChannelRestorePlanItem>> FindSharedKeyIndexesAsync(
+        IReadOnlyList<ChannelRestorePlanItem> plan, CancellationToken cancellationToken)
     {
         if (plan.All(i => i.Action != ChannelRestoreAction.Restore))
             return plan;
@@ -488,6 +507,16 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
             rows = await unitOfWork.ChannelDbRepository.GetLocalKeyIndexesAsync() ?? [];
         }
 
+        var pending = new HashSet<uint>();
+        foreach (var source in _pendingKeyIndexSources)
+            pending.UnionWith(await source.GetPendingKeyIndexesAsync(cancellationToken));
+
+        bool InUseByAnOpen(uint index) =>
+            pending.Contains(index) || _keyIndexGate?.IsAllocatedByThisProcess(index) == true;
+
+        var backupChannels = plan.Where(i => i.Action != ChannelRestoreAction.KeysMismatch)
+                                 .Select(i => (i.Entry.ChannelId, i.Entry.KeyIndex, ChannelState.Open))
+                                 .ToList();
         var result = new List<ChannelRestorePlanItem>(plan.Count);
         foreach (var item in plan)
         {
@@ -497,17 +526,17 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                 continue;
             }
 
-            Func<uint, bool>? isAllocated = _keyIndexGate is null ? null : _keyIndexGate.IsAllocatedByThisProcess;
-            var conflict = ChannelRestorePlanner.FindKeyIndexConflict(item.Entry, rows, isAllocated);
-            if (conflict is null)
+            var shared = ChannelRestorePlanner.FindKeyIndexConflict(item.Entry, rows, InUseByAnOpen)
+                      ?? ChannelRestorePlanner.FindKeyIndexConflict(item.Entry, backupChannels, null, inBackup: true);
+            if (shared is null)
             {
                 result.Add(item);
                 continue;
             }
 
-            _logger.LogError("Channel {ChannelId}: key index {Index} is already in use ({Conflict}); not restored",
-                             item.Entry.ChannelId, item.Entry.KeyIndex, conflict);
-            result.Add(item with { Action = ChannelRestoreAction.KeyIndexInUse, Detail = conflict });
+            _logger.LogCritical("Channel {ChannelId} restored at key index {Index}, which is already in use: {Detail}",
+                                item.Entry.ChannelId, item.Entry.KeyIndex, shared);
+            result.Add(item with { Detail = shared });
         }
 
         return result;
@@ -529,8 +558,6 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                                        "its key index does not derive the backed-up keys (another key file?)");
             case ChannelRestoreAction.Duplicate:
                 return new ChannelRestoreChannelResult(entry, item.Action, "repeated in the backup");
-            case ChannelRestoreAction.KeyIndexInUse:
-                return new ChannelRestoreChannelResult(entry, item.Action, item.Detail ?? "its key index is in use");
         }
 
         // A dual-funded open unconfirmed at the backup: made at the candidate of its RBF that confirmed

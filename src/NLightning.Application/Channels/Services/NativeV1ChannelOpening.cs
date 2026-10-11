@@ -7,6 +7,7 @@ using NLightning.Domain.Bitcoin.Interfaces;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Channels.Acceptance;
 using NLightning.Domain.Channels.Interfaces;
+using NLightning.Domain.Channels.KeyIndexes;
 using NLightning.Domain.Channels.Models;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Client.Requests;
@@ -27,7 +28,7 @@ namespace NLightning.Application.Channels.Services;
 public sealed class NativeV1ChannelOpening(
     IChannelFactory factory, ILightningSigner signer, IServiceScopeFactory scopes,
     IChannelIdFactory ids, IMessageSerializer messages, IFeeService fees, IOptions<NodeOptions> nodeOptions,
-    IRemoteSigningWorkflowCoordinator? workflows = null)
+    IRemoteSigningWorkflowCoordinator? workflows = null, IChannelKeyIndexGate? keyIndexGate = null)
 {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _peerGates = new();
     public bool Enabled => workflows is INativeChannelKeyAllocationRecovery;
@@ -53,6 +54,8 @@ public sealed class NativeV1ChannelOpening(
             }
             else
             {
+                // NL-1392: no new allocation intent while a restore holds new key indexes
+                ThrowIfKeyIndexesHeld();
                 var effectiveFee = request.FeeRatePerKw?.MilliSatoshi
                     ?? LightningMoney.Satoshis(nodeOptions.Value.GetCommitmentFeeRatePerKw(
                         (await fees.GetFeeRatePerKwAsync()).Satoshi)).MilliSatoshi;
@@ -67,7 +70,7 @@ public sealed class NativeV1ChannelOpening(
             }
             using var scope = await workflows!.BeginAsync(descriptor);
             scope.Activate();
-            var allocation = ((INativeChannelKeyAllocationRecovery)workflows).AllocateChannelKeys(scope, signer);
+            var allocation = await AllocateAsync(scope);
             await RequireNoStartedOpeningAsync(descriptor.ChannelId);
             var savedRequest = JsonSerializer.Deserialize<OutboundRequest>(intent.Opening)
                 ?? throw Blocked("Opening request is missing.");
@@ -97,6 +100,8 @@ public sealed class NativeV1ChannelOpening(
         }
         else
         {
+            // NL-1392: checked again after a channel acceptor's wait, before the intent is saved
+            ThrowIfKeyIndexesHeld();
             var configuration = Configuration();
             var feeQuote = (await fees.GetFeeRatePerKwAsync()).MilliSatoshi;
             var prepared = await AllocatedFactory().PrepareV1AsNonInitiatorAsync(message, features,
@@ -108,7 +113,7 @@ public sealed class NativeV1ChannelOpening(
         }
         using var scope = await workflows!.BeginAsync(descriptor);
         scope.Activate();
-        var allocation = ((INativeChannelKeyAllocationRecovery)workflows).AllocateChannelKeys(scope, signer);
+        var allocation = await AllocateAsync(scope);
         await RequireNoStartedOpeningAsync(message.Payload.ChannelId);
         var channel = await AllocatedFactory().CreateAllocatedV1AsNonInitiatorAsync(message, features, peer, allocation,
             Context(intent));
@@ -121,6 +126,39 @@ public sealed class NativeV1ChannelOpening(
             channel.ApplyOpenDecision(local, minimumDepth);
         }
         return channel;
+    }
+
+    /// <summary>
+    /// Allocates (or replays) the intent's channel keys. When the channel key index gate refuses a new allocation (a
+    /// restore began after the check, NL-1392), the intent that never reached the signer is abandoned, so the next
+    /// opening with the peer is not blocked by it; a replayed intent keeps its saved receipt for a later retry.
+    /// </summary>
+    private async Task<ChannelKeyAllocation> AllocateAsync(ISigningWorkflowScope scope)
+    {
+        var recovery = (INativeChannelKeyAllocationRecovery)workflows!;
+        try
+        {
+            return recovery.AllocateChannelKeys(scope, signer);
+        }
+        catch (ChannelKeyIndexHeldException)
+        {
+            try
+            {
+                await recovery.AbandonUnallocatedAsync(scope);
+            }
+            catch (Exception e) when (e is not ChannelKeyIndexHeldException)
+            {
+                // A saved request: the intent keeps its receipt and is replayed once the restore ends
+            }
+
+            throw;
+        }
+    }
+
+    private void ThrowIfKeyIndexesHeld()
+    {
+        if (keyIndexGate?.HoldReason is { } reason)
+            throw new ChannelKeyIndexHeldException(reason);
     }
 
     /// <summary>Returns the original acceptance before a restarted handler consults a current external decider.</summary>

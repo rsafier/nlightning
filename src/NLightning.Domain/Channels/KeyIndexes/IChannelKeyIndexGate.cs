@@ -34,14 +34,15 @@ public interface IChannelKeyIndexGate
     uint Allocate(Func<uint> allocate);
 
     /// <summary>
-    /// Holds the gate for a restore until the returned handle is disposed: waits for an allocation in progress to end,
-    /// then refuses every new one. Restores nest (a counter).
+    /// Holds the gate for a restore until the returned handle is disposed: every new allocation is refused at once, and
+    /// the task completes once an allocation that was already running has ended (awaited, never a blocking wait).
+    /// Restores nest (a counter). The restore releases it as soon as its key index raise and conflict check are done.
     /// </summary>
-    IDisposable BeginRestore();
+    Task<IDisposable> BeginRestoreAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Ends the start hold of <see cref="HoldUntilRestore"/> because a restore completed (its key index raise is
-    /// committed). Nothing when the hold is not on.
+    /// Ends the start hold of <see cref="HoldUntilRestore"/> because a restore raised the key indexes of the backup
+    /// (committed). Nothing when the hold is not on.
     /// </summary>
     void CompleteRestore();
 

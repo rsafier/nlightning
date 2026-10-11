@@ -22,14 +22,14 @@ public class ChannelKeyIndexGateTests
     }
 
     [Fact]
-    public void Given_ARestoreInProgress_When_AnIndexIsAsked_Then_ItIsRefusedWithoutAllocating()
+    public async Task Given_ARestoreInProgress_When_AnIndexIsAsked_Then_ItIsRefusedWithoutAllocating()
     {
         // Arrange
         var gate = new ChannelKeyIndexGate();
         var called = false;
 
         // Act
-        using (gate.BeginRestore())
+        using (await gate.BeginRestoreAsync(TestContext.Current.CancellationToken))
         {
             var exception = Assert.Throws<ChannelKeyIndexHeldException>(() => gate.Allocate(() =>
             {
@@ -50,12 +50,13 @@ public class ChannelKeyIndexGateTests
     }
 
     [Fact]
-    public void Given_NestedRestores_When_OneEnds_Then_TheGateStaysHeldUntilBothEnd()
+    public async Task Given_NestedRestores_When_OneEnds_Then_TheGateStaysHeldUntilBothEnd()
     {
         // Arrange
+        var ct = TestContext.Current.CancellationToken;
         var gate = new ChannelKeyIndexGate();
-        var first = gate.BeginRestore();
-        var second = gate.BeginRestore();
+        var first = await gate.BeginRestoreAsync(ct);
+        var second = await gate.BeginRestoreAsync(ct);
 
         // Act
         first.Dispose();
@@ -68,9 +69,9 @@ public class ChannelKeyIndexGateTests
     }
 
     [Fact]
-    public async Task Given_AnAllocationInProgress_When_ARestoreBegins_Then_ItWaitsForTheAllocationToEnd()
+    public async Task Given_AnAllocationInProgress_When_ARestoreBegins_Then_ItAwaitsTheAllocationWithoutBlockingReads()
     {
-        // Arrange: an allocation blocked inside the gate
+        // Arrange: an allocation blocked inside the gate (a slow signer)
         var ct = TestContext.Current.CancellationToken;
         var gate = new ChannelKeyIndexGate();
         using var inside = new ManualResetEventSlim();
@@ -84,20 +85,52 @@ public class ChannelKeyIndexGateTests
         inside.Wait(ct);
 
         // Act
-        var restore = Task.Run(() => gate.BeginRestore(), ct);
+        var restore = gate.BeginRestoreAsync(ct);
         var startedEarly = await Task.WhenAny(restore, Task.Delay(TimeSpan.FromMilliseconds(200), ct)) == restore;
+
+        // Assert: while the allocation runs the hold is already visible without waiting for it, and a new allocation
+        // is refused at once
+        Assert.False(startedEarly);
+        Assert.Equal(ChannelKeyIndexHold.RestoreInProgressReason, gate.HoldReason);
+        Assert.True(gate.IsRestoreInProgress);
+        Assert.Throws<ChannelKeyIndexHeldException>(() => gate.Allocate(() => 8));
         release.Set();
         using var hold = await restore;
-
-        // Assert: the restore began only after the allocation, which it now knows
-        Assert.False(startedEarly);
         Assert.Equal(7u, await allocation);
         Assert.True(gate.IsAllocatedByThisProcess(7));
-        Assert.Throws<ChannelKeyIndexHeldException>(() => gate.Allocate(() => 8));
+        Assert.False(gate.IsAllocatedByThisProcess(8));
     }
 
     [Fact]
-    public void Given_TheStartHold_When_ARestoreCompletes_Then_OpensAreAllowedAgain()
+    public async Task Given_ACancelledRestoreStart_When_Cancelled_Then_TheGateIsNotLeftHeld()
+    {
+        // Arrange: an allocation holds the gate's semaphore
+        var gate = new ChannelKeyIndexGate();
+        using var inside = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var allocation = Task.Run(() => gate.Allocate(() =>
+        {
+            inside.Set();
+            release.Wait(TestContext.Current.CancellationToken);
+            return 3;
+        }), TestContext.Current.CancellationToken);
+        inside.Wait(TestContext.Current.CancellationToken);
+        using var cancel = new CancellationTokenSource();
+
+        // Act
+        var restore = gate.BeginRestoreAsync(cancel.Token);
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => restore);
+        release.Set();
+        await allocation;
+
+        // Assert
+        Assert.False(gate.IsRestoreInProgress);
+        Assert.Equal(4u, gate.Allocate(() => 4));
+    }
+
+    [Fact]
+    public async Task Given_TheStartHold_When_ARestoreCompletes_Then_OpensAreAllowedAgain()
     {
         // Arrange
         var gate = new ChannelKeyIndexGate();
@@ -106,7 +139,7 @@ public class ChannelKeyIndexGateTests
         Assert.Throws<ChannelKeyIndexHeldException>(() => gate.Allocate(() => 1));
 
         // Act
-        using (gate.BeginRestore())
+        using (await gate.BeginRestoreAsync(TestContext.Current.CancellationToken))
             gate.CompleteRestore();
 
         // Assert
@@ -115,12 +148,12 @@ public class ChannelKeyIndexGateTests
     }
 
     [Fact]
-    public void Given_TheStartHold_When_TheOperatorReleasesIt_Then_OnlyTheStartHoldIsLifted()
+    public async Task Given_TheStartHold_When_TheOperatorReleasesIt_Then_OnlyTheStartHoldIsLifted()
     {
         // Arrange
         var gate = new ChannelKeyIndexGate();
         gate.HoldUntilRestore();
-        var restore = gate.BeginRestore();
+        var restore = await gate.BeginRestoreAsync(TestContext.Current.CancellationToken);
 
         // Act
         var released = gate.ReleaseRestoreHold();

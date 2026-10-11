@@ -495,7 +495,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
         catch (ChannelErrorException cee) when (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
         {
-            throw new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage);
+            throw new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage)
+            {
+                KeepConnection = cee.KeepConnection
+            };
         }
         catch (ChannelWarningException cwe) when (!IsChannelScoped(cwe.ChannelId) && IsChannelScoped(channelId))
         {
@@ -582,7 +585,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
         catch (ChannelErrorException cee) when (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
         {
-            throw new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage);
+            throw new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage)
+            {
+                KeepConnection = cee.KeepConnection
+            };
         }
         catch (ChannelWarningException cwe) when (!IsChannelScoped(cwe.ChannelId) && IsChannelScoped(channelId))
         {

@@ -901,6 +901,34 @@ public partial class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_AChannelErrorThatKeepsTheConnection_When_Processing_Then_ErrorSentAndPeerStaysConnected()
+    {
+        // Arrange (NL-1392: a refused open during a restore must not drop the peer's other channels)
+        await CreatePeerManagerWithPeerAsync();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x46, 32).ToArray());
+        SetupChannelMessage(MessageTypes.OpenChannel, channelId);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(It.IsAny<IChannelMessage>(), It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .ThrowsAsync(new ChannelErrorException("held", "Not accepting channels right now, try again later")
+           {
+               KeepConnection = true
+           });
+        var errorTcs = new TaskCompletionSource<ErrorMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.SendErrorAsync(It.IsAny<ErrorMessage>()))
+                        .Callback((ErrorMessage e) => errorTcs.TrySetResult(e))
+                        .Returns(Task.CompletedTask);
+
+        // Act
+        RaiseChannelMessage(_mockChannelMessage.Object);
+        var error = await errorTcs.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert: the error names the temporary channel; no disconnect
+        Assert.Equal(channelId, error.Payload.ChannelId);
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_NotImplementedChannelMessage_When_Processing_Then_ChannelScopedWarningAndStaysConnected()
     {
         // Arrange (interim behavior for e.g. channel_reestablish until BOLT2 plan N7)

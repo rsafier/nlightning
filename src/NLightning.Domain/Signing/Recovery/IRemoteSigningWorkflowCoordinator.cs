@@ -73,4 +73,11 @@ public sealed record ChannelKeyAllocation(uint KeyIndex, Channels.ValueObjects.C
 public interface INativeChannelKeyAllocationRecovery
 {
     ChannelKeyAllocation AllocateChannelKeys(ISigningWorkflowScope workflow, Bitcoin.Interfaces.ILightningSigner signer);
+
+    /// <summary>
+    /// Abandons an allocation intent that never reached the signer (no saved request: the channel key index gate
+    /// refused the allocation during a restore, NL-1392), so a later opening with the same peer starts afresh. Refused
+    /// once a request is saved.
+    /// </summary>
+    Task AbandonUnallocatedAsync(ISigningWorkflowScope workflow);
 }

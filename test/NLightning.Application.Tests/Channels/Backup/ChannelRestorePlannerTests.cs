@@ -139,7 +139,8 @@ public class ChannelRestorePlannerTests
         {
             Assert.NotNull(conflict);
             Assert.Contains(other.ToString(), conflict);
-            Assert.Contains("never sign with the same keys", conflict);
+            Assert.Contains("never force close", conflict);
+            Assert.Contains("cooperatively", conflict);
         }
         else
         {
@@ -177,6 +178,6 @@ public class ChannelRestorePlannerTests
 
         // Assert
         Assert.NotNull(conflict);
-        Assert.Contains("handed out by this process", conflict);
+        Assert.Contains("handed out to an open not stored yet", conflict);
     }
 }

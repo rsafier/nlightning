@@ -19,13 +19,7 @@ public enum ChannelRestoreAction
     Duplicate,
 
     /// <summary>The recovery channel could not be stored or registered (see the detail).</summary>
-    Failed,
-
-    /// <summary>
-    /// Skipped: a live channel of this database, or a channel negotiation of this process, already uses its key index
-    /// (NL-1392). Two channels must never sign with the same keys: the detail names the channel to close first.
-    /// </summary>
-    KeyIndexInUse
+    Failed
 }
 
 /// <summary>The plan for one backed-up channel.</summary>
@@ -36,7 +30,8 @@ public enum ChannelRestoreAction
 /// <param name="LocalBasepoints">Our re-derived basepoints, for <see cref="ChannelRestoreAction.Restore"/>.</param>
 /// <param name="LocalFundingPubKey">Our re-derived funding key of the entry's current funding (at
 /// <see cref="ChannelBackupEntry.LocalFundingKeyIndex"/>), for <see cref="ChannelRestoreAction.Restore"/>.</param>
-/// <param name="Detail">Why the channel is skipped, for <see cref="ChannelRestoreAction.KeyIndexInUse"/>.</param>
+/// <param name="Detail">For a channel restored at a key index already in use: the key-compromise warning (NL-1392).
+/// </param>
 public sealed record ChannelRestorePlanItem(
     ChannelBackupEntry Entry,
     ChannelRestoreAction Action,

@@ -78,7 +78,7 @@ public sealed class DualFundedOpenServiceDrainTests
     {
         // Arrange - NL-1392: the channel key index gate is held by a restore
         var gate = new ChannelKeyIndexGate();
-        using var restore = gate.BeginRestore();
+        using var restore = await gate.BeginRestoreAsync(TestContext.Current.CancellationToken);
         var services = new ServiceCollection();
         services.AddSingleton<IChannelKeyIndexGate>(gate);
         var signer = new Mock<ILightningSigner>();

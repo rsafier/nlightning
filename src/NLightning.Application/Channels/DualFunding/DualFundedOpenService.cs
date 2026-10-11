@@ -735,7 +735,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                             "Not accepting channels right now, try again later");
         if (GetKeyIndexHoldReason() is { } holdReason)
             throw new ChannelErrorException(ChannelKeyIndexHold.Refusal("open_channel2", holdReason), temporaryId,
-                                            ChannelKeyIndexHold.PeerMessage);
+                                            ChannelKeyIndexHold.PeerMessage)
+            {
+                KeepConnection = true
+            };
         if (payload.ChannelFlags.AnnounceChannel && (!_gossipOptions.AcceptPublicChannels
                                                   || !_gossipOptions.ArePublicChannelsAllowed(
                                                          _nodeOptions.BitcoinNetwork)))
@@ -817,7 +820,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         {
             // A restore started after the check above (NL-1392)
             throw new ChannelErrorException(ChannelKeyIndexHold.Refusal("open_channel2", e.Reason), temporaryId,
-                                            ChannelKeyIndexHold.PeerMessage);
+                                            ChannelKeyIndexHold.PeerMessage)
+            {
+                KeepConnection = true
+            };
         }
 
         var secondPoint = _lightningSigner.GetPerCommitmentPoint(keyIndex, 1);

@@ -83,7 +83,9 @@ public static class ChannelBackupServiceCollectionExtensions
                                                              sp.GetService<IChannelFundingKeySource>(),
                                                              sp.GetService<IChannelLockProvider>(),
                                                              peerStorage: () => sp.GetService<IPeerStorageService>(),
-                                                             keyIndexGate: sp.GetService<IChannelKeyIndexGate>()));
+                                                             keyIndexGate: sp.GetService<IChannelKeyIndexGate>(),
+                                                             pendingKeyIndexSources:
+                                                             sp.GetServices<IPendingChannelKeyIndexSource>()));
         services.TryAddSingleton<IFundingSpendLocator>(sp => sp.GetService<IBitcoinChainService>() is { } chain
                                                                  ? new ChainFundingSpendLocator(
                                                                      chain,

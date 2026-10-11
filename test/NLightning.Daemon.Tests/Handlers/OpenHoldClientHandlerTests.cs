@@ -52,7 +52,7 @@ public sealed class OpenHoldClientHandlerTests
     {
         // Arrange
         var gate = new ChannelKeyIndexGate();
-        using var restore = gate.BeginRestore();
+        using var restore = await gate.BeginRestoreAsync(TestContext.Current.CancellationToken);
         var handler = new OpenHoldClientHandler(gate, NullLogger<OpenHoldClientHandler>.Instance);
 
         // Act

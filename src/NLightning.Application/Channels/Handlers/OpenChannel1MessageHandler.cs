@@ -115,7 +115,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         // NL-1392: no new channel key index while a channel restore holds them (the signer refuses it too)
         if (_keyIndexGate?.HoldReason is { } holdReason)
             throw new ChannelErrorException(ChannelKeyIndexHold.Refusal("open_channel", holdReason), payload.ChannelId,
-                                            ChannelKeyIndexHold.PeerMessage);
+                                            ChannelKeyIndexHold.PeerMessage)
+            {
+                KeepConnection = true
+            };
 
         // BOLT 2: the receiver MAY fail a channel whose announce_channel it does not want (NL-341). The flag is stored
         // with the channel by the factory
@@ -173,7 +176,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         catch (ChannelKeyIndexHeldException e)
         {
             throw new ChannelErrorException(ChannelKeyIndexHold.Refusal("open_channel", e.Reason), payload.ChannelId,
-                                            ChannelKeyIndexHold.PeerMessage);
+                                            ChannelKeyIndexHold.PeerMessage)
+            {
+                KeepConnection = true
+            };
         }
 
         // The acceptor's values replace the ones we would announce (a value that cannot apply refuses the open). Also

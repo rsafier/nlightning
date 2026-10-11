@@ -331,7 +331,8 @@ internal static class ClientApp
                     var restoreBytes = await ReadBackupArgumentAsync(commandArgs, cancellationToken);
                     var restore = await client.RestoreChanBackupAsync(restoreBytes, cancellationToken);
                     new RestoreChanBackupPrinter().Print(restore);
-                    if (restore.Channels.Any(c => c.Outcome is "Failed" or "KeysMismatch" or "KeyIndexInUse"))
+                    if (restore.Channels.Any(c => c.Outcome is "Failed" or "KeysMismatch"
+                                                     || c.Detail.Contains("KEYS SHARED", StringComparison.Ordinal)))
                         return Failure;
                     break;
                 case "createoffer":

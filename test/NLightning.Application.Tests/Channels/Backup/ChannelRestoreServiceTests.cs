@@ -738,7 +738,8 @@ public partial class ChannelRestoreServiceTests : IDisposable
                                                 IChannelFundingKeySource? fundingKeySource = null,
                                                 bool asChainMonitor = false,
                                                 IPeerStorageService? peerStorage = null,
-                                                IChannelKeyIndexGate? keyIndexGate = null)
+                                                IChannelKeyIndexGate? keyIndexGate = null,
+                                                IEnumerable<IPendingChannelKeyIndexSource>? pendingKeyIndexSources = null)
     {
         var channelRepository = new Mock<IChannelDbRepository>();
         channelRepository.Setup(r => r.GetLocalKeyIndexesAsync())
@@ -826,7 +827,7 @@ public partial class ChannelRestoreServiceTests : IDisposable
                                          _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance,
                                          spendLocator, onchainWatcher, keyIndexReserver, graphStore, channelMemory,
                                          fundingKeySource, timeProvider: _clock, peerStorage: () => peerStorage,
-                                         keyIndexGate: keyIndexGate)
+                                         keyIndexGate: keyIndexGate, pendingKeyIndexSources: pendingKeyIndexSources)
         {
             DisconnectTimeout = TimeSpan.FromSeconds(1),
             ConnectBudget = connectBudget ?? TimeSpan.FromSeconds(20),

@@ -85,13 +85,13 @@ public class LocalLightningSignerKeyIndexTests
     }
 
     [Fact]
-    public void Given_AHeldKeyIndexGate_When_CreatingAChannel_Then_NothingIsReservedOrClaimed()
+    public async Task Given_AHeldKeyIndexGate_When_CreatingAChannel_Then_NothingIsReservedOrClaimed()
     {
         // Arrange: a restore holds the gate (NL-1392)
         var keys = KeyManager(3);
         var store = new Mock<IChannelKeyIndexStore>();
         var gate = new ChannelKeyIndexGate();
-        using var restore = gate.BeginRestore();
+        using var restore = await gate.BeginRestoreAsync(TestContext.Current.CancellationToken);
         var signer = CreateSigner(keys.Object, store.Object, gate);
 
         // Act & Assert

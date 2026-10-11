@@ -25,7 +25,7 @@ using WireRequest = NLightning.Signing.Contracts.SigningRequest;
 
 namespace NLightning.RemoteSigning.Tests;
 
-public sealed class NativeV1AllocationWorkflowTests
+public sealed partial class NativeV1AllocationWorkflowTests
 {
     [Fact]
     public async Task Given_InvalidOutboundFunding_When_CorrectedForSamePeer_Then_NoIntentOrKeyWasAllocatedForInvalidRequest()

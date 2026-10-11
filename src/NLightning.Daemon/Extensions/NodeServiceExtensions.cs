@@ -444,7 +444,12 @@ public static class NodeServiceExtensions
             services.AddSingleton(remoteConnection);
             services.Replace(ServiceDescriptor.Singleton<Domain.Crypto.KeyRing.ISwapSigner>(sp =>
                 new RemoteSwapSigner(remoteConnection, sp.GetRequiredService<Domain.Crypto.KeyRing.IKeyRing>())));
-            services.AddSingleton<RemoteSigningWorkflowCoordinator>();
+            services.AddSingleton<RemoteSigningWorkflowCoordinator>(sp => new RemoteSigningWorkflowCoordinator(
+                remoteConnection, sp.GetRequiredService<IServiceScopeFactory>(),
+                keyIndexGate: sp.GetService<IChannelKeyIndexGate>()));
+            // Its unconsumed allocations count as key indexes in use for a channel restore (NL-1392)
+            services.AddSingleton<IPendingChannelKeyIndexSource>(sp =>
+                sp.GetRequiredService<RemoteSigningWorkflowCoordinator>());
             services.AddSingleton<IRemoteSigningWorkflowCoordinator>(sp =>
                 sp.GetRequiredService<RemoteSigningWorkflowCoordinator>());
             services.AddSingleton<NLightning.Application.Channels.Services.NativeV1ChannelOpening>();

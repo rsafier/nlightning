@@ -412,7 +412,7 @@ public class OpenChannel1MessageHandlerTests
     {
         // Arrange - NL-1392: no new channel key index while a restore runs
         var gate = new ChannelKeyIndexGate();
-        using var restore = gate.BeginRestore();
+        using var restore = await gate.BeginRestoreAsync(TestContext.Current.CancellationToken);
         var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
                                                      new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
                                                      _mockMessageFactory.Object, keyIndexGate: gate);
