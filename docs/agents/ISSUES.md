@@ -200,9 +200,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 102 | 104 |
+| open | 0 | 0 | 2 | 101 | 103 |
 | in-progress | 0 | 1 | 8 | 1 | 10 |
-| fixed | 15 | 74 | 267 | 535 | 891 |
+| fixed | 15 | 74 | 267 | 536 | 892 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **75** | **286** | **660** | **1036** |
@@ -10971,7 +10971,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-ups NL-1342, NL-1343
 
 ### NL-1342 Database writes outside `UnitOfWork.SaveChanges` are not fenced
-- **Status:** open
+- **Status:** fixed (844c0149)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Helpers/FencedWrite.cs`, `AccountingBooksDbRepository` (journal clear, rewind and rebuild transactions with `ExecuteDelete`/`ExecuteUpdate`), `AccountingLotDbRepository` (`ClearAsync`), `OnionReplayDbRepository` (block-driven prune), `ChannelSignerGuardDbRepository` (the durable guard's conditional `UPDATE`s, NL-1345), `NodeSigningEnrollmentStore` (enrollment transaction), `UnitOfWork`
