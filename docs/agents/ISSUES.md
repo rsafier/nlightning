@@ -200,9 +200,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 107 | 109 |
+| open | 0 | 0 | 2 | 106 | 108 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 75 | 277 | 542 | 909 |
+| fixed | 15 | 75 | 277 | 543 | 910 |
 | wontfix | 0 | 0 | 6 | 14 | 20 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **76** | **296** | **670** | **1057** |
@@ -7534,13 +7534,15 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Audit 2026-10-04:** not seen on the cluster backend since NL-820; the failure was on the retired Docker/LNUnit LND backend.
 
 ### NL-505 ABCD fixture: LND david answers 'funding failed due to internal error' to carol's open
-- **Status:** open (reopened 2026-10-11: recurred on the cluster's LndRegtestNetwork; was wontfix after NL-820, 42e96743)
+- **Status:** fixed (70dcb54b) (reopened 2026-10-11: recurred on the cluster's LndRegtestNetwork; was wontfix after NL-820, 42e96743)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Abcd/` (network build)
 - **Evidence:** One of two failed ABCD attempts in the wave spr integration failed while building the test network: LND david refused carol's open with 'funding failed due to internal error'; the other failed because bitcoind was still loading its banlist when the fixture started (the known LNUnit start flake). The next three runs were 10/10 (reported by the integrator).
 - **Seen again 2026-10-11** in two full cluster matrices (scale integration `mx-20261011024832` and provisioned-secrets integration `mx-20261011081031`): the ABCD network build failed with david's 'funding failed due to internal error' and all 9 ABCD tests reported 'never built'; the suite alone was green both times (11/11).
-- **Fix sketch:** Retry the fixture's LND-to-LND open once on this error and log david's funding state.
+- **Root cause (2026-10-11):** the open reached LND david while its wallet was still processing blocks that the previous open had mined. `NLightningTestNode.OpenChannelAsync` mines 6 blocks at `V1FundingSigned` and returns at our `channel_ready`, so carol's C-D open followed Bob's B-C burst at once. LND 0.21.4's fundee (`funding/manager.go` `fundeeProcessOpenChannel`) refuses an `open_channel` while `Wallet.IsSynced()` is false with `errors.New("Synchronizing blockchain")`, and `failFundingFlow` sends any error that is not a `ReservationError`/`FundingError`/`ChanAcceptError` as "funding failed due to internal error". Evidence in all three failed matrices (`mx-20261011024832`, `mx-20261011081031`, `mx-20261011102406`): david's log has `NTFN: New block` lines for the burst right up to the refusal (e.g. heights 268-272 at 10:29:27.853-28.297, then `FNDG: Cancelling funding reservation ... no active reservations` at 28.301; carol sent the open at 28.300), and nothing else, so the refusal came before any reservation. Alone LND finishes the burst before the next open; under matrix load it does not.
+- **Fix:** `AbcdNetwork.OpenAsync` waits at the chain-sync barrier (`ChainSync.WaitAllAtTipAsync`: every LND `synced_to_chain` at bitcoind's tip, our nodes at the tip) before each open (70dcb54b). Proof: `run-cluster.sh -n 1 --suite abcd` 1/1 green (11/11), and the full matrix `mx-20261011105605` "14 suite(s) run: 12 green, 2 rerun-green, 0 failed" with abcd green 11/11 (the two reruns were `LndGrpcCompatFlowTests` and `ClnPeerStorageTests`, green alone). Other helpers that open twice in a row to an LND peer without a barrier could hit the same refusal.
+- **Fix sketch (superseded):** Retry the fixture's LND-to-LND open once on this error and log david's funding state.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
