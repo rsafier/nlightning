@@ -6,6 +6,8 @@ using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Financial;
+using Domain.Node.Fencing;
+using Helpers;
 using Persistence.Contexts;
 using Persistence.Entities.Accounting;
 
@@ -22,17 +24,24 @@ using Persistence.Entities.Accounting;
 /// rows at once (bulk deletes, which the change tracker does not see) and forgets the book's rows this unit of work
 /// tracks. It deletes the book's cursor too, so a crash between the clear and the next save leaves that book empty at
 /// cursor 0, which its projector rebuilds from the start.</para>
+/// <para>The writes that run at once (the clear, <see cref="ResetToCloseAsync"/>, <see cref="RollbackOpenEntriesAsync"/>)
+/// run in one transaction checked by the node write fence before the commit (<see cref="FencedWrite"/>, NL-1342).</para>
 /// </remarks>
 public class AccountingBooksDbRepository : IAccountingBooksDbRepository
 {
     private const byte OperationalBook = (byte)AccountingBook.Operational;
 
     private readonly NLightningDbContext _context;
+    private readonly INodeWriteFence? _writeFence;
 
-    public AccountingBooksDbRepository(NLightningDbContext context)
+    /// <param name="context">The unit of work's context.</param>
+    /// <param name="writeFence">The node write fence the writes that run at once are checked against (NL-1342); null
+    /// checks nothing.</param>
+    public AccountingBooksDbRepository(NLightningDbContext context, INodeWriteFence? writeFence = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         _context = context;
+        _writeFence = writeFence;
     }
 
     /// <inheritdoc />
@@ -488,12 +497,13 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
 
         // Clearing a journal without clearing its cursor loses replayed history. Commit all four deletes together,
         // so a failure leaves either the complete old book or an empty book ready to replay from sequence zero.
-        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-        await _context.AccountingPostings.Where(p => p.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
-        await _context.AccountingEntries.Where(e => e.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
-        await _context.AccountingBalances.Where(b => b.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
-        await _context.AccountingCursor.Where(c => c.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await FencedWrite.RunAsync(_context, _writeFence, async () =>
+        {
+            await _context.AccountingPostings.Where(p => p.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
+            await _context.AccountingEntries.Where(e => e.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
+            await _context.AccountingBalances.Where(b => b.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
+            await _context.AccountingCursor.Where(c => c.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
+        }, transactional: true, cancellationToken: cancellationToken);
     }
 
     /// <inheritdoc />
@@ -537,8 +547,17 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
                                         .ToList())
             tracked.State = EntityState.Detached;
 
-        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        // The tracked changes are accepted only once the transaction committed: a refused or failed write leaves them
+        // pending, as a failed unit-of-work save does
+        await FencedWrite.RunAsync(_context, _writeFence,
+                                   () => ResetToCloseCoreAsync(bookValue, reset, cancellationToken),
+                                   transactional: true, cancellationToken: cancellationToken);
+        _context.ChangeTracker.AcceptAllChanges();
+    }
 
+    private async Task ResetToCloseCoreAsync(byte bookValue, AccountingBookReset reset,
+                                             CancellationToken cancellationToken)
+    {
         // The open late facts after the replay point go with the open entries: the replay stages them again (NL-671)
         var lateSeqs = await OpenLateFactSeqsAsync(bookValue, reset.CursorLedgerSeq + 1, cancellationToken);
 
@@ -622,8 +641,7 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
             LastLedgerSeq = reset.CursorLedgerSeq
         });
 
-        await _context.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await _context.SaveChangesAsync(false, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -680,8 +698,15 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
                                         .ToList())
             tracked.State = EntityState.Detached;
 
-        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        // As in ResetToCloseAsync, the tracked changes are accepted only once the transaction committed
+        await FencedWrite.RunAsync(_context, _writeFence,
+                                   () => RollbackOpenEntriesCoreAsync(bookValue, from, cancellationToken),
+                                   transactional: true, cancellationToken: cancellationToken);
+        _context.ChangeTracker.AcceptAllChanges();
+    }
 
+    private async Task RollbackOpenEntriesCoreAsync(byte bookValue, long from, CancellationToken cancellationToken)
+    {
         // The open late facts from there on are rolled back too: the replay stages them again (NL-671), so their
         // reliefs are never lost with a lot the replay opens again
         var lateSeqs = await OpenLateFactSeqsAsync(bookValue, from, cancellationToken);
@@ -752,8 +777,7 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
         else
             cursorRow.LastLedgerSeq = from - 1;
 
-        await _context.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await _context.SaveChangesAsync(false, cancellationToken);
     }
 
     /// <summary>

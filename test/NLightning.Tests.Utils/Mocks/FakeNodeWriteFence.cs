@@ -19,6 +19,10 @@ public sealed class FakeNodeWriteFence : INodeWriteFence
     /// <summary>Whether every check throws <see cref="NodeFencedException"/>.</summary>
     public bool Refuse { get; set; }
 
+    /// <summary>Whether only the save checks throw (the effect checks pass): the fence was lost between an effect check
+    /// and the save that follows it.</summary>
+    public bool RefuseSaves { get; set; }
+
     /// <summary>Called on every save check, with the save's connection and transaction, before the verdict.</summary>
     public Action<DbConnection, DbTransaction>? OnSave { get; set; }
 
@@ -40,7 +44,7 @@ public sealed class FakeNodeWriteFence : INodeWriteFence
     {
         Interlocked.Increment(ref _saves);
         OnSave?.Invoke(connection, transaction);
-        if (Refuse)
+        if (Refuse || RefuseSaves)
             throw new NodeFencedException("fenced (save)");
 
         return ValueTask.CompletedTask;

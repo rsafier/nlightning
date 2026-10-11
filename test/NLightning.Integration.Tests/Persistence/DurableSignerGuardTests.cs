@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 using NLightning.Tests.Utils.Channels;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -16,6 +17,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Fencing;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -184,6 +186,37 @@ public sealed class DurableSignerGuardTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AFenceThatRefusesTheGuardRaise_When_Signing_Then_NothingLeavesAndNothingIsRaised()
+    {
+        // Arrange: the sign-time fence check passes, the raise's save check is refused (NL-1342: the fence was lost
+        // in between)
+        var channel = await PersistChannelAsync();
+        var fence = new FakeNodeWriteFence { RefuseSaves = true };
+        await using var node = BuildNode(writeFence: fence);
+        var signer = node.GetRequiredService<ILightningSigner>();
+        var current = CreateCommitment(channel, RowsCommitmentNumber);
+
+        // Act & Assert: no secret, no commitment signature for the peer, no broadcast signature
+        Assert.Throws<SignerException>(() => signer.RevealPerCommitmentSecret(channel.ChannelId,
+                                                                             RowsCommitmentNumber - 1));
+        Assert.Throws<SignerException>(() => signer.SignChannelTransaction(channel.ChannelId,
+                                                                          CreateCommitment(channel, 6)));
+        Assert.Throws<SignerException>(() => signer.SignLocalCommitmentForBroadcast(
+                                           channel.ChannelId, RowsCommitmentNumber, current,
+                                           SignAsRemote(channel, current)));
+        Assert.True(fence.SaveChecks > 0);
+        Assert.Contains(NodeEffect.Sign, fence.Effects);
+
+        // Nothing was raised: the authorized node over the same database signs as before
+        Assert.Null(await ReadGuardAsync(channel.ChannelId));
+        await using var other = BuildNode();
+        Assert.Null(Record.Exception(() => other.GetRequiredService<ILightningSigner>()
+                                                .SignLocalCommitmentForBroadcast(
+                                                     channel.ChannelId, RowsCommitmentNumber, current,
+                                                     SignAsRemote(channel, current))));
+    }
+
+    [Fact]
     public async Task Given_TheGuardCannotBeRead_When_Signing_Then_TheSignerRefuses()
     {
         // Arrange
@@ -307,9 +340,12 @@ public sealed class DurableSignerGuardTests : IDisposable
     /// <c>AddRepositoriesInfrastructureServices</c>) over the shared database and key manager; optionally with a guard
     /// store whose reads or writes fail.
     /// </summary>
-    private ServiceProvider BuildNode(bool failLoads = false, bool failRaises = false)
+    private ServiceProvider BuildNode(bool failLoads = false, bool failRaises = false,
+                                      INodeWriteFence? writeFence = null)
     {
         var services = new ServiceCollection();
+        if (writeFence is not null)
+            services.AddSingleton(writeFence);
         services.AddLogging();
         services.Configure<NodeOptions>(o => o.BitcoinNetwork = "regtest");
         services.AddSingleton<ISecureKeyManager>(_keyManager);
@@ -317,7 +353,8 @@ public sealed class DurableSignerGuardTests : IDisposable
         services.AddRepositoriesInfrastructureServices();
         services.AddScoped<IUnitOfWork>(sp => new UnitOfWork(_database.CreateContext(),
                                                              NullLogger<UnitOfWork>.Instance, new Sha256(),
-                                                             sp.GetRequiredService<IUtxoMemoryRepository>()));
+                                                             sp.GetRequiredService<IUtxoMemoryRepository>(),
+                                                             writeFence: sp.GetService<INodeWriteFence>()));
         if (failLoads || failRaises)
             services.AddSingleton<IChannelSignerGuardStore>(sp => new FailingGuardStore(
                                                                 new ChannelSignerGuardStore(

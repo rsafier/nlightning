@@ -175,7 +175,7 @@ public class UnitOfWork : IUnitOfWork
         _channelSigningInfoDbRepository ??= new ChannelSigningInfoDbRepository(_context);
 
     public IChannelSignerGuardDbRepository ChannelSignerGuardDbRepository =>
-        _channelSignerGuardDbRepository ??= new ChannelSignerGuardDbRepository(_context);
+        _channelSignerGuardDbRepository ??= new ChannelSignerGuardDbRepository(_context, _writeFence);
 
     public IGraphDbRepository GraphDbRepository => _graphDbRepository ??= new GraphDbRepository(_context);
 
@@ -227,7 +227,7 @@ public class UnitOfWork : IUnitOfWork
         _paymentTrampolineHopDbRepository ??= new PaymentTrampolineHopDbRepository(_context);
 
     public IOnionReplayDbRepository OnionReplayDbRepository =>
-        _onionReplayDbRepository ??= new OnionReplayDbRepository(_context);
+        _onionReplayDbRepository ??= new OnionReplayDbRepository(_context, _writeFence);
 
     public IOfferDbRepository OfferDbRepository => _offerDbRepository ??= new OfferDbRepository(_context);
 
@@ -235,7 +235,7 @@ public class UnitOfWork : IUnitOfWork
         _accountingEventDbRepository ??= new AccountingEventDbRepository(_context, _accountingFeedGate);
 
     public IAccountingBooksDbRepository AccountingBooksDbRepository =>
-        _accountingBooksDbRepository ??= new AccountingBooksDbRepository(_context);
+        _accountingBooksDbRepository ??= new AccountingBooksDbRepository(_context, _writeFence);
 
     public IAccountingPriceDbRepository AccountingPriceDbRepository =>
         _accountingPriceDbRepository ??= new AccountingPriceDbRepository(_context);
@@ -247,7 +247,7 @@ public class UnitOfWork : IUnitOfWork
         _accountingOverrideDbRepository ??= new AccountingOverrideDbRepository(_context);
 
     public IAccountingLotDbRepository AccountingLotDbRepository =>
-        _accountingLotDbRepository ??= new AccountingLotDbRepository(_context);
+        _accountingLotDbRepository ??= new AccountingLotDbRepository(_context, _writeFence);
 
     public IAccountingPeriodDbRepository AccountingPeriodDbRepository =>
         _accountingPeriodDbRepository ??= new AccountingPeriodDbRepository(_context);

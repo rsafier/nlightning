@@ -4,6 +4,8 @@ namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Node.Fencing;
+using Helpers;
 using Persistence.Contexts;
 using Persistence.Entities.Channel;
 
@@ -15,14 +17,24 @@ using Persistence.Entities.Channel;
 /// row in every provider, so two processes writing at once never lower each other's values; the first raise of a
 /// channel inserts its row and falls back to the update when a concurrent insert won. It commits on its own: use it
 /// from a scope that stages nothing else (<c>ChannelSignerGuardStore</c> opens one per call).
+/// <para>With a node write fence (NL-1342) a raise runs in one transaction checked by the fence before the commit
+/// (<see cref="FencedWrite"/>): a fenced instance cannot raise the guard, so the signer refuses the operation and no
+/// secret or signature leaves it. A raise only ever tightens the guard, but a fenced instance's raise could still
+/// block the authorized instance (a broadcast mark or a data-loss flag of a process that must no longer act), and
+/// refusing it costs nothing the sign-time fence check does not already refuse.</para>
 /// </remarks>
 public class ChannelSignerGuardDbRepository : IChannelSignerGuardDbRepository
 {
     private readonly NLightningDbContext _context;
+    private readonly INodeWriteFence? _writeFence;
 
-    public ChannelSignerGuardDbRepository(NLightningDbContext context)
+    /// <param name="context">The context of the guard store's own scope.</param>
+    /// <param name="writeFence">The node write fence every raise is checked against (NL-1342); null checks
+    /// nothing.</param>
+    public ChannelSignerGuardDbRepository(NLightningDbContext context, INodeWriteFence? writeFence = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
+        _writeFence = writeFence;
     }
 
     /// <inheritdoc />
@@ -34,7 +46,12 @@ public class ChannelSignerGuardDbRepository : IChannelSignerGuardDbRepository
     }
 
     /// <inheritdoc />
-    public async Task RaiseAsync(ChannelId channelId, ChannelSignerGuard guard)
+    public Task RaiseAsync(ChannelId channelId, ChannelSignerGuard guard) =>
+        FencedWrite.RunAsync(_context, _writeFence, () => RaiseCoreAsync(channelId, guard));
+
+    /// <remarks>Inside a transaction (with a fence) the insert's save runs under a savepoint EF creates, so a lost insert
+    /// race rolls back to it and the update that follows still runs in the transaction.</remarks>
+    private async Task RaiseCoreAsync(ChannelId channelId, ChannelSignerGuard guard)
     {
         if (await UpdateAsync(channelId, guard) > 0)
             return;
