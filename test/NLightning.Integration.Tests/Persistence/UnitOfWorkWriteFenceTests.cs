@@ -126,6 +126,42 @@ public class UnitOfWorkWriteFenceTests
         await AssertCountsAsync(db, 0, 0, 0);
     }
 
+    [Fact]
+    public async Task Given_AFenceThatTakesASharedLock_When_TwoSavesRun_Then_TheirChecksOverlap()
+    {
+        // Arrange: a fence whose check holds a shared lock until both saves are inside it (NL-1378: a fence must take
+        // only shared locks, so saves are not serialized); two databases, so the database itself serializes nothing
+        await using var first = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await using var second = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        using var bothInside = new Barrier(2);
+        var overlapped = 0;
+        var fence = new FakeNodeWriteFence
+        {
+            OnSave = (_, _) =>
+            {
+                if (bothInside.SignalAndWait(TimeSpan.FromSeconds(30)))
+                    Interlocked.Increment(ref overlapped);
+            }
+        };
+
+        // Act
+        await Task.WhenAll(Task.Run(() => SaveAsync(first, 0x51), TestContext.Current.CancellationToken),
+                           Task.Run(() => SaveAsync(second, 0x61), TestContext.Current.CancellationToken));
+
+        // Assert: each check saw the other one inside, and both saves committed
+        Assert.Equal(2, overlapped);
+        await AssertCountsAsync(first, 1, 1, 1);
+        await AssertCountsAsync(second, 1, 1, 1);
+
+        async Task SaveAsync(SqliteDbTestContext db, byte seed)
+        {
+            await using var context = db.CreateDbContext();
+            var unitOfWork = CreateUnitOfWork(context, new LndIndexAllocator(), fence);
+            await StageAsync(unitOfWork, seed);
+            await unitOfWork.SaveChangesAsync();
+        }
+    }
+
     private static UnitOfWork CreateUnitOfWork(NLightningDbContext context, LndIndexAllocator allocator,
                                                INodeWriteFence fence) =>
         new(context, NullLogger<UnitOfWork>.Instance, new Sha256(), new UtxoMemoryRepository(),
