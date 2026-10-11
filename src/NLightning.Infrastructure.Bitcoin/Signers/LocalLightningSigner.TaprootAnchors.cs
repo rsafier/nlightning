@@ -20,6 +20,8 @@ public partial class LocalLightningSigner
                                                    int inputIndex, CompactPubKey? ourPerCommitmentPoint,
                                                    IReadOnlyList<SpentOutput> spentOutputs)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
         ArgumentNullException.ThrowIfNull(spentOutputs);
         var signingInfo = GetRegisteredSigningInfo(channelId);

@@ -21,6 +21,7 @@ using Domain.Enums;
 using Domain.Models;
 using Domain.Money;
 using Domain.Node;
+using Domain.Node.Fencing;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
@@ -99,6 +100,7 @@ public sealed class InvoiceService : IInvoiceService
 
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
+    private readonly INodeWriteFence? _writeFence;
     private readonly IOptions<NodeOptions> _nodeOptions;
     private readonly ILogger<InvoiceService> _logger;
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
@@ -128,14 +130,18 @@ public sealed class InvoiceService : IInvoiceService
     /// <param name="timeProvider">The clock of that grace period (the system clock by default).</param>
     /// <param name="announcedChannels2">Our channels announced with taproot gossip (NL-878): without it only channels
     /// announced with BOLT 7 count as public.</param>
+    /// <param name="writeFence">The node write fence asked before an invoice is signed (NL-1341); null: nothing is
+    /// checked.</param>
     public InvoiceService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                           IOptions<NodeOptions> nodeOptions, ILogger<InvoiceService> logger,
                           IChannelMemoryRepository? channelMemoryRepository = null,
                           IChannelUpdateService? channelUpdateService = null,
                           IPeerLivenessProbe? peerLivenessProbe = null,
                           IOptions<InvoiceOptions>? invoiceOptions = null, IGraphStore? graphStore = null,
-                          TimeProvider? timeProvider = null, AnnouncedChannels2? announcedChannels2 = null)
+                          TimeProvider? timeProvider = null, AnnouncedChannels2? announcedChannels2 = null,
+                          INodeWriteFence? writeFence = null)
     {
+        _writeFence = writeFence;
         _announcedChannels2 = announcedChannels2;
         _blindedPaths = invoiceOptions?.Value.BlindedPaths ?? false;
         _routeHintMode = invoiceOptions?.Value.RouteHints ?? InvoiceRouteHintMode.Auto;
@@ -216,6 +222,7 @@ public sealed class InvoiceService : IInvoiceService
         }
 
         invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + expiry);
+        await CheckSignFenceAsync(cancellationToken);
         string bolt11;
         if (_blindedPaths)
         {
@@ -311,6 +318,7 @@ public sealed class InvoiceService : IInvoiceService
         invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + expiry);
         foreach (var routeHint in await BuildRouteHintsAsync(amount, cancellationToken))
             invoice.AddRouteHint(routeHint);
+        await CheckSignFenceAsync(cancellationToken);
         var bolt11 = invoice.Encode();
 
         var model = new InvoiceModel(paymentHash, null, new Secret(paymentSecret), amount, description, bolt11,
@@ -344,6 +352,10 @@ public sealed class InvoiceService : IInvoiceService
     /// ephemeral key (see the class remarks).
     /// </summary>
     /// <exception cref="InvalidOperationException">If no path can be built.</exception>
+    /// <summary>The node write fence check before <c>Invoice.Encode</c> signs with the node key (NL-1341).</summary>
+    private ValueTask CheckSignFenceAsync(CancellationToken cancellationToken) =>
+        _writeFence?.CheckEffectAsync(NodeEffect.Sign, cancellationToken) ?? ValueTask.CompletedTask;
+
     private async Task<string> EncodeWithBlindedPathsAsync(Invoice invoice, Secret preimage, LightningMoney? amount,
                                                            uint expirySeconds, ushort minFinalCltvExpiryDelta,
                                                            CancellationToken cancellationToken)

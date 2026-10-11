@@ -23,6 +23,7 @@ using Domain.Gossip.Models;
 using Domain.Node.Bootstrap;
 using Domain.Node.Constants;
 using Domain.Node.Events;
+using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
@@ -102,6 +103,9 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     private readonly Lazy<GossipOutboxSettings> _gossipOutboxSettings;
     private readonly Lazy<IOnionMessageRateLimiter?> _onionMessageRateLimiter;
     private readonly Lazy<IGraphStore?> _graphStore;
+
+    // The optional node write fence every outbox asks before a send (NL-1341); none registered = nothing checked
+    private readonly Lazy<INodeWriteFence?> _writeFence;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
     private long _droppedOutboxOnionMessages;
@@ -212,6 +216,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         _channelUpdateService?.OnChannelUpdateReady += HandleChannelUpdateReady;
         _gossipOutboxSettings = new Lazy<GossipOutboxSettings>(ResolveGossipOutboxSettings);
         _graphStore = new Lazy<IGraphStore?>(ResolveGraphStore);
+        _writeFence = new Lazy<INodeWriteFence?>(() => _serviceProvider.GetService<INodeWriteFence>());
     }
 
     /// <summary>The gossip messages waiting in every current connection's outbox (NL-360; the metric's gauge).</summary>
@@ -944,7 +949,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
                                     },
                                     MaxOutboxOnionMessagesPerPeer,
                                     () => Interlocked.Increment(ref _droppedOutboxOnionMessages),
-                                    maxQueuedGossipBytes);
+                                    maxQueuedGossipBytes, _writeFence.Value);
         var session = new PeerSession(peer, peerService, outbox, isInbound);
         session.ChannelMessageHandler = (_, args) => QueueInboundMessage(session, args);
         session.DisconnectHandler = (_, args) => HandleSessionDisconnected(session, args);

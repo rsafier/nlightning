@@ -40,6 +40,8 @@ public partial class LocalLightningSigner
     /// <inheritdoc />
     public byte[] SignBolt12(Bolt12SigningKey key, string tag, Hash merkleRoot)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(key);
         // Only the two BOLT 12 signature tags, each for its own key kind: a payer key signs invoice_requests, the node
         // key and our blinded keys sign invoices, so no key signs a digest under any other name

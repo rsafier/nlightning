@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 95 | 97 |
+| open | 0 | 0 | 2 | 97 | 99 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
-| fixed | 15 | 74 | 264 | 535 | 888 |
+| fixed | 15 | 74 | 265 | 535 | 889 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **283** | **652** | **1025** |
+| **Total** | **15** | **75** | **284** | **654** | **1028** |
 
 ### Epics
 
@@ -10930,3 +10930,31 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** the gateway signs anchors HTLC transactions with phase 1 (it rebuilds the zero-fee HTLC pair at input/output 0 from its own keys and checks the sighash) and returns the sighash type; the signer port says so (`SignsAnchorHtlcWithSingleAnyoneCanPay`, default false) and `AddWitness` puts `0x83` on our signature (both forms are valid BOLT 3 witnesses). The fee inputs go through a new `sign_holder_htlc_fee_inputs` (op 2105): it validates the HTLC pair again with `sign_holder_htlc_tx` for the commitment signed for broadcast, checks it is zero-fee (same value in and out), runs VLS's `check_onchain_tx` over the wallet part alone (fee inputs and change: every output ours, fee range, fee velocity) and signs only the P2WPKH wallet inputs; the adapter routes an HTLC transaction it signed there by txid. Delayed sweeps, counterparty HTLC claims (nSequence 1, VLS's anchors sequence rule) and penalties needed no change; the anchors `to_remote` is the 1-CSV P2WSH from VLS's unilateral-close key (a given witness script must equal VLS's).
 - **Validation:** `VlsOnchainSigningProcessTests` 8/8 (anchors `to_remote` with VLS's script and a foreign script refused, an anchors HTLC claim at nSequence 1 and a refused RBF sequence, fee inputs refused without a broadcast mark or on a static_remotekey channel); `AnchorHtlcTransactionBuilderTests` (our `SIGHASH_SINGLE|ANYONECANPAY` signature on an Appendix F HTLC transaction with a fee input verifies); live `VlsOnchainResolutionTests` 6/6 (both force closes and the penalty, each on static_remotekey and anchors) in batch `rc-20261008175645`.
 - **Blocks/Blocked-by:** NL-1307, NL-1320, NL-1325
+
+### NL-1341 No node write fence: a paused or partitioned former instance of a node could still commit state and act
+- **Status:** fixed (branch `wip/node-fence`)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.Domain/Node/Fencing/` (`INodeWriteFence`, `NodeEffect`, `NodeFencedException`, `NodeWriteFenceExtensions`), `src/NLightning.Infrastructure.Repositories/UnitOfWork.cs`, `src/NLightning.Application/Node/Services/PeerOutbox.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs`, `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs`, `src/NLightning.Application/Payments/Invoices/InvoiceService.cs`, `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs`, `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner*.cs`
+- **Evidence:** a high-availability (active/standby) or enclave deployment needs a guarantee that only the current authorized instance of a node commits state or produces external effects; a former primary that was paused or partitioned would otherwise keep saving, sending peer messages, broadcasting and signing.
+- **Fix:** an optional Domain port `INodeWriteFence` (none registered by `AddNltgNodeServices`; unregistered = a null check, behavior unchanged). `CheckSaveAsync(DbConnection, DbTransaction, CancellationToken)` runs inside every `UnitOfWork.SaveChanges[Async]`: with a fence the save is one explicit transaction (the caller's when one is open, which the save then does not commit), EF writes with `SaveChanges(false)`, the fence checks on that connection and transaction, then commit and `AcceptAllChanges`; a refusal rolls back the whole save (LND indexes given back by `LndIndexAllocator`, accounting events, the UTXO memory untouched) and keeps the tracked changes pending. `CheckEffectAsync(NodeEffect, CancellationToken)`: `PeerSend` before every `PeerOutbox` send (message, gossip, warning, error, onion message; a refusal sends nothing, closes the outbox and disconnects the peer) and before our `peer_storage` backup; `Broadcast` before `sendrawtransaction`/`submitpackage` in `BitcoinChainService` (thrown, so the chain monitor keeps the row and sends it again after the next block; `SubmitPackageAsync` answers `Failed`); `Sign` at the top of every public `Sign*`/`Aggregate*` method of `LocalLightningSigner` through one helper (`CheckSignFence`) and before BOLT 11 encoding in `InvoiceService`. Any exception from the fence is a refusal; synchronous callers (sync save, signer) block on the `ValueTask`. Remote signer modes are out of scope.
+- **Validation:** `Integration.Tests/Persistence/UnitOfWorkWriteFenceTests` (SQLite: a refused save, sync and async, leaves no invoice, payment or accounting event while the fence saw the staged rows in the save's transaction; an allowed save commits all three with `AddIndex`/`PaymentIndex` 1; a refused then allowed save of the same unit of work skips no index; a caller's transaction is the one checked and decides the commit), `Application.Tests` `PeerOutboxWriteFenceTests`, `PeerStorageWriteFenceTests`, `InvoiceServiceWriteFenceTests`, `Infrastructure.Bitcoin.Tests` `BitcoinChainServiceWriteFenceTests`, `LocalLightningSignerWriteFenceTests` (every `Sign*`/`Aggregate*` method refused before it reads an argument), `Daemon.Tests` `NodeWriteFenceCompositionTests` (no fence registered by default; a registered one reaches the signer, the unit of work and the chain service).
+- **Blocks/Blocked-by:** follow-ups NL-1342, NL-1343
+
+### NL-1342 Database writes outside `UnitOfWork.SaveChanges` are not fenced
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `AccountingBooksDbRepository` (journal clear, rewind and rebuild transactions with `ExecuteDelete`/`ExecuteUpdate`), `AccountingLotDbRepository` (lot import replacement), `OnionReplayDbRepository` (block-driven prune), `NodeSigningEnrollmentStore` (enrollment transaction)
+- **Evidence:** the node write fence (NL-1341) checks every `UnitOfWork` save; these paths write through EF bulk operations or their own transactions and never pass through `SaveChanges`, so a fenced instance could still delete expired replay rows or rewrite derived accounting books. None of them is channel, payment or wallet state (the books are rebuilt from the sealed feed, the replay prune only removes expired rows), but a strict fence should refuse them too.
+- **Fix sketch:** an EF `DbTransactionInterceptor.TransactionCommitting` plus a `DbCommandInterceptor` for autocommitted non-query commands that call the fence, or route these paths through an explicit transaction that `UnitOfWork` checks.
+- **Blocks/Blocked-by:** NL-1341
+
+### NL-1343 Peer sends outside the `PeerOutbox` are not fenced
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `Infrastructure/Node/Services/PeerService.cs` (gossip query replies `SendGossipReplyAsync`, the `peer_storage_retrieval` reply), `Infrastructure/Node/Services/PeerCommunicationService.cs` (init, ping, pong, connection warnings), `Application/Gossip/Sync/GossipSyncManager.cs` (our queries and warnings), `Application/Gossip/Graph/GossipIngress.cs` (misbehaviour warning), `PeerGossipSender`'s direct fallback without an outbox
+- **Evidence:** the node write fence (NL-1341) is asked on the outbox, the single path of channel messages, our own gossip and onion messages, and before our `peer_storage` backup. These other sends carry no channel state (connection upkeep, gossip queries and their answers from the graph, handing a peer its own blob back), but a fenced instance still keeps its connections alive with them.
+- **Fix sketch:** check the fence in `PeerCommunicationService.SendMessageAsync` (one transport choke point, all message types) and close the connection on a refusal.
+- **Blocks/Blocked-by:** NL-1341

@@ -12,6 +12,7 @@ using Crypto.Musig2;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Crypto.Interfaces;
+using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Offers.Interfaces;
@@ -110,7 +111,8 @@ public static class DependencyInjection
             var utxoMemoryRepository = sp.GetRequiredService<IUtxoMemoryRepository>();
             return new LocalLightningSigner(fundingOutputBuilder, keyDerivationService, logger, nodeOptions,
                                             secureKeyManager, utxoMemoryRepository,
-                                            sp.GetService<IChannelSigningInfoSource>());
+                                            sp.GetService<IChannelSigningInfoSource>(),
+                                            sp.GetService<INodeWriteFence>());
         });
 
         // BOLT 12 BIP-340 signatures; the keys stay in ILightningSigner (BOLT 12 plan B1)

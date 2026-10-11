@@ -98,6 +98,8 @@ public partial class LocalLightningSigner
                                                                        MusigPublicNonce localFundingNonce,
                                                                        MusigPublicNonce remoteFundingNonce)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedSpliceTransaction);
         ArgumentNullException.ThrowIfNull(spentOutputs);
 
@@ -163,6 +165,8 @@ public partial class LocalLightningSigner
                                                       MusigPartialSignatureWithNonce localSignature,
                                                       MusigPartialSignatureWithNonce remoteSignature)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedSpliceTransaction);
         ArgumentNullException.ThrowIfNull(spentOutputs);
         var current = GetCurrentTaprootFunding(channelId, "aggregate a taproot splice's shared input signature");

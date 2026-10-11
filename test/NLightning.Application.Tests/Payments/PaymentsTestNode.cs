@@ -8,6 +8,7 @@ using Application.Payments.Onion;
 using Application.Payments.Routing;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Node.Fencing;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
@@ -63,7 +64,8 @@ internal sealed class PaymentsTestNode : IDisposable
         Options.Features.AllowExperimentalFeatures = true;
     }
 
-    public PaymentsTestNode(string name, byte seed, RoutingOptions? routing = null)
+    public PaymentsTestNode(string name, byte seed, RoutingOptions? routing = null,
+                            INodeWriteFence? writeFence = null)
     {
         Name = name;
         KeyManager = new TestNodeKeyManager(seed);
@@ -75,6 +77,8 @@ internal sealed class PaymentsTestNode : IDisposable
         services.AddSingleton<ISecureKeyManager>(KeyManager);
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(Options));
         services.AddSingleton<IOnionReplayStore>(new InMemoryOnionReplayStore());
+        if (writeFence is not null)
+            services.AddSingleton(writeFence);
         services.AddScoped<IInvoiceDbRepository>(_ => Invoices);
         services.AddScoped(_ => UnitOfWork.Object);
         services.AddSerializationInfrastructureServices();

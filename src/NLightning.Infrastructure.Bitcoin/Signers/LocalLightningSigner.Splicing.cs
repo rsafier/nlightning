@@ -97,6 +97,8 @@ public partial class LocalLightningSigner
     public CompactSignature SignSpliceSharedInput(ChannelId channelId, TxId newFundingTxId,
                                                   SignedTransaction unsignedSpliceTransaction, int sharedInputIndex)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedSpliceTransaction);
 
         // A channel that is not registered is loaded (a database read) before the lock is taken
@@ -178,6 +180,8 @@ public partial class LocalLightningSigner
     public CompactSignature SignChannelTransaction(ChannelId channelId, TxId fundingTxId,
                                                    SignedTransaction unsignedTransaction)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
         _ = GetRegisteredSigningInfo(channelId);
 
@@ -220,6 +224,8 @@ public partial class LocalLightningSigner
                                                              SignedTransaction unsignedCommitment,
                                                              CompactSignature remoteSignature)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
         ArgumentNullException.ThrowIfNull(remoteSignature);
         _ = GetRegisteredSigningInfo(channelId);

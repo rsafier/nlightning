@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Repositories;
@@ -27,6 +28,7 @@ using Domain.Channels.Models;
 using Domain.Crypto.Hashes;
 using Domain.Gossip.Interfaces;
 using Domain.LiquidityAds.Interfaces;
+using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.PeerStorage;
@@ -109,6 +111,7 @@ public class UnitOfWork : IUnitOfWork
     private AccountingEventDbRepository? _accountingEventDbRepository;
     private readonly AccountingFeedGate? _accountingFeedGate;
     private readonly LndIndexAllocator? _indexAllocator;
+    private readonly INodeWriteFence? _writeFence;
     private AccountingBooksDbRepository? _accountingBooksDbRepository;
 
     // Accounting financial books (NL-602 A3, migration AddAccountingFinancial)
@@ -268,11 +271,14 @@ public class UnitOfWork : IUnitOfWork
     /// BOLT 4 hold time); <see cref="TimeProvider.System"/> when null.</param>
     /// <param name="maxDustHtlcExposureMsat">The node's <c>Node:MaxDustHtlcExposureMsat</c>, the limit a commitment
     /// snapshot stored without one runs under while it is loaded (NL-290); null keeps the check off.</param>
+    /// <param name="writeFence">The node write fence every save is checked against inside its transaction (NL-1341);
+    /// null (the default) saves as before.</param>
     public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, ISha256 sha256,
                       IUtxoMemoryRepository utxoMemoryRepository, TimeProvider? timeProvider = null,
                       ulong? maxDustHtlcExposureMsat = null, AccountingFeedGate? accountingFeedGate = null,
-                      LndIndexAllocator? indexAllocator = null)
+                      LndIndexAllocator? indexAllocator = null, INodeWriteFence? writeFence = null)
     {
+        _writeFence = writeFence;
         _indexAllocator = indexAllocator;
         _accountingFeedGate = accountingFeedGate;
         _context = context ?? throw new ArgumentNullException(nameof(context));
@@ -374,7 +380,7 @@ public class UnitOfWork : IUnitOfWork
             try
             {
                 allocator.AssignAsync(_context).GetAwaiter().GetResult();
-                _context.SaveChanges();
+                SaveContext();
             }
             catch
             {
@@ -388,7 +394,7 @@ public class UnitOfWork : IUnitOfWork
         }
         else
         {
-            _context.SaveChanges();
+            SaveContext();
         }
 
         ApplyPendingUtxoChanges();
@@ -404,7 +410,7 @@ public class UnitOfWork : IUnitOfWork
             try
             {
                 await allocator.AssignAsync(_context);
-                await _context.SaveChangesAsync();
+                await SaveContextAsync();
             }
             catch
             {
@@ -418,10 +424,71 @@ public class UnitOfWork : IUnitOfWork
         }
         else
         {
-            await _context.SaveChangesAsync();
+            await SaveContextAsync();
         }
 
         ApplyPendingUtxoChanges();
+    }
+
+    /// <summary>
+    /// Saves the context. With a node write fence (NL-1341) the save runs in one explicit transaction (the caller's when
+    /// one is open): the writes are sent, the fence checks them on that connection and transaction, and only then is the
+    /// transaction committed and the tracked changes accepted. A refusal rolls everything back and leaves the tracked
+    /// changes pending, as a failed save does.
+    /// </summary>
+    private void SaveContext()
+    {
+        if (_writeFence is null)
+        {
+            _context.SaveChanges();
+            return;
+        }
+
+        var callerTransaction = _context.Database.CurrentTransaction;
+        var transaction = callerTransaction ?? _context.Database.BeginTransaction();
+        try
+        {
+            _context.SaveChanges(false);
+            _writeFence.CheckSave(_context.Database.GetDbConnection(), transaction.GetDbTransaction());
+            if (callerTransaction is null)
+                transaction.Commit();
+        }
+        finally
+        {
+            // Disposing an uncommitted transaction rolls it back
+            if (callerTransaction is null)
+                transaction.Dispose();
+        }
+
+        _context.ChangeTracker.AcceptAllChanges();
+    }
+
+    /// <inheritdoc cref="SaveContext"/>
+    private async Task SaveContextAsync()
+    {
+        if (_writeFence is null)
+        {
+            await _context.SaveChangesAsync();
+            return;
+        }
+
+        var callerTransaction = _context.Database.CurrentTransaction;
+        var transaction = callerTransaction ?? await _context.Database.BeginTransactionAsync();
+        try
+        {
+            await _context.SaveChangesAsync(false);
+            await _writeFence.CheckSaveAsync(_context.Database.GetDbConnection(), transaction.GetDbTransaction(),
+                                             CancellationToken.None);
+            if (callerTransaction is null)
+                await transaction.CommitAsync();
+        }
+        finally
+        {
+            if (callerTransaction is null)
+                await transaction.DisposeAsync();
+        }
+
+        _context.ChangeTracker.AcceptAllChanges();
     }
 
     private bool TryGetPendingUtxoAdd(TxId transactionId, uint index, [MaybeNullWhen(false)] out UtxoModel utxoModel)

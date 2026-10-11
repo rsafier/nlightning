@@ -16,6 +16,8 @@ public partial class LocalLightningSigner
     /// <inheritdoc />
     public byte[] SignWalletMessage(WalletAddressModel address, byte[] message)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(address);
         ArgumentNullException.ThrowIfNull(message);
         if (address.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))

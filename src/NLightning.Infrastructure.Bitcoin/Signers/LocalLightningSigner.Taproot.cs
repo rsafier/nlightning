@@ -108,6 +108,8 @@ public partial class LocalLightningSigner
                                                                       SignedTransaction unsignedCommitment,
                                                                       MusigPublicNonce remoteVerificationNonce)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
         _ = GetRegisteredSigningInfo(channelId);
 
@@ -165,6 +167,8 @@ public partial class LocalLightningSigner
                                                              SignedTransaction unsignedCommitment,
                                                              MusigPartialSignatureWithNonce remoteSignature)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
         ThrowIfNotCommitmentNumber(commitmentNumber);
 
@@ -265,6 +269,8 @@ public partial class LocalLightningSigner
     public MusigPartialSignatureWithNonce SignClosingAsCloser(ChannelId channelId, SignedTransaction unsignedClosing,
                                                               MusigPublicNonce remoteCloseeNonce)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedClosing);
         var (signingInfo, funding) = GetClosingFunding(channelId, "sign a closing transaction");
         ThrowIfNotSpendingFunding(channelId, LoadTransaction(channelId, unsignedClosing, "closing"), funding);
@@ -278,6 +284,8 @@ public partial class LocalLightningSigner
                                                      MusigPublicNonce localCloseeNonce,
                                                      MusigPartialSignatureWithNonce remoteCloserSignature)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedClosing);
         var (signingInfo, funding) = GetClosingFunding(channelId, "sign a closing transaction");
         ThrowIfNotSpendingFunding(channelId, LoadTransaction(channelId, unsignedClosing, "closing"), funding);
@@ -319,6 +327,8 @@ public partial class LocalLightningSigner
                                                        MusigPartialSignature remoteSignature,
                                                        MusigPublicNonce remoteNonce)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedClosing);
         var funding = GetCurrentTaprootFunding(channelId, "aggregate a closing signature");
         var tx = LoadTransaction(channelId, unsignedClosing, "closing");

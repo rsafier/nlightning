@@ -15,6 +15,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Fencing;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Domain.Persistence.Interfaces;
@@ -37,7 +38,8 @@ internal sealed class PeerStorageTestContext : IDisposable
 
     public PeerStorageTestContext(byte nodeSeed = 1, FeatureSupport offerStorage = FeatureSupport.Optional,
                                   PeerStorageOptions? options = null, InMemoryPeerStorageDbRepository? store = null,
-                                  InMemoryPeerStorageRetrievalDbRepository? retrievals = null)
+                                  InMemoryPeerStorageRetrievalDbRepository? retrievals = null,
+                                  INodeWriteFence? writeFence = null)
     {
         Store = store ?? new InMemoryPeerStorageDbRepository();
         Retrievals = retrievals ?? new InMemoryPeerStorageRetrievalDbRepository();
@@ -83,7 +85,7 @@ internal sealed class PeerStorageTestContext : IDisposable
                                          _channelMemory.Object, Options.Create(nodeOptions),
                                          NullLogger<PeerStorageService>.Instance,
                                          Options.Create(options ?? new PeerStorageOptions { RetrievalWait = TimeSpan.Zero }),
-                                         Time);
+                                         Time, writeFence);
     }
 
     public ManualTimeProvider Time { get; } = new();

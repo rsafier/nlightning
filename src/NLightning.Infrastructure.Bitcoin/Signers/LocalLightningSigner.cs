@@ -19,6 +19,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Node.Fencing;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
@@ -65,12 +66,17 @@ public partial class LocalLightningSigner : ILightningSigner
     // Where a channel that is not registered (e.g. after a restart) is loaded from (NL-067); null: registration only
     private readonly IChannelSigningInfoSource? _signingInfoSource;
 
+    // The optional node write fence asked before every signature (NL-1341); null: nothing is checked
+    private readonly INodeWriteFence? _writeFence;
+
     public LocalLightningSigner(IFundingOutputBuilder fundingOutputBuilder,
                                 IKeyDerivationService keyDerivationService, ILogger<LocalLightningSigner> logger,
                                 NodeOptions nodeOptions, ISecureKeyManager secureKeyManager,
                                 IUtxoMemoryRepository utxoMemoryRepository,
-                                IChannelSigningInfoSource? signingInfoSource = null)
+                                IChannelSigningInfoSource? signingInfoSource = null,
+                                INodeWriteFence? writeFence = null)
     {
+        _writeFence = writeFence;
         _fundingOutputBuilder = fundingOutputBuilder;
         _keyDerivationService = keyDerivationService;
         _logger = logger;
@@ -150,12 +156,20 @@ public partial class LocalLightningSigner : ILightningSigner
         return GetChannelBasepoints(signingInfo.ChannelKeyIndex);
     }
 
+    /// <summary>
+    /// The one node write fence check of the signer (NL-1341): every public <c>Sign*</c>/<c>Aggregate*</c> method calls
+    /// it first, so a refusal (thrown as the fence threw it) makes no signature.
+    /// </summary>
+    private void CheckSignFence() => _writeFence?.CheckEffect(NodeEffect.Sign);
+
     /// <inheritdoc />
     public CompactPubKey GetNodePublicKey() => _secureKeyManager.GetNodeKeyPair().CompactPubKey;
 
     /// <inheritdoc />
     public CompactSignature SignNodeMessage(Hash messageHash)
     {
+        CheckSignFence();
+
         // The key manager hands out a copy of the node key; wipe it once the key is parsed
         var privateKey = _secureKeyManager.GetNodeKeyPair().PrivKey.Value;
         try
@@ -194,6 +208,8 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public byte[] SignLightningMessage(ReadOnlySpan<byte> message, bool singleHash)
     {
+        CheckSignFence();
+
         // The prefix goes in here, never in the caller: this path can only sign "Lightning Signed Message:..." digests
         var digest = LightningMessageSignature.Digest(message, singleHash);
         var privateKey = _secureKeyManager.GetNodeKeyPair().PrivKey.Value;
@@ -216,6 +232,8 @@ public partial class LocalLightningSigner : ILightningSigner
                                                                  ReadOnlyMemory<byte> unsignedAnnouncement,
                                                                  ShortChannelId shortChannelId)
     {
+        CheckSignFence();
+
         var signingInfo = GetRegisteredSigningInfo(channelId);
         ThrowIfDataLoss(channelId, "sign a channel announcement");
 
@@ -457,6 +475,8 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(context);
         var signingInfo = GetRegisteredSigningInfo(channelId);
 
@@ -518,6 +538,8 @@ public partial class LocalLightningSigner : ILightningSigner
                                                              SignedTransaction unsignedCommitment,
                                                              CompactSignature remoteSignature)
     {
+        CheckSignFence();
+
         // A channel that is not registered is loaded (a database read) before the lock is taken, not while holding it
         _ = TryGetSigningInfo(channelId, out _);
 
@@ -655,6 +677,8 @@ public partial class LocalLightningSigner : ILightningSigner
     public IReadOnlyList<CompactSignature> SignRemoteHtlcTransactions(
         ChannelId channelId, IReadOnlyList<HtlcSigningContext> htlcTransactions)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(htlcTransactions);
         var signingInfo = GetRegisteredSigningInfo(channelId);
         ThrowIfDataLoss(channelId, "sign HTLC transactions of a new commitment");
@@ -725,6 +749,8 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public CompactSignature SignLocalHtlcTransaction(ChannelId channelId, HtlcSigningContext htlcTransaction)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(htlcTransaction);
         var signingInfo = GetRegisteredSigningInfo(channelId);
         ThrowIfDataLoss(channelId, "sign our HTLC transaction");
@@ -753,6 +779,8 @@ public partial class LocalLightningSigner : ILightningSigner
     private bool SignWalletTransactionCore(SignedTransaction unsignedTransaction, Guid? expectedReservationId,
                                            IReadOnlyList<SpentOutput> otherSpentOutputs)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
         ArgumentNullException.ThrowIfNull(otherSpentOutputs);
 
@@ -892,6 +920,8 @@ public partial class LocalLightningSigner : ILightningSigner
 
     public bool SignFundingTransaction(ChannelId channelId, SignedTransaction unsignedTransaction)
     {
+        CheckSignFence();
+
         _logger.LogTrace("Signing funding transaction for channel {ChannelId} with TxId {TxId}", channelId,
                          unsignedTransaction.TxId);
 
@@ -1073,6 +1103,8 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public CompactSignature SignChannelTransaction(ChannelId channelId, SignedTransaction unsignedTransaction)
     {
+        CheckSignFence();
+
         if (_logger.IsEnabled(LogLevel.Trace))
             _logger.LogTrace("Signing transaction for channel {ChannelId} with TxId {TxId}", channelId,
                              unsignedTransaction.TxId);
@@ -1729,6 +1761,8 @@ public partial class LocalLightningSigner : ILightningSigner
     public CompactSignature SignAnchorInput(ChannelId channelId, SignedTransaction unsignedTransaction, int inputIndex,
                                             Domain.Money.LightningMoney amount)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
         ArgumentNullException.ThrowIfNull(amount);
         var signingInfo = GetRegisteredSigningInfo(channelId);

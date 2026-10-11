@@ -103,6 +103,8 @@ public partial class LocalLightningSigner
         ChannelId channelId, ChannelAnnouncement2Payload unsignedAnnouncement, MusigPublicNonce remoteNodeNonce,
         MusigPublicNonce remoteBitcoinNonce)
     {
+        CheckSignFence();
+
         ArgumentNullException.ThrowIfNull(unsignedAnnouncement);
         var (signingInfo, funding) = CheckAnnouncement2(channelId, unsignedAnnouncement);
         byte[] message = unsignedAnnouncement.GetSignatureHash();
@@ -177,6 +179,8 @@ public partial class LocalLightningSigner
     /// <inheritdoc />
     public CompactSignature SignNodeMessageBip340(Hash messageHash)
     {
+        CheckSignFence();
+
         var privateKey = _secureKeyManager.GetNodeKeyPair().PrivKey.Value.ToArray();
         var auxRandomness = new byte[CryptoConstants.Sha256HashLen];
         try

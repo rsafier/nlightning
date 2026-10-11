@@ -11,6 +11,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
@@ -69,6 +70,10 @@ public sealed partial class PeerStorageService : IPeerStorageService, IDisposabl
     private readonly IPeerBackupBlobProvider _blobProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<PeerStorageService> _logger;
+
+    // Asked before our backup goes to a peer (NL-1341): a fenced instance must not replace the peer's copy with an
+    // older one
+    private readonly INodeWriteFence? _writeFence;
     private readonly TimeProvider _timeProvider;
     private readonly PeerStorageOptions _options;
     private readonly FeatureSupport _offerStorage;
@@ -113,8 +118,9 @@ public sealed partial class PeerStorageService : IPeerStorageService, IDisposabl
     public PeerStorageService(IServiceScopeFactory scopeFactory, IPeerBackupBlobProvider blobProvider,
                               IChannelMemoryRepository channelMemoryRepository, IOptions<NodeOptions> nodeOptions,
                               ILogger<PeerStorageService> logger, IOptions<PeerStorageOptions>? options = null,
-                              TimeProvider? timeProvider = null)
+                              TimeProvider? timeProvider = null, INodeWriteFence? writeFence = null)
     {
+        _writeFence = writeFence;
         _scopeFactory = scopeFactory;
         _blobProvider = blobProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -595,6 +601,9 @@ public sealed partial class PeerStorageService : IPeerStorageService, IDisposabl
 
             if (!force && _lastSent.TryGetValue(peerId, out var last) && last.Fingerprint == blob.Fingerprint)
                 return;
+
+            if (_writeFence is not null)
+                await _writeFence.CheckEffectAsync(NodeEffect.PeerSend, _stopping.Token);
 
             await peer.SendPeerStorageMessageAsync(new PeerStorageMessage(new PeerStoragePayload(blob.Blob)));
             _lastSent[peerId] = blob;

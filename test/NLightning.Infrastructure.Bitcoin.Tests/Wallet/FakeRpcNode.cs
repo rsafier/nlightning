@@ -10,6 +10,7 @@ using Newtonsoft.Json.Linq;
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
 using Bitcoin.Wallet;
+using Domain.Node.Fencing;
 using Domain.Node.Options;
 using Domain.Protocol.ValueObjects;
 using Options;
@@ -55,7 +56,8 @@ internal sealed class FakeRpcNode : IDisposable
             return _calls.GetValueOrDefault(method);
     }
 
-    public BitcoinChainService CreateService(ILogger<BitcoinChainService>? logger = null) =>
+    public BitcoinChainService CreateService(ILogger<BitcoinChainService>? logger = null,
+                                             INodeWriteFence? writeFence = null) =>
         new(new OptionsWrapper<BitcoinOptions>(new BitcoinOptions
         {
             RpcEndpoint = $"http://127.0.0.1:{Port}",
@@ -66,7 +68,8 @@ internal sealed class FakeRpcNode : IDisposable
             ZmqTxPort = 1
         }),
             logger ?? NullLogger<BitcoinChainService>.Instance,
-            new OptionsWrapper<NodeOptions>(new NodeOptions { BitcoinNetwork = new BitcoinNetwork("regtest") }));
+            new OptionsWrapper<NodeOptions>(new NodeOptions { BitcoinNetwork = new BitcoinNetwork("regtest") }),
+            writeFence);
 
     public void Dispose()
     {

@@ -12,6 +12,7 @@ using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.Hashes;
+using Domain.Node.Fencing;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
@@ -48,7 +49,8 @@ public static class DependencyInjection
                                                              sp.GetService<IOptions<NodeOptions>>()
                                                                  ?.Value.MaxDustHtlcExposureMsat,
                                                              sp.GetService<AccountingFeedGate>(),
-                                                             sp.GetService<LndIndexAllocator>()));
+                                                             sp.GetService<LndIndexAllocator>(),
+                                                             sp.GetService<INodeWriteFence>()));
 
         // Payment repositories: the scope's unit of work instances, so they share its database context and one
         // IUnitOfWork.SaveChangesAsync commits what they staged

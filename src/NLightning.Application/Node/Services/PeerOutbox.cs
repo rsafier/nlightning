@@ -6,6 +6,7 @@ namespace NLightning.Application.Node.Services;
 using Domain.Exceptions;
 using Domain.Gossip.Enums;
 using Domain.Gossip.Models;
+using Domain.Node.Fencing;
 using Domain.Node.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -80,6 +81,7 @@ public sealed class PeerOutbox
     private readonly Action? _onGossipRefused;
     private readonly int _maxQueuedOnionMessages;
     private readonly Action? _onOnionMessageDropped;
+    private readonly INodeWriteFence? _writeFence;
     private int _queuedGossip;
     private long _queuedGossipBytes;
     private long _sentGossip;
@@ -106,10 +108,16 @@ public sealed class PeerOutbox
     /// <param name="maxQueuedGossipBytes">
     /// Capped gossip is refused when it would make more than this many bytes of gossip wait (NL-360; 0: no cap).
     /// </param>
+    /// <param name="writeFence">
+    /// The node write fence asked before every send (NL-1341): a refused send does not go out and the connection is
+    /// closed. Null (the default): nothing is checked.
+    /// </param>
     public PeerOutbox(IPeerService peerService, ILogger logger, int maxQueuedGossip = 0, Action? onGossipRefused = null,
                       int maxQueuedOnionMessages = DefaultMaxQueuedOnionMessages,
-                      Action? onOnionMessageDropped = null, long maxQueuedGossipBytes = 0)
+                      Action? onOnionMessageDropped = null, long maxQueuedGossipBytes = 0,
+                      INodeWriteFence? writeFence = null)
     {
+        _writeFence = writeFence;
         _peerService = peerService;
         _logger = logger;
         _maxQueuedGossip = Math.Max(0, maxQueuedGossip);
@@ -316,7 +324,9 @@ public sealed class PeerOutbox
                                                        && _onionQueue.Reader.TryRead(out var interleaved))
                 {
                     gossipSinceOnionMessage = 0;
-                    await SendOnionMessageAsync(interleaved).ConfigureAwait(false);
+                    if (!await SendOnionMessageAsync(interleaved).ConfigureAwait(false))
+                        return;
+
                     continue;
                 }
 
@@ -333,7 +343,9 @@ public sealed class PeerOutbox
             if (_onionQueue.Reader.TryRead(out var onionMessage))
             {
                 gossipSinceOnionMessage = 0;
-                await SendOnionMessageAsync(onionMessage).ConfigureAwait(false);
+                if (!await SendOnionMessageAsync(onionMessage).ConfigureAwait(false))
+                    return;
+
                 continue;
             }
 
@@ -342,9 +354,13 @@ public sealed class PeerOutbox
         }
     }
 
-    private async Task SendOnionMessageAsync(OnionMessageMessage onionMessage)
+    /// <summary>Sends one onion message; false when the write fence refused it (the connection is closed).</summary>
+    private async Task<bool> SendOnionMessageAsync(OnionMessageMessage onionMessage)
     {
         Interlocked.Decrement(ref _queuedOnionMessages);
+        if (!await IsSendAllowedAsync().ConfigureAwait(false))
+            return false;
+
         try
         {
             await _peerService.SendOnionMessageAsync(onionMessage).ConfigureAwait(false);
@@ -353,11 +369,58 @@ public sealed class PeerOutbox
         {
             _logger.LogDebug(e, "Failed to send an onion message to peer {Peer}", _peerService.PeerPubKey);
         }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Asks the node write fence before a send (NL-1341). A refusal closes the outbox and the connection: the send loop
+    /// ends and nothing queued goes out.
+    /// </summary>
+    private async ValueTask<bool> IsSendAllowedAsync()
+    {
+        if (_writeFence is null)
+            return true;
+
+        try
+        {
+            await _writeFence.CheckEffectAsync(NodeEffect.PeerSend, CancellationToken.None).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "The node write fence refused a send to peer {Peer}; closing the connection",
+                               _peerService.PeerPubKey);
+            Complete();
+            try
+            {
+                // As a NodeFencedException the disconnect sends the peer nothing (no error or warning goes out)
+                _peerService.Disconnect(e as NodeFencedException
+                                     ?? new NodeFencedException("The node write fence refused a send", e));
+            }
+            catch (Exception disconnectError)
+            {
+                _logger.LogDebug(disconnectError, "Failed to disconnect peer {Peer}", _peerService.PeerPubKey);
+            }
+
+            return false;
+        }
     }
 
     /// <summary>Sends one item of the main queue; false after a disconnect (the loop ends).</summary>
     private async Task<bool> SendItemAsync(OutboxItem item)
     {
+        if (item.Kind != OutboxItemKind.Disconnect && !await IsSendAllowedAsync().ConfigureAwait(false))
+        {
+            if (item.Kind == OutboxItemKind.Gossip)
+            {
+                Interlocked.Decrement(ref _queuedGossip);
+                Interlocked.Add(ref _queuedGossipBytes, -item.Size);
+            }
+
+            return false;
+        }
+
         try
         {
             switch (item.Kind)

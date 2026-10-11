@@ -11,6 +11,7 @@ using Newtonsoft.Json.Linq;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet;
 
+using Domain.Node.Fencing;
 using Domain.Node.Options;
 using Interfaces;
 using Models;
@@ -33,10 +34,14 @@ public class BitcoinChainService : IBitcoinChainService
     private int _packageRelayUnsupported;
     private int _mempoolSpendersUnsupported;
 
+    // The optional node write fence asked before every publication (NL-1341); null: nothing is checked
+    private readonly INodeWriteFence? _writeFence;
+
     public BitcoinChainService(IOptions<BitcoinOptions> bitcoinOptions, ILogger<BitcoinChainService> logger,
-                               IOptions<NodeOptions> nodeOptions)
+                               IOptions<NodeOptions> nodeOptions, INodeWriteFence? writeFence = null)
     {
         _logger = logger;
+        _writeFence = writeFence;
         // Fails on an unknown network instead of talking to bitcoind as if it were mainnet
         var network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
 
@@ -52,8 +57,13 @@ public class BitcoinChainService : IBitcoinChainService
             $"{bitcoinOptions.Value.RpcUser}:{bitcoinOptions.Value.RpcPassword}"));
     }
 
+    /// <remarks>The node write fence (NL-1341) is asked first: its refusal is thrown and nothing is sent (the chain
+    /// monitor sends a stored broadcast again after the next block).</remarks>
     public async Task<uint256> SendTransactionAsync(Transaction transaction)
     {
+        if (_writeFence is not null)
+            await _writeFence.CheckEffectAsync(NodeEffect.Broadcast, CancellationToken.None);
+
         try
         {
             if (_logger.IsEnabled(LogLevel.Information))
@@ -555,6 +565,21 @@ public class BitcoinChainService : IBitcoinChainService
         if (Volatile.Read(ref _packageRelayUnsupported) != 0)
             return PackageSubmitResult.Unsupported(PackageRelayUnsupportedReason);
 
+        if (_writeFence is not null)
+        {
+            try
+            {
+                await _writeFence.CheckEffectAsync(NodeEffect.Broadcast, CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A call that failed before bitcoind saw the package: the caller tries again later (NL-1341)
+                _logger.LogWarning(ex, "The node write fence refused the package of {ParentTxId} and {ChildTxId}",
+                                   parent.GetHash(), child.GetHash());
+                return PackageSubmitResult.Failed($"node write fence: {ex.Message}");
+            }
+        }
+
         try
         {
             var response = await _rpcClient.SendCommandAsync(CreateSubmitPackageRequest(parent, child),
@@ -591,6 +616,9 @@ public class BitcoinChainService : IBitcoinChainService
                                                                     decimal? maxFeeRateBtcPerKvb)
     {
         ArgumentNullException.ThrowIfNull(transactions);
+        if (_writeFence is not null)
+            await _writeFence.CheckEffectAsync(NodeEffect.Broadcast, CancellationToken.None);
+
         var response = await _rpcClient.SendCommandAsync(CreateRawSubmitPackageRequest(transactions,
                                                                                         maxFeeRateBtcPerKvb),
                                                          CancellationToken.None);
