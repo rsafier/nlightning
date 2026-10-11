@@ -79,6 +79,12 @@ internal sealed class ScaleNode : IAsyncDisposable
     /// <summary>Extra configuration keys layered over the node's own (set before building).</summary>
     public IDictionary<string, string?> ExtraConfiguration { get; } = new Dictionary<string, string?>();
 
+    /// <summary>Last changes to the node's services, applied on every build.</summary>
+    public Action<IServiceCollection>? ConfigureServices { get; set; }
+
+    /// <summary>Runs after the graph loaded and before the peer manager starts (registers and dials the peers).</summary>
+    public Func<IServiceProvider, Task>? BeforePeerManagerStart { get; set; }
+
     /// <summary>Every step of the last <see cref="StartAsync"/> with its wall time, in order.</summary>
     public List<(string Step, TimeSpan Elapsed)> StartSteps { get; } = [];
 
@@ -141,6 +147,8 @@ internal sealed class ScaleNode : IAsyncDisposable
         await StepAsync("retired scid map",
                         () => Services.GetService<IRetiredScidMap>()?.LoadAsync(Monitor.LastProcessedBlockHeight, ct)
                            ?? Task.CompletedTask);
+        if (BeforePeerManagerStart is { } beforePeerManagerStart)
+            await beforePeerManagerStart(Services);
         await StepAsync("peer manager (load, register, dial)", () => PeerManager.StartAsync(ct));
         await StepAsync("tor onion service",
                         () => Services.GetRequiredService<ITorOnionService>().StartAsync(CancellationToken.None));
@@ -275,6 +283,7 @@ internal sealed class ScaleNode : IAsyncDisposable
                      options.Features.ChainHashes = [options.BitcoinNetwork.ChainHash];
                      _configureNodeOptions?.Invoke(options);
                  });
+        ConfigureServices?.Invoke(services);
         return services.BuildServiceProvider();
     }
 

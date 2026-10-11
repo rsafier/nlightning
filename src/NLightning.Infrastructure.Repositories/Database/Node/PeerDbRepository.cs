@@ -51,14 +51,15 @@ public class PeerDbRepository : BaseDbRepository<PeerEntity>, IPeerDbRepository
         return MapEntityToDomain(peerEntity);
     }
 
+    /// <remarks>
+    /// Only <c>LastSeenAt</c> is written (the row is tracked, so the save updates the changed column alone): a full-row
+    /// update from this read raced the connect paths' saves of the peer's address and wrote the row it had read back
+    /// over them, e.g. an inbound-only row over the announced address a dial had just saved (NL-1386).
+    /// </remarks>
     public async Task UpdatePeerLastSeenAsync(CompactPubKey peerCompactPubKey)
     {
-        var existingPeer = await GetByIdAsync(peerCompactPubKey);
-        if (existingPeer is not null)
-        {
-            existingPeer.LastSeenAt = DateTime.UtcNow;
-            Update(existingPeer);
-        }
+        var existingPeer = await GetByIdAsync(peerCompactPubKey, asNoTracking: false);
+        existingPeer?.LastSeenAt = DateTime.UtcNow;
     }
 
     private static PeerEntity MapDomainToEntity(PeerModel peerModel)
