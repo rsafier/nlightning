@@ -11044,7 +11044,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** found by NL-1357
 
 ### NL-1355 The on-chain executor's round runs on after the node stops
-- **Status:** fixed
+- **Status:** fixed (8b97af10)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`ScheduleRound`/`LoopAsync`, no stop), the hosts' stop order (`NltgDaemonService`, `NLightningTestNode`)
