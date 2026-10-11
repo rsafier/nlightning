@@ -110,7 +110,8 @@ public static class DependencyInjection
             var utxoMemoryRepository = sp.GetRequiredService<IUtxoMemoryRepository>();
             return new LocalLightningSigner(fundingOutputBuilder, keyDerivationService, logger, nodeOptions,
                                             secureKeyManager, utxoMemoryRepository,
-                                            sp.GetService<IChannelSigningInfoSource>());
+                                            sp.GetService<IChannelSigningInfoSource>(),
+                                            sp.GetService<IChannelSignerGuardStore>());
         });
 
         // BOLT 12 BIP-340 signatures; the keys stay in ILightningSigner (BOLT 12 plan B1)

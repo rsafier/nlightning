@@ -56,6 +56,11 @@ public interface IUnitOfWork : IDisposable
     // The signer's view of a stored channel (NL-067)
     IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository { get; }
 
+    // The local signer's durable safety state per channel (NL-1345, migration AddChannelSignerGuards); the default is
+    // for test doubles that store none (a signer over them then refuses every guarded operation)
+    IChannelSignerGuardDbRepository ChannelSignerGuardDbRepository =>
+        throw new NotSupportedException("This unit of work does not store signer guards.");
+
     // BOLT 7 graph (migration AddGossipGraph)
     IGraphDbRepository GraphDbRepository { get; }
 

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
@@ -161,7 +162,26 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
             LocalFundingKeyIndex = current?.LocalFundingKeyIndex ?? 0,
             FundingKeysUnknown = fundings.Any(f => f.FundingTxId == channel.FundingTxId && f.FundingKeysUnknown),
             Fundings = others.Count == 0 ? null : others,
-            PersistedSpliceCommitments = persisted.Count == 0 ? null : persisted
+            PersistedSpliceCommitments = persisted.Count == 0 ? null : persisted,
+            CommitmentObscuringFactor = GetObscuringFactor(channel.IsInitiator, local.PaymentBasepoint,
+                                                           remote.PaymentBasepoint)
         };
+    }
+
+    /// <summary>
+    /// BOLT 3's commitment number obscuring factor: the lower 48 bits of SHA256(opener payment_basepoint || accepter
+    /// payment_basepoint), as <c>CommitmentNumber</c> computes it.
+    /// </summary>
+    private static ulong GetObscuringFactor(bool isInitiator, byte[] localPaymentBasepoint,
+                                            byte[] remotePaymentBasepoint)
+    {
+        var hash = SHA256.HashData(isInitiator
+                                       ? [.. localPaymentBasepoint, .. remotePaymentBasepoint]
+                                       : [.. remotePaymentBasepoint, .. localPaymentBasepoint]);
+        ulong factor = 0;
+        for (var i = 26; i < 32; i++)
+            factor = (factor << 8) | hash[i];
+
+        return factor;
     }
 }

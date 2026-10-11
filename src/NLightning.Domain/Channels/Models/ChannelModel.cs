@@ -632,7 +632,8 @@ public class ChannelModel
             LocalFundingKeyIndex = LocalFundingKeyIndex,
             FundingKeysUnknown = FundingKeysUnknown,
             IsSimpleTaproot = ChannelParams.OptionSimpleTaproot,
-            IsDualFunded = Version == ChannelVersion.V2
+            IsDualFunded = Version == ChannelVersion.V2,
+            CommitmentObscuringFactor = CommitmentNumber?.ObscuringFactor
         };
     }
 }

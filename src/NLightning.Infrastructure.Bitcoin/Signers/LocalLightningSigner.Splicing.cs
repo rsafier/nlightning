@@ -179,8 +179,11 @@ public partial class LocalLightningSigner
                                                    SignedTransaction unsignedTransaction)
     {
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
-        _ = GetRegisteredSigningInfo(channelId);
+        var registered = GetRegisteredSigningInfo(channelId);
+        var remoteNumber = GetCommitmentNumber(registered, unsignedTransaction);
+        RefreshDurableGuard(channelId);
 
+        CompactSignature signature;
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
@@ -192,8 +195,15 @@ public partial class LocalLightningSigner
             var tx = LoadTransaction(channelId, unsignedTransaction, "commitment");
             ThrowIfNotSpendingFunding(channelId, tx, funding);
 
-            return SignFundingSpend(channelId, signingInfo.ChannelKeyIndex, funding, tx, 0);
+            // The peer's commitment is never signed below one already signed, on any funding (NL-1345)
+            if (remoteNumber is { } number)
+                CheckAndMarkRemoteCommitment(channelId, number);
+
+            signature = SignFundingSpend(channelId, signingInfo.ChannelKeyIndex, funding, tx, 0);
         }
+
+        PersistRemoteCommitmentGuard(channelId, remoteNumber);
+        return signature;
     }
 
     /// <inheritdoc />
@@ -223,8 +233,10 @@ public partial class LocalLightningSigner
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
         ArgumentNullException.ThrowIfNull(remoteSignature);
         _ = GetRegisteredSigningInfo(channelId);
+        RefreshDurableGuard(channelId);
 
         // SP-I4: the same lock as the single-funding broadcast, AdvanceLocalCommitment and RevealPerCommitmentSecret
+        SignedTransaction signed;
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
@@ -232,9 +244,13 @@ public partial class LocalLightningSigner
             var tx = LoadTransaction(channelId, unsignedCommitment, "commitment");
             ThrowIfNotSpendingFunding(channelId, tx, funding);
 
-            return SignLocalCommitmentForBroadcastCore(channelId, signingInfo, funding, commitmentNumber,
-                                                       unsignedCommitment, remoteSignature);
+            signed = SignLocalCommitmentForBroadcastCore(channelId, signingInfo, funding, commitmentNumber,
+                                                         unsignedCommitment, remoteSignature);
         }
+
+        // The S1 mark is durable before the signed commitment leaves the signer (NL-1345)
+        PersistBroadcastGuard(channelId, commitmentNumber);
+        return signed;
     }
 
     /// <inheritdoc />
