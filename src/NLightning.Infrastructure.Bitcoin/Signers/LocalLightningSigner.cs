@@ -74,6 +74,7 @@ public partial class LocalLightningSigner : ILightningSigner
                                 NodeOptions nodeOptions, ISecureKeyManager secureKeyManager,
                                 IUtxoMemoryRepository utxoMemoryRepository,
                                 IChannelSigningInfoSource? signingInfoSource = null,
+                                IChannelSignerGuardStore? guardStore = null,
                                 INodeWriteFence? writeFence = null)
     {
         _writeFence = writeFence;
@@ -86,6 +87,7 @@ public partial class LocalLightningSigner : ILightningSigner
         _network = nodeOptions.BitcoinNetwork.ToNBitcoinNetwork();
         _chainHash = nodeOptions.BitcoinNetwork.ChainHash;
         _signingInfoSource = signingInfoSource;
+        _guardStore = guardStore;
     }
 
     /// <inheritdoc />
@@ -403,12 +405,15 @@ public partial class LocalLightningSigner : ILightningSigner
 
             // S1 across restarts: the persisted broadcast is marked before anything can reveal or advance
             if (signingInfo.BroadcastSignedCommitmentNumber is { } broadcastNumber)
-                MarkBroadcastSigned(channelId, broadcastNumber);
+                MarkBroadcastSignedInMemory(channelId, broadcastNumber);
         }
 
         // Data loss is sticky: a registration never clears it
         if (signingInfo.DataLossDetected)
             _dataLossChannels[channelId] = true;
+
+        // The durable guard (NL-1345) is authoritative over the rows this registration came from, which may lag
+        SyncDurableGuardAtRegistration(channelId);
 
         // The pending splices and retired fundings, and the SP-I1 marks, of a channel reloaded after a restart
         RestoreSpliceState(channelId, signingInfo);
@@ -425,6 +430,8 @@ public partial class LocalLightningSigner : ILightningSigner
             removed = _channelSigningInfo.TryRemove(channelId, out _);
             _localCommitmentNumbers.TryRemove(channelId, out _);
             _broadcastSignedNumbers.TryRemove(channelId, out _);
+            _remoteSignedNumbers.TryRemove(channelId, out _);
+            _durableGuards.TryRemove(channelId, out _);
             _spliceFundings.TryRemove(channelId, out _);
             _taprootBroadcastSessions.TryRemove(channelId, out _);
         }
@@ -444,10 +451,28 @@ public partial class LocalLightningSigner : ILightningSigner
         _logger.LogCritical("Data loss on channel {ChannelId}: the signer refuses every further signature for it",
                             channelId);
         _dataLossChannels[channelId] = true;
+
+        // Durable too (NL-1345), so a later process refuses as well; memory already refuses if the write fails
+        try
+        {
+            PersistDurableGuard(channelId, new ChannelSignerGuard(0, DataLossDetected: true));
+        }
+        catch (SignerException e)
+        {
+            _logger.LogError(e, "Could not persist the data loss of channel {ChannelId} in the durable signer guard",
+                             channelId);
+        }
     }
 
     /// <inheritdoc />
     public void MarkBroadcastSigned(ChannelId channelId, ulong commitmentNumber)
+    {
+        MarkBroadcastSignedInMemory(channelId, commitmentNumber);
+        PersistBroadcastGuard(channelId, commitmentNumber);
+    }
+
+    /// <summary>The S1 mark in memory (see <see cref="MarkBroadcastSigned"/>), without the durable write.</summary>
+    private void MarkBroadcastSignedInMemory(ChannelId channelId, ulong commitmentNumber)
     {
         if (commitmentNumber > CommitmentNumber.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(commitmentNumber), commitmentNumber,
@@ -467,8 +492,18 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public bool TryGetBroadcastSignedCommitment(ChannelId channelId, out ulong commitmentNumber)
     {
-        // A channel not registered yet is loaded first, so a persisted mark is reported after a restart too (NL-067)
+        // A channel not registered yet is loaded first, so a persisted mark is reported after a restart too (NL-067),
+        // and so is a mark another process persisted in the durable guard (NL-1345)
         _ = TryGetSigningInfo(channelId, out _);
+        try
+        {
+            RefreshDurableGuard(channelId);
+        }
+        catch (SignerException e)
+        {
+            _logger.LogWarning(e, "Could not read the durable signer guard of channel {ChannelId}", channelId);
+        }
+
         return _broadcastSignedNumbers.TryGetValue(channelId, out commitmentNumber);
     }
 
@@ -540,14 +575,21 @@ public partial class LocalLightningSigner : ILightningSigner
     {
         CheckSignFence();
 
-        // A channel that is not registered is loaded (a database read) before the lock is taken, not while holding it
+        // A channel that is not registered is loaded (a database read) before the lock is taken, not while holding it,
+        // and so is the durable guard (NL-1345)
         _ = TryGetSigningInfo(channelId, out _);
+        RefreshDurableGuard(channelId);
 
         // S1 is a signer invariant: the I4/S1 checks, the signature and the mark hold the channel's commitment lock, so
         // no AdvanceLocalCommitment/RevealPerCommitmentSecret can revoke the commitment in between
+        SignedTransaction signed;
         lock (GetCommitmentLock(channelId))
-            return SignLocalCommitmentForBroadcastLocked(channelId, commitmentNumber, unsignedCommitment,
-                                                         remoteSignature);
+            signed = SignLocalCommitmentForBroadcastLocked(channelId, commitmentNumber, unsignedCommitment,
+                                                           remoteSignature);
+
+        // The mark is durable before the signed commitment leaves the signer
+        PersistBroadcastGuard(channelId, commitmentNumber);
+        return signed;
     }
 
     private SignedTransaction SignLocalCommitmentForBroadcastLocked(ChannelId channelId, ulong commitmentNumber,
@@ -600,8 +642,9 @@ public partial class LocalLightningSigner : ILightningSigner
         var remoteSig = new TransactionSignature(remoteEcdsa, SigHash.All).ToBytes();
 
         // S1: record the broadcast signature before it leaves the signer, so the secret of this commitment can never
-        // be released afterwards (a racing revoke_and_ack would hand the peer the key to our on-chain to_local)
-        MarkBroadcastSigned(channelId, commitmentNumber);
+        // be released afterwards (a racing revoke_and_ack would hand the peer the key to our on-chain to_local); the
+        // public entry points persist it after the lock (NL-1345)
+        MarkBroadcastSignedInMemory(channelId, commitmentNumber);
 
         // BOLT 3 funding witness: 0 <pubkey1_signature> <pubkey2_signature> <funding script>, in the script's key order
         var localFirst = IsFirstFundingKey(fundingScript, funding.LocalPubKey);
@@ -623,7 +666,9 @@ public partial class LocalLightningSigner : ILightningSigner
     public Secret RevealPerCommitmentSecret(ChannelId channelId, ulong commitmentNumber)
     {
         var signingInfo = GetRegisteredSigningInfo(channelId);
+        RefreshDurableGuard(channelId);
 
+        ulong localNumber;
         lock (GetCommitmentLock(channelId))
         {
             // NL-189: never reveal the secret of a commitment that has not been superseded by a persisted one
@@ -639,7 +684,13 @@ public partial class LocalLightningSigner : ILightningSigner
                 throw new SignerException(
                     $"Refusing to reveal the per-commitment secret of commitment {commitmentNumber}: local commitment "
                   + $"{broadcastNumber} is signed for broadcast", channelId, "Internal error");
+
+            localNumber = localCommitmentNumber;
         }
+
+        // The release is durable before the secret leaves the signer (NL-1345): a later process never signs this
+        // commitment for broadcast, even from channel rows that lag
+        PersistDurableGuard(channelId, new ChannelSignerGuard(localNumber, commitmentNumber));
 
         // Safe outside the lock: the checks passed for a commitment that is already revoked, and revocation is final
         return DerivePerCommitmentSecret(signingInfo.ChannelKeyIndex, commitmentNumber);
@@ -653,6 +704,7 @@ public partial class LocalLightningSigner : ILightningSigner
                                                   "Commitment numbers are 48-bit values");
 
         _ = GetRegisteredSigningInfo(channelId);
+        RefreshDurableGuard(channelId);
 
         lock (GetCommitmentLock(channelId))
         {
@@ -1113,10 +1165,19 @@ public partial class LocalLightningSigner : ILightningSigner
             throw new InvalidOperationException($"Channel {channelId} not registered with signer");
 
         ThrowIfTaproot(channelId, signingInfo, "sign a channel transaction with an ECDSA signature");
+
+        // The peer's commitment is never signed below one already signed, by this process or an earlier one (NL-1345)
+        var remoteNumber = GetCommitmentNumber(signingInfo, unsignedTransaction);
+        RefreshDurableGuard(channelId);
+        if (remoteNumber is { } number)
+            lock (GetCommitmentLock(channelId))
+                CheckAndMarkRemoteCommitment(channelId, number);
         ThrowIfDataLoss(channelId, "sign a commitment");
         ThrowIfBroadcastSigned(channelId, "sign a channel transaction");
 
-        return SignFundingInput(channelId, signingInfo, unsignedTransaction);
+        var signature = SignFundingInput(channelId, signingInfo, unsignedTransaction);
+        PersistRemoteCommitmentGuard(channelId, remoteNumber);
+        return signature;
     }
 
     /// <inheritdoc />

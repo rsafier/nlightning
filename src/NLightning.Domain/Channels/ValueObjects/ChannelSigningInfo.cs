@@ -102,6 +102,13 @@ public record struct ChannelSigningInfo
     /// </summary>
     public IReadOnlyDictionary<TxId, ulong>? PersistedSpliceCommitments { get; init; }
 
+    /// <summary>
+    /// The channel's BOLT 3 commitment number obscuring factor (<c>CommitmentNumber.ObscuringFactor</c>), when the
+    /// peer's payment basepoint is known. The signer decodes the number of a commitment it signs for the peer from the
+    /// transaction with it, for the durable remote-commitment guard (NL-1345); null leaves that guard off.
+    /// </summary>
+    public ulong? CommitmentObscuringFactor { get; init; }
+
     public ChannelSigningInfo(TxId fundingTxId, ushort fundingOutputIndex, ulong fundingSatoshis,
                               CompactPubKey localFundingPubKey, CompactPubKey remoteFundingPubKey,
                               uint channelKeyIndex, CompactPubKey? remoteHtlcBasepoint = null,

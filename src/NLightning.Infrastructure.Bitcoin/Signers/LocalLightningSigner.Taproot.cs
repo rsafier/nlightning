@@ -111,8 +111,11 @@ public partial class LocalLightningSigner
         CheckSignFence();
 
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
-        _ = GetRegisteredSigningInfo(channelId);
+        var registered = GetRegisteredSigningInfo(channelId);
+        var remoteNumber = GetCommitmentNumber(registered, unsignedCommitment);
+        RefreshDurableGuard(channelId);
 
+        MusigPartialSignatureWithNonce partial;
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
@@ -124,9 +127,16 @@ public partial class LocalLightningSigner
             var tx = LoadTransaction(channelId, unsignedCommitment, "commitment");
             ThrowIfNotSpendingFunding(channelId, tx, funding);
 
-            return SignJustInTime(channelId, signingInfo.ChannelKeyIndex, funding, unsignedCommitment,
-                                  remoteVerificationNonce, "the peer's verification nonce");
+            // The peer's commitment is never signed below one already signed, on any funding (NL-1345)
+            if (remoteNumber is { } number)
+                CheckAndMarkRemoteCommitment(channelId, number);
+
+            partial = SignJustInTime(channelId, signingInfo.ChannelKeyIndex, funding, unsignedCommitment,
+                                     remoteVerificationNonce, "the peer's verification nonce");
         }
+
+        PersistRemoteCommitmentGuard(channelId, remoteNumber);
+        return partial;
     }
 
     /// <inheritdoc />
@@ -172,10 +182,13 @@ public partial class LocalLightningSigner
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
         ThrowIfNotCommitmentNumber(commitmentNumber);
 
-        // A channel that is not registered is loaded (a database read) before the lock is taken, not while holding it
+        // A channel that is not registered is loaded (a database read) before the lock is taken, not while holding it,
+        // and so is the durable guard (NL-1345)
         _ = GetRegisteredSigningInfo(channelId);
+        RefreshDurableGuard(channelId);
 
         // The same lock as the ECDSA broadcast, AdvanceLocalCommitment and RevealPerCommitmentSecret (S1, SP-I4)
+        SignedTransaction signed;
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
@@ -205,8 +218,8 @@ public partial class LocalLightningSigner
                 var signature = AggregateAndCheck(channelId, aggregate, session,
                                                   [ourPartial, remoteSignature.PartialSignature], sigHash);
 
-                // S1: record the broadcast signature before it leaves the signer
-                MarkBroadcastSigned(channelId, commitmentNumber);
+                // S1: record the broadcast signature before it leaves the signer (durable after the lock, NL-1345)
+                MarkBroadcastSignedInMemory(channelId, commitmentNumber);
 
                 // BIP 341 key-path witness: the 64-byte signature alone (SIGHASH_DEFAULT, no sighash byte)
                 tx.Inputs[0].WitScript = new WitScript([signature]);
@@ -215,13 +228,16 @@ public partial class LocalLightningSigner
                                          + "channel {ChannelId} on funding {FundingTxId} for broadcast",
                                            commitmentNumber, tx.GetHash(), channelId, funding.TxId);
 
-                return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
+                signed = new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
             }
             finally
             {
                 ourNonce.SecretNonce.Dispose();
             }
         }
+
+        PersistBroadcastGuard(channelId, commitmentNumber);
+        return signed;
     }
 
     #endregion

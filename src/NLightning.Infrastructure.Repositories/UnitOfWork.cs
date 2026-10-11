@@ -73,6 +73,7 @@ public class UnitOfWork : IUnitOfWork
     private ChannelStateDbRepository? _channelStateDbRepository;
     private RemoteShachainDbRepository? _remoteShachainDbRepository;
     private ChannelSigningInfoDbRepository? _channelSigningInfoDbRepository;
+    private ChannelSignerGuardDbRepository? _channelSignerGuardDbRepository;
     private InteractiveTxSessionDbRepository? _interactiveTxSessionDbRepository;
     private ChannelFundingDbRepository? _channelFundingDbRepository;
     private ChannelPolicyDbRepository? _channelPolicyDbRepository;
@@ -172,6 +173,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository =>
         _channelSigningInfoDbRepository ??= new ChannelSigningInfoDbRepository(_context);
+
+    public IChannelSignerGuardDbRepository ChannelSignerGuardDbRepository =>
+        _channelSignerGuardDbRepository ??= new ChannelSignerGuardDbRepository(_context);
 
     public IGraphDbRepository GraphDbRepository => _graphDbRepository ??= new GraphDbRepository(_context);
 

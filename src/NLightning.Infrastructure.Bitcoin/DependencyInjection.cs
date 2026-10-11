@@ -112,6 +112,7 @@ public static class DependencyInjection
             return new LocalLightningSigner(fundingOutputBuilder, keyDerivationService, logger, nodeOptions,
                                             secureKeyManager, utxoMemoryRepository,
                                             sp.GetService<IChannelSigningInfoSource>(),
+                                            sp.GetService<IChannelSignerGuardStore>(),
                                             sp.GetService<INodeWriteFence>());
         });
 

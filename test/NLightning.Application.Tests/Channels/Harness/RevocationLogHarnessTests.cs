@@ -3,11 +3,14 @@ using Microsoft.Extensions.DependencyInjection;
 namespace NLightning.Application.Tests.Channels.Harness;
 
 using Application.Channels.Services;
+using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Onion.ValueObjects;
+using Infrastructure.Bitcoin.Builders.Interfaces;
 
 /// <summary>
 /// Proof O1 (BOLT 5 plan O1-T1): two in-process nodes run 30 HTLC round trips through the production handlers and
@@ -102,16 +105,19 @@ public class RevocationLogHarnessTests
     {
         var store = node.Store;
 
-        // Rebuilding a revoked commitment from its logged spec gives the txid signed for that number at the time
-        var signing = node.Services.GetRequiredService<CommitmentSigningService>();
+        // Rebuilding a revoked commitment from its logged spec gives the txid signed for that number at the time; built,
+        // not signed again: the signer never signs the peer's commitment below the highest it signed (NL-1345)
+        var modelFactory = node.Services.GetRequiredService<ICommitmentTransactionModelFactory>();
+        var builder = node.Services.GetRequiredService<ICommitmentTransactionBuilder>();
         var signed = node.Signed.GroupBy(s => s.Number).ToDictionary(g => g.Key, g => g.Select(s => s.TxId).ToList());
         foreach (var revoked in store.CommittedRevocations.Where(c => c.Number > 0))
         {
             Assert.True(signed.TryGetValue(revoked.Number, out var txIds), $"{node.Name} never signed #{revoked.Number}");
             Assert.Single(txIds.Distinct());
-            var rebuilt = signing.SignRemoteCommitment(node.Channel, CommitmentTxSpec.FromCommitmentSpec(revoked.Spec),
-                                                       revoked.Number, node.Peer.Point(revoked.Number));
-            Assert.Equal(txIds[0], rebuilt.CommitmentTxId);
+            var model = modelFactory.CreateCommitmentTransactionModel(
+                node.Channel, CommitmentTxSpec.FromCommitmentSpec(revoked.Spec), CommitmentSide.Remote, revoked.Number,
+                node.Peer.Point(revoked.Number));
+            Assert.Equal(txIds[0], builder.Build(model).TxId);
             Assert.Equal(revoked.PerCommitmentPoint, node.Peer.Point(revoked.Number));
         }
     }

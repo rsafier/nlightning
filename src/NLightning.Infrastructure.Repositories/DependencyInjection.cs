@@ -66,6 +66,10 @@ public static class DependencyInjection
         // The signer loads a channel it has not registered from the database (NL-067)
         services.AddSingleton<IChannelSigningInfoSource, ChannelSigningInfoSource>();
 
+        // The local signer's durable safety state per channel (NL-1345): read at registration and before every guarded
+        // operation, raised before a secret or signature leaves the signer
+        services.AddSingleton<IChannelSignerGuardStore, ChannelSignerGuardStore>();
+
         // Register memory repositories
         services.AddSingleton<IChannelMemoryRepository, ChannelMemoryRepository>();
         services.AddSingleton<IUtxoMemoryRepository, UtxoMemoryRepository>();
