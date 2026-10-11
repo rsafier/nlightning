@@ -9254,6 +9254,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/EclairTaprootOnchainTests.cs` (`Given_HtlcsInFlightBothWays_When_WeForceCloseATaprootChannel_Then_EachOutputIsResolvedOnChain`, `MineUntilAsync`)
 - **Evidence:** cov-full (2026-10-04, under coverlet instrumentation, about 1.9x slower): `TimeoutException: Not in time: 173e1105… confirmed` from `MineUntilResolvedAsync`; green on the class rerun alone. Green in both t03 cluster runs and the tap3-mx1 matrix without coverage. Likely the mining loop's bound against a slower node; not yet ruled out that the transaction was published late.
+- **Seen again 2026-10-11** (node-fence integration matrix `mx-20261011013528`, cap 12): `Given_HtlcsInFlightBothWays_When_WeForceClose*` timed out on "Eclair's timeout spend of our received HTLC output" and the in-matrix class rerun timed out on "Eclair's HTLC-timeout of its HTLC" (both waits on Eclair's own transactions); the class alone after the matrix: 2/2 green (`rc-20261011020756-1`).
 - **Fix sketch:** read the run's diag for when 173e1105 was published; scale `MineUntilAsync`'s bound with the run's timeout factor or wait for the broadcast before mining.
 - **Blocks/Blocked-by:** Related NL-966, NL-957
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T6
