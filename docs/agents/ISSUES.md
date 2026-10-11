@@ -11261,7 +11261,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation:** `Integration.Tests/Persistence/PeerLastSeenPersistenceTests` (SQLite with the real migrations: the pong's read, a dial's address save, then the pong's save keeps the address; fails without the fix) and `InboundOnlyPeerRedialTests`.
 
 ### NL-1387 Two process-wide wallet locks made nodes hosted in one process wait on each other, without cancellation
-- **Status:** fixed
+- **Status:** fixed (81b6c879)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinWalletService.cs` (`s_addressGenerationLock`), `src/NLightning.Infrastructure.Bitcoin/Wallet/WalletAccountService.cs` (`s_gate`), `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`TryProcessBlockWithRetriesAsync`)
