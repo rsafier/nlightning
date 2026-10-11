@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.Serialization;
 using NLightning.Domain.Interfaces;
 using NLightning.Domain.Protocol.ValueObjects;
 using NLightning.Domain.Serialization.Interfaces;
@@ -9,6 +10,11 @@ using Converters;
 
 public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
 {
+    /// <summary>
+    /// Error message used when a BigSize is not minimally encoded (BOLT 1 Appendix A).
+    /// </summary>
+    public const string NonCanonicalErrorMessage = "decoded bigsize is not canonical";
+
     /// <summary>
     /// Serializes a BigSize value into a stream.
     /// </summary>
@@ -48,18 +54,23 @@ public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
     /// </summary>
     /// <param name="stream">The stream from which the BigSize value will be deserialized.</param>
     /// <returns>A task that represents the asynchronous deserialization operation, containing the deserialized BigSize value.</returns>
-    /// <exception cref="ArgumentException">Thrown when the stream is empty or contains insufficient data for deserialization.</exception>
+    /// <remarks>
+    /// <para>Decoding is canonical: a value that could have been encoded in fewer bytes is rejected (BOLT 1
+    /// Appendix A).</para>
+    /// <para>The stream does not need to be seekable: every read goes through <see cref="Stream.ReadExactlyAsync"/>,
+    /// so truncation is detected by the read itself and not by comparing <c>Position</c> with <c>Length</c>.</para>
+    /// </remarks>
+    /// <exception cref="SerializationException">
+    /// Thrown when the stream is empty, ends in the middle of a BigSize, or the value is not minimally encoded.
+    /// </exception>
     /// <exception cref="IOException">Thrown when an I/O error occurs during the read operation.</exception>
     public async Task<BigSize> DeserializeAsync(Stream stream)
     {
-        if (stream.Position == stream.Length)
-            throw new ArgumentException("BigSize cannot be read from an empty stream.");
-
         var buffer = ArrayPool<byte>.Shared.Rent(sizeof(ulong));
 
         try
         {
-            await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(byte)]);
+            await ReadExactlyAsync(stream, buffer, sizeof(byte), "BigSize cannot be read from an empty stream.");
             ulong value;
 
             switch (buffer[0])
@@ -67,32 +78,34 @@ public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
                 case < 0xfd:
                     value = buffer[0];
                     break;
-                // Check if there are enough bytes to read
-                case 0xfd when stream.Position + 2 > stream.Length:
-                    throw new ArgumentException("BigSize cannot be read from a stream with insufficient data.");
                 case 0xfd:
                     {
-                        await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(ushort)]);
+                        await ReadExactlyAsync(stream, buffer, sizeof(ushort),
+                                               "BigSize cannot be read from a stream with insufficient data.");
                         value = EndianBitConverter.ToUInt16BigEndian(buffer[..sizeof(ushort)]);
+                        if (value < 0xfd)
+                            throw new SerializationException(NonCanonicalErrorMessage);
+
                         break;
                     }
-                case 0xfe when stream.Position + 4 > stream.Length:
-                    throw new ArgumentException("BigSize cannot be read from a stream with insufficient data.");
                 case 0xfe:
                     {
-                        await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(uint)]);
+                        await ReadExactlyAsync(stream, buffer, sizeof(uint),
+                                               "BigSize cannot be read from a stream with insufficient data.");
                         value = EndianBitConverter.ToUInt32BigEndian(buffer[..sizeof(uint)]);
+                        if (value < 0x10000)
+                            throw new SerializationException(NonCanonicalErrorMessage);
+
                         break;
                     }
                 default:
                     {
-                        if (stream.Position + 8 > stream.Length)
-                        {
-                            throw new ArgumentException("BigSize cannot be read from a stream with insufficient data.");
-                        }
-
-                        await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(ulong)]);
+                        await ReadExactlyAsync(stream, buffer, sizeof(ulong),
+                                               "BigSize cannot be read from a stream with insufficient data.");
                         value = EndianBitConverter.ToUInt64BigEndian(buffer[..sizeof(ulong)]);
+                        if (value < 0x100000000)
+                            throw new SerializationException(NonCanonicalErrorMessage);
+
                         break;
                     }
             }
@@ -103,7 +116,20 @@ public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+
+        static async Task ReadExactlyAsync(Stream stream, byte[] buffer, int count, string truncatedMessage)
+        {
+            try
+            {
+                await stream.ReadExactlyAsync(buffer.AsMemory()[..count]);
+            }
+            catch (EndOfStreamException e)
+            {
+                throw new SerializationException(truncatedMessage, e);
+            }
+        }
     }
+
     async Task<IValueObject> IValueObjectTypeSerializer.DeserializeAsync(Stream stream)
     {
         return await DeserializeAsync(stream);

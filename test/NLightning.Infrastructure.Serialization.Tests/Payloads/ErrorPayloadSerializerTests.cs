@@ -3,9 +3,9 @@ using NLightning.Domain.Channels.ValueObjects;
 namespace NLightning.Infrastructure.Serialization.Tests.Payloads;
 
 using Converters;
+using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Factories;
-using Infrastructure.Serialization.Payloads;
+using Helpers;
 
 public class ErrorPayloadSerializerTests
 {
@@ -13,12 +13,13 @@ public class ErrorPayloadSerializerTests
     public async Task Given_ValidPayload_When_Serializing_Then_ReturnsCorrectValues()
     {
         // Given
-        var errorPayloadTypeSerializer = new ErrorPayloadSerializer(new ValueObjectSerializerFactory());
+        var errorMessageTypeSerializer =
+            SerializerHelper.WireRegistry.Get<ErrorMessage>()!;
         var errorPayload = new ErrorPayload(ChannelId.Zero);
         using var memoryStream = new MemoryStream();
 
         // When
-        await errorPayloadTypeSerializer.SerializeAsync(errorPayload, memoryStream);
+        await errorMessageTypeSerializer.SerializeAsync(new ErrorMessage(errorPayload), memoryStream);
 
         // Then
         memoryStream.Seek(0, SeekOrigin.Begin);

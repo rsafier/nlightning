@@ -1,21 +1,21 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
+using Domain.Protocol.Constants;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
+using Serialization.Messages;
 
 public class StfuMessageTests
 {
-    private readonly StfuMessageTypeSerializer _stfuMessageTypeSerializer;
-
-    public StfuMessageTests()
-    {
-        _stfuMessageTypeSerializer =
-            new StfuMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
-    }
+    private readonly IMessageTypeSerializer<StfuMessage> _stfuMessageTypeSerializer =
+        SerializerHelper.WireRegistry.Get<StfuMessage>()!;
 
     [Fact]
     public async Task Given_ValidStream_When_DeserializeAsync_Then_ReturnsStfuMessage()
@@ -54,5 +54,32 @@ public class StfuMessageTests
 
         // Assert
         Assert.Equal(expectedBytes, result);
+    }
+
+    [Fact]
+    public async Task Given_StfuWireBytes_When_DeserializeMessageAsync_Then_ChannelMessageThatRoundTrips()
+    {
+        // Arrange: BOLT 2 "Channel Quiescence": type 2 (stfu) = channel_id || u8 initiator; a channel message
+        // (splicing plan Q-W-01), so the factory must map type 2 or the even type would kill the connection
+        var messageTypeSerializerFactory =
+            new WireRegistry();
+        var messageSerializer = new MessageSerializer(NullLogger<MessageSerializer>.Instance,
+                                                      messageTypeSerializerFactory);
+        var wire = Convert.FromHexString("0002" + new string('4', 62) + "4200");
+        using var input = new MemoryStream(wire);
+
+        // Act
+        var message = await messageSerializer.DeserializeMessageAsync(input);
+        using var output = new MemoryStream();
+        await messageSerializer.SerializeAsync(message!, output);
+
+        // Assert
+        var stfu = Assert.IsType<StfuMessage>(message);
+        Assert.IsAssignableFrom<IChannelMessage>(stfu);
+        Assert.Equal(MessageTypes.Stfu, stfu.Type);
+        Assert.Equal(new ChannelId(Enumerable.Repeat((byte)0x44, 31).Append((byte)0x42).ToArray()),
+                     stfu.Payload.ChannelId);
+        Assert.False(stfu.Payload.Initiator);
+        Assert.Equal(wire, output.ToArray());
     }
 }

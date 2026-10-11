@@ -1,0 +1,144 @@
+using System.Diagnostics.CodeAnalysis;
+
+namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
+
+using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.ValueObjects;
+using Domain.Money;
+
+/// <summary>
+/// The UTXO set and fee reservations of <c>UtxoMemoryRepository</c> (which this project does not reference), enough for
+/// the wallet signer and the fee input selector.
+/// </summary>
+internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
+{
+    private readonly Dictionary<(TxId, uint), UtxoModel> _utxos = [];
+    private readonly Dictionary<(TxId, uint), UtxoModel> _unconfirmed = [];
+    private readonly Dictionary<(TxId, uint), Guid> _reservations = [];
+    private readonly Lock _lock = new();
+
+    /// <summary>Runs before the reservation check of <see cref="TryReserveForFee"/> (to simulate a concurrent lock).</summary>
+    public Action? BeforeReserve { get; set; }
+
+    public void Add(UtxoModel utxoModel)
+    {
+        lock (_lock)
+        {
+            _utxos.Add((utxoModel.TxId, utxoModel.Index), utxoModel);
+            _unconfirmed.Remove((utxoModel.TxId, utxoModel.Index));
+        }
+    }
+
+    public void Spend(UtxoModel utxoModel)
+    {
+        lock (_lock)
+        {
+            _utxos.Remove((utxoModel.TxId, utxoModel.Index));
+            _unconfirmed.Remove((utxoModel.TxId, utxoModel.Index));
+        }
+    }
+
+    public bool TryGetUtxo(TxId txId, uint index, [MaybeNullWhen(false)] out UtxoModel utxoModel)
+    {
+        lock (_lock)
+            return _utxos.TryGetValue((txId, index), out utxoModel) || _unconfirmed.TryGetValue((txId, index), out utxoModel);
+    }
+
+    public void AddUnconfirmed(UtxoModel utxo)
+    {
+        if (utxo.BlockHeight != 0 || utxo.WalletAddress is null) throw new ArgumentException("Expected transient wallet coin.");
+        lock (_lock) _unconfirmed[(utxo.TxId, utxo.Index)] = utxo;
+    }
+    public void RemoveUnconfirmed(TxId txId, uint index) { lock (_lock) _unconfirmed.Remove((txId, index)); }
+    public IReadOnlyList<UtxoModel> GetUnconfirmedUtxos() { lock (_lock) return _unconfirmed.Values.ToArray(); }
+
+    public LightningMoney GetConfirmedBalance(uint currentBlockHeight) => throw new NotSupportedException();
+    public LightningMoney GetUnconfirmedBalance(uint currentBlockHeight) => throw new NotSupportedException();
+
+    public LightningMoney GetBalanceWithConfirmations(uint currentBlockHeight, uint minConfirmations) =>
+        throw new NotSupportedException();
+    public LightningMoney GetLockedBalance() => throw new NotSupportedException();
+    public void Load(List<UtxoModel> utxoSet) => utxoSet.ForEach(Add);
+
+    public List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId) =>
+        throw new NotSupportedException();
+
+    public List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId,
+                                                     LightningMoney reserveToKeep,
+                                                     IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints,
+                                                     LightningMoney fundingFeeRatePerKw, uint currentBlockHeight) =>
+        throw new NotSupportedException();
+
+    public LightningMoney GetAvailableConfirmedBalance(uint currentBlockHeight,
+                                                       IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints) =>
+        throw new NotSupportedException();
+
+    public List<UtxoModel> GetLockedUtxosForChannel(ChannelId channelId)
+    {
+        lock (_lock)
+            return _utxos.Values.Where(utxo => utxo.LockedToChannelId == channelId).ToList();
+    }
+    public List<UtxoModel> ReturnUtxosNotSpentOnChannel(ChannelId channelId) => throw new NotSupportedException();
+    public void ConfirmSpendOnChannel(ChannelId channelId) => throw new NotSupportedException();
+
+    public void UpgradeChannelIdOnLockedUtxos(ChannelId oldChannelId, ChannelId newChannelId) =>
+        throw new NotSupportedException();
+
+    public int RestoreLocksForChannel(ChannelId channelId, IReadOnlyCollection<(TxId TxId, uint Index)> outpoints) =>
+        throw new NotSupportedException();
+
+    public List<UtxoModel> GetUnreservedUtxos()
+    {
+        lock (_lock)
+            return _utxos.Values.Where(u => u.LockedToChannelId is null && !_reservations.ContainsKey((u.TxId, u.Index)))
+                         .ToList();
+    }
+
+    public bool TryReserveForFee(IReadOnlyCollection<(TxId TxId, uint Index)> outpoints, Guid reservationId)
+    {
+        BeforeReserve?.Invoke();
+        lock (_lock)
+        {
+            if (outpoints.Count == 0 || outpoints.Any(o => (!_utxos.TryGetValue(o, out var u) && !_unconfirmed.TryGetValue(o, out u))
+                                                         || u.LockedToChannelId is not null
+                                                         || _reservations.ContainsKey(o)))
+                return false;
+
+            foreach (var outpoint in outpoints)
+                _reservations[outpoint] = reservationId;
+            return true;
+        }
+    }
+
+    public void ReleaseFeeReservation(Guid reservationId)
+    {
+        lock (_lock)
+        {
+            foreach (var key in _reservations.Where(r => r.Value == reservationId).Select(r => r.Key).ToList())
+                _reservations.Remove(key);
+        }
+    }
+
+    public IReadOnlyList<(TxId TxId, uint Index)> GetFeeReservedOutpoints(Guid reservationId)
+    {
+        lock (_lock)
+            return _reservations.Where(pair => pair.Value == reservationId).Select(pair => pair.Key).ToArray();
+    }
+
+    public bool TryGetFeeReservation(TxId txId, uint index, out Guid reservationId)
+    {
+        lock (_lock)
+            return _reservations.TryGetValue((txId, index), out reservationId);
+    }
+
+    public void LoadFeeReservations(IEnumerable<(TxId TxId, uint Index, Guid ReservationId)> reservations)
+    {
+        lock (_lock)
+        {
+            foreach (var (txId, index, id) in reservations)
+                _reservations[(txId, index)] = id;
+        }
+    }
+}

@@ -1,0 +1,153 @@
+using MessagePack;
+
+namespace NLightning.Transport.Ipc.Responses;
+
+using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Enums;
+using Domain.Channels.ValueObjects;
+using Domain.Client.Responses;
+using Domain.Crypto.ValueObjects;
+using Domain.Money;
+
+/// <summary>
+/// One channel in a <see cref="ListChannelsIpcResponse"/>.
+/// </summary>
+[MessagePackObject]
+public sealed class ChannelInfoIpcResponse
+{
+    [Key(0)] public required ChannelId ChannelId { get; init; }
+    [Key(1)] public required CompactPubKey PeerId { get; init; }
+    [Key(2)] public required ChannelState State { get; init; }
+    [Key(3)] public bool IsInitiator { get; init; }
+    [Key(4)] public bool IsPeerConnected { get; init; }
+
+    /// <summary>
+    /// The short channel id as a BOLT 7 uint64 (block &lt;&lt; 40 | tx index &lt;&lt; 16 | output), the same number LND
+    /// reports as <c>chan_id</c>; null until the funding transaction confirms.
+    /// </summary>
+    [Key(5)] public ulong? ShortChannelId { get; init; }
+
+    [Key(6)] public TxId? FundingTxId { get; init; }
+    [Key(7)] public ushort? FundingOutputIndex { get; init; }
+    [Key(8)] public required LightningMoney Capacity { get; init; }
+    [Key(9)] public required LightningMoney LocalBalance { get; init; }
+    [Key(10)] public required LightningMoney RemoteBalance { get; init; }
+    [Key(11)] public ulong LocalCommitmentNumber { get; init; }
+    [Key(12)] public ulong RemoteCommitmentNumber { get; init; }
+    [Key(13)] public int OfferedHtlcCount { get; init; }
+    [Key(14)] public int ReceivedHtlcCount { get; init; }
+    [Key(15)] public bool DataLossDetected { get; init; }
+
+    /// <summary>
+    /// True when <c>channel_reestablish</c> was exchanged on the current connection (always false until BOLT2 plan N7).
+    /// </summary>
+    [Key(16)] public bool IsReestablished { get; init; }
+
+    /// <summary>
+    /// Our forwarding <c>fee_base_msat</c> on this channel (what a route hint through us must use).
+    /// </summary>
+    [Key(17)] public uint FeeBaseMsat { get; init; }
+
+    /// <summary>
+    /// Our forwarding <c>fee_proportional_millionths</c> on this channel.
+    /// </summary>
+    [Key(18)] public uint FeePpm { get; init; }
+
+    /// <summary>
+    /// Our <c>cltv_expiry_delta</c> on this channel (wave sp1 lane SP1-G; 0 from a daemon that predates it).
+    /// </summary>
+    [Key(19)] public ushort CltvExpiryDelta { get; init; }
+
+    /// <summary>
+    /// The <c>htlc_minimum_msat</c> this channel announces and our forwarding enforces.
+    /// </summary>
+    [Key(20)] public ulong HtlcMinimumMsat { get; init; }
+
+    /// <summary>
+    /// The <c>htlc_maximum_msat</c> this channel announces and our forwarding enforces.
+    /// </summary>
+    [Key(21)] public ulong HtlcMaximumMsat { get; init; }
+
+    /// <summary>
+    /// True when the channel has a <c>setchannelpolicy</c> override.
+    /// </summary>
+    [Key(22)] public bool HasPolicyOverride { get; init; }
+
+    /// <summary>
+    /// The channel's fundings, current first, then the pending splices (splicing plan §3.10, SP2-0; lane SP2-D; null from
+    /// a daemon that predates it).
+    /// </summary>
+    [Key(23)] public List<ChannelFundingInfoIpcResponse>? Fundings { get; init; }
+
+    /// <summary>
+    /// Short channel ids retired by splice locks that still resolve (D12; SP2-0, lane SP2-D; null from a daemon that
+    /// predates it).
+    /// </summary>
+    [Key(24)] public List<RetiredScidInfoIpcResponse>? RetiredShortChannelIds { get; init; }
+
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1), or null; an older daemon sends none.
+    /// </summary>
+    [Key(25)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1), or null for none.
+    /// </summary>
+    [Key(26)] public List<string>? Tags { get; init; }
+
+    /// <summary>
+    /// The channel type as the client prints it (<see cref="ChannelTypeName"/>: <c>simple_taproot</c>,
+    /// <c>anchors</c> or <c>static_remotekey</c>; NL-987), or null from a daemon that predates it.
+    /// </summary>
+    [Key(27)] public string? ChannelType { get; init; }
+
+    /// <summary>
+    /// The name of a channel type's commitment format, as <c>listchannels</c> and the backup commands print it.
+    /// </summary>
+    public static string ChannelTypeName(CommitmentFormat format) => format switch
+    {
+        CommitmentFormat.SimpleTaproot => "simple_taproot",
+        CommitmentFormat.Anchors => "anchors",
+        _ => "static_remotekey"
+    };
+
+    public static ChannelInfoIpcResponse FromClientResponse(ChannelInfoClientResponse channel)
+    {
+        return new ChannelInfoIpcResponse
+        {
+            ChannelId = channel.ChannelId,
+            PeerId = channel.PeerId,
+            State = channel.State,
+            IsInitiator = channel.IsInitiator,
+            IsPeerConnected = channel.IsPeerConnected,
+            ShortChannelId = channel.ShortChannelId is { } scid
+                                 ? ((ulong)scid.BlockHeight << 40) | ((ulong)scid.TransactionIndex << 16)
+                                                                   | scid.OutputIndex
+                                 : null,
+            FundingTxId = channel.FundingTxId,
+            FundingOutputIndex = channel.FundingOutputIndex,
+            Capacity = channel.Capacity,
+            LocalBalance = channel.LocalBalance,
+            RemoteBalance = channel.RemoteBalance,
+            LocalCommitmentNumber = channel.LocalCommitmentNumber,
+            RemoteCommitmentNumber = channel.RemoteCommitmentNumber,
+            OfferedHtlcCount = channel.OfferedHtlcCount,
+            ReceivedHtlcCount = channel.ReceivedHtlcCount,
+            DataLossDetected = channel.DataLossDetected,
+            IsReestablished = channel.IsReestablished,
+            FeeBaseMsat = channel.FeeBaseMsat,
+            FeePpm = channel.FeePpm,
+            CltvExpiryDelta = channel.CltvExpiryDelta,
+            HtlcMinimumMsat = channel.HtlcMinimumMsat,
+            HtlcMaximumMsat = channel.HtlcMaximumMsat,
+            HasPolicyOverride = channel.HasPolicyOverride,
+            Fundings = channel.Fundings.Select(ChannelFundingInfoIpcResponse.FromClientResponse).ToList(),
+            RetiredShortChannelIds = channel.RetiredShortChannelIds
+                                            .Select(RetiredScidInfoIpcResponse.FromClientResponse).ToList(),
+            Label = channel.Label,
+            Tags = channel.Tags.Count == 0 ? null : [.. channel.Tags],
+            ChannelType = ChannelTypeName(channel.ChannelType)
+        };
+    }
+}

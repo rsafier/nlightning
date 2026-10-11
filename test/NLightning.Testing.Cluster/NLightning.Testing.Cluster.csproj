@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Kubernetes-native test harness (docs/agents/TEST_HARNESS_PLAN.md). A test library: it never references the
+    node's projects, so every implementation (LND, CLN, Eclair, LDK, our own node) is driven the same way.
+  -->
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>AnyCPU</Platforms>
+    <Deterministic>true</Deterministic>
+    <IsPackable>false</IsPackable>
+    <Configurations>Debug;Release;Debug.Native;Release.Native</Configurations>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
+    <DefineConstants>DEBUG;$(DefineConstants)</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Release'))">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="KubernetesClient" Version="19.0.2"/>
+    <!-- The repo's RPC client (RegtestBitcoinEndpoint); same version as Infrastructure.Bitcoin -->
+    <PackageReference Include="NBitcoin" Version="10.0.14"/>
+    <!-- IAsyncLifetime and TestContext: the collection fixture base (Topology/ClusterTopologyFixture), which test or
+         collection a run belongs to, and the failure hook of Diagnostics/ (the library part of xunit v3, no runner;
+         the same version as the test projects). -->
+    <PackageReference Include="xunit.v3.extensibility.core" Version="3.2.2"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The in-tree LND gRPC client (generated from LND 0.21.4's protos; LndSettings, LndNodeConnection) for Nodes/Lnd
+         and Topology/Lnd (test harness phase 3: no more LNUnit.LND here) -->
+    <ProjectReference Include="..\NLightning.Testing.Lnd\NLightning.Testing.Lnd.csproj"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NLightning.Testing.Cluster.Tests"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="deploy/**" CopyToOutputDirectory="Never"/>
+    <!-- captaind's default configuration (Nodes/Bark), the base the Bark node builder splices the run's addresses into
+         (embedded: the harness never reads it from disk) -->
+    <EmbeddedResource Include="Nodes/Bark/captaind.template.toml"/>
+  </ItemGroup>
+
+</Project>

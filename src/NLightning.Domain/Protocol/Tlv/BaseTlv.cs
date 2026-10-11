@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Protocol.Tlv;
 
+using Utils.Extensions;
 using ValueObjects;
 
 public class BaseTlv
@@ -51,7 +52,7 @@ public class BaseTlv
     public override int GetHashCode()
     {
         // ReSharper disable once NonReadonlyMemberInGetHashCode
-        return HashCode.Combine(Type, Length, Value.GetHashCode());
+        return HashCode.Combine(Type, Length, Value.GetByteArrayHashCode());
     }
 
     /// <inheritdoc />
@@ -60,17 +61,20 @@ public class BaseTlv
         return obj is BaseTlv tlv && Equals(tlv);
     }
 
-    private bool Equals(BaseTlv other)
+    private bool Equals(BaseTlv? other)
     {
-        return Type.Equals(other.Type) && Length.Equals(other.Length) && Value.SequenceEqual(other.Value);
+        return other is not null && Type.Equals(other.Type) && Length.Equals(other.Length) && Value.SequenceEqual(other.Value);
     }
 
-    public static bool operator ==(BaseTlv left, BaseTlv right)
+    public static bool operator ==(BaseTlv? left, BaseTlv? right)
     {
+        if (left is null)
+            return right is null;
+
         return left.Equals(right);
     }
 
-    public static bool operator !=(BaseTlv left, BaseTlv right)
+    public static bool operator !=(BaseTlv? left, BaseTlv? right)
     {
         return !(left == right);
     }

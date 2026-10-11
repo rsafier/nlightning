@@ -1,0 +1,1145 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace NLightning.Application.Tests.Channels.Safety;
+
+using Application.Channels.Safety;
+using Application.Channels.Safety.Interfaces;
+using Application.Payments.Onion;
+using Channels.Handlers;
+using Domain.Bitcoin.Events;
+using Domain.Channels.Commitments;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Channels.Policies;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Enums;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Node.Options;
+using Domain.Payments.Enums;
+using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
+using Domain.Payments.ValueObjects;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Interfaces;
+using Domain.Protocol.Onion.Models;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Payments.Switch;
+using Services;
+
+/// <summary>
+/// BOLT2 plan N9-T2: <see cref="HtlcExpiryMonitor"/> on real commitment states (<see cref="RealSigningCommitmentPair"/>:
+/// Alice offers, Bob receives). B2-CLTV-03 (offered past cltv_expiry + G fails the channel), B2-FWD-03 (unresolved
+/// incoming failed back at cltv_expiry - delta through <see cref="IChannelOperations"/>), B2-CLTV-06 (fulfilled or
+/// preimage-known incoming fails the channel at cltv_expiry - 18) and the forwarded case (never failed upstream while
+/// the downstream HTLC is live).
+/// </summary>
+public sealed class HtlcExpiryMonitorTests : IDisposable
+{
+    private const uint Cltv = 600;
+    private const uint Delta = 40; // RoutingOptions.CltvExpiryDelta default
+    private const uint FulfillSafety = HtlcDeadlinePolicy.DefaultFulfillSafetyBlocks; // 18
+    private const uint MinFinalCltv = 40; // RoutingOptions.InvoiceMinFinalCltvExpiry default
+
+    private readonly RealSigningCommitmentPair _pair = new(hasAnchors: false);
+    private readonly Mock<IBlockchainMonitor> _blockchainMonitor = new();
+    private readonly Mock<IChannelFailureService> _failureService = new();
+    private readonly Mock<IChannelMemoryRepository> _memory = new();
+    private readonly Mock<IChannelOperations> _operations = new();
+    private readonly Mock<IFailureOnionService> _failureOnion = new();
+    private readonly Mock<IForwardCircuitDbRepository> _circuits = new();
+    private readonly Mock<IChannelStateDbRepository> _stateDb = new();
+    private readonly Mock<IInvoiceDbRepository> _invoices = new();
+    private readonly Mock<IChannelDbRepository> _channelDb = new();
+    private readonly Mock<ITrampolineRelayDbRepository> _relays = new();
+    private readonly ServiceProvider _provider;
+    private readonly byte[] _errorPacket = [0xEE, 0x01];
+    private ChannelModel _channel;
+
+    public HtlcExpiryMonitorTests()
+    {
+        _channel = _pair.Alice.Channel;
+        _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+               .Returns((Func<ChannelModel, bool> predicate) => predicate(_channel) ? [_channel] : []);
+        _memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
+               .Returns(new TryGetChannelCallback((ChannelId id, out ChannelModel? channel) =>
+                {
+                    channel = _channel;
+                    return id == _channel.ChannelId;
+                }));
+        _failureService.Setup(f => f.FailChannelAsync(It.IsAny<ChannelId>(), It.IsAny<ChannelFailureRequest>(),
+                                                      It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new ChannelFailureOutcome(ChannelFailureStatus.Broadcast, null));
+        _failureOnion.Setup(f => f.CreateErrorPacket(It.IsAny<Secret>(), It.IsAny<FailureMessage>(), It.IsAny<int>()))
+                     .Returns(_errorPacket);
+        _stateDb.Setup(r => r.GetOnionSharedSecretAsync(It.IsAny<ChannelId>(), It.IsAny<HtlcKey>()))
+                .ReturnsAsync(new Secret(Enumerable.Repeat((byte)0x33, 32).ToArray()));
+        _stateDb.Setup(r => r.FindHtlcsByOriginAsync(It.IsAny<HtlcOrigin>())).ReturnsAsync([]);
+
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(_circuits.Object);
+        unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(_stateDb.Object);
+        unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(_invoices.Object);
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_channelDb.Object);
+        unitOfWork.SetupGet(u => u.TrampolineRelayDbRepository).Returns(_relays.Object);
+        var services = new ServiceCollection();
+        services.AddScoped(_ => unitOfWork.Object);
+        _provider = services.BuildServiceProvider();
+    }
+
+    private delegate bool TryGetChannelCallback(ChannelId channelId, out ChannelModel? channel);
+
+    [Fact]
+    public async Task Given_OfferedHtlc_When_BlockReachesCltvPlusG_Then_ChannelFailedAndBroadcastAsked()
+    {
+        // Arrange: Alice offered an HTLC with cltv_expiry 600, locked in on both sides
+        var id = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Alice);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv + 1, TestContext.Current.CancellationToken);
+        _failureService.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv + 2, TestContext.Current.CancellationToken);
+
+        // Assert (B2-CLTV-03)
+        _failureService.Verify(f => f.FailChannelAsync(_channel.ChannelId,
+                                                       It.Is<ChannelFailureRequest>(r =>
+                                                           r.Broadcast && r.RequirementId == "B2-CLTV-03"
+                                                        && r.Reason.Contains($"HTLC {id}")),
+                                                       It.IsAny<CancellationToken>()), Times.Once);
+        _operations.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ChannelFailedByMonitor_When_NextBlocks_Then_NotFailedAgainUnlessPublishFailed()
+    {
+        // Arrange
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Alice);
+        _failureService.SetupSequence(f => f.FailChannelAsync(It.IsAny<ChannelId>(),
+                                                              It.IsAny<ChannelFailureRequest>(),
+                                                              It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new ChannelFailureOutcome(ChannelFailureStatus.PublishFailed, null))
+                       .ReturnsAsync(new ChannelFailureOutcome(ChannelFailureStatus.Broadcast, null));
+        var monitor = CreateMonitor();
+
+        // Act: the publish fails once (retried on the next block), then succeeds (never asked again)
+        for (var height = Cltv + 2; height < Cltv + 6; height++)
+            await monitor.CheckAsync(height, TestContext.Current.CancellationToken);
+
+        // Assert
+        _failureService.Verify(f => f.FailChannelAsync(It.IsAny<ChannelId>(), It.IsAny<ChannelFailureRequest>(),
+                                                       It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Given_UnresolvedFinalHopHtlc_When_BlockReachesFulfillDeadline_Then_FailedBackUpstream()
+    {
+        // Arrange: Bob received Alice's HTLC and knows nothing about it (no invoice, no forward)
+        var id = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        var monitor = CreateMonitor();
+
+        // Act: the forwarding distance does not apply to a never-forwarded HTLC
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+        await monitor.CheckAsync(Cltv - FulfillSafety - 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert (B2-CLTV-05): temporary_node_failure encrypted with the stored shared secret
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, id,
+                                                It.Is<ReadOnlyMemory<byte>>(r => r.ToArray().SequenceEqual(_errorPacket)),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureOnion.Verify(f => f.CreateErrorPacket(It.IsAny<Secret>(),
+                                                      It.Is<FailureMessage>(m =>
+                                                          m.Code == Domain.Protocol.Onion.Enums.FailureCode
+                                                             .TemporaryNodeFailure),
+                                                      It.IsAny<int>()));
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_FinalHopHtlcWithOpenInvoiceAndMinFinalCltv_When_NextBlocks_Then_NotFailedBack()
+    {
+        // Arrange: a payer's final HTLC, cltv_expiry = height + min_final_cltv_expiry + 3, not settled by the switch
+        // yet (the invoice is still Open); the forwarding distance (40) would fail it back within 3 blocks
+        const uint height = Cltv - MinFinalCltv - 3;
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), InvoiceStatus.Open));
+        var monitor = CreateMonitor();
+
+        // Act
+        for (var h = height; h < Cltv - FulfillSafety; h++)
+            await monitor.CheckAsync(h, TestContext.Current.CancellationToken);
+
+        // Assert: nothing before the fulfillment deadline
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_IncomingContinuedByOutgoingOriginWithoutCircuit_When_PastIncomingDeadlines_Then_NeverFailedBack()
+    {
+        // Arrange: an outgoing HTLC carries this HTLC as its origin (no preimage yet): the downstream decides
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _stateDb.Setup(r => r.FindHtlcsByOriginAsync(HtlcOrigin.Forwarded(_channel.ChannelId, incomingId)))
+                .ReturnsAsync([(_channel.ChannelId, new HtlcKey(HtlcDirection.Outgoing, 77))]);
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var h in new[] { Cltv - Delta, Cltv - FulfillSafety, Cltv })
+            await monitor.CheckAsync(h, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_FailBackRefused_When_NextBlock_Then_Retried()
+    {
+        // Arrange: the peer is away the first time
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _operations.SetupSequence(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                       It.IsAny<ReadOnlyMemory<byte>>(),
+                                                       It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new CommitmentRefusedException("B2-NO-02", "peer away"))
+                   .Returns(Task.CompletedTask);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+        await monitor.CheckAsync(Cltv - FulfillSafety + 1, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Given_NoSharedSecretAndNoProcessor_When_FailBackDue_Then_NothingSent()
+    {
+        // Arrange
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _stateDb.Setup(r => r.GetOnionSharedSecretAsync(It.IsAny<ChannelId>(), It.IsAny<HtlcKey>()))
+                .ReturnsAsync((Secret?)null);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_SettledInvoiceForIncomingHtlc_When_Deadlines_Then_NeverFailedBackButChannelFailedAtFulfillDeadline()
+    {
+        // Arrange: we are the final hop, the switch committed the HTLC to its set (the preimage on its record) and
+        // settled the invoice, but the fulfill never got committed
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        MarkPreimage(_pair.Bob, id, preimage);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), InvoiceStatus.Settled));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+        await monitor.CheckAsync(Cltv - 19, TestContext.Current.CancellationToken);
+        _failureService.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - 18, TestContext.Current.CancellationToken);
+
+        // Assert (B2-CLTV-06)
+        _operations.VerifyNoOtherCalls();
+        _failureService.Verify(f => f.FailChannelAsync(_channel.ChannelId,
+                                                       It.Is<ChannelFailureRequest>(r =>
+                                                           r.RequirementId == "B2-CLTV-06"),
+                                                       It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_DuplicateHtlcForSettledInvoiceWhoseFailWasNotSent_When_FulfillDeadline_Then_FailedBackNotChannelFailed()
+    {
+        // Arrange (NL-337): the invoice was settled by another HTLC set; this HTLC for the same hash carries no mark
+        // (not a part of the committed set), and the switch's 0x400F could not be sent while the peer was away
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), InvoiceStatus.Settled));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety - 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert (B2-CLTV-05): failed back upstream, the channel is never failed
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_HtlcForInvoiceSettledByAnotherHtlc_When_FulfillDeadline_Then_FailedBackNotChannelFailed()
+    {
+        // Arrange (NL-274): two HTLCs for the same payment hash; the invoice was settled through the marked one,
+        // while the unrelated one carries no mark of its own - resolved per HTLC (stored preimage or origin), the
+        // settled invoice alone never makes it look fulfillable
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var settledId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv + 500);
+        var unrelatedId = _pair.Add(_pair.Alice, 19_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        MarkPreimage(_pair.Bob, settledId, preimage);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), InvoiceStatus.Settled));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety - 1, TestContext.Current.CancellationToken);
+        _failureService.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: the unrelated HTLC is failed back at its fulfillment deadline; the marked one, whose deadline is
+        // far away, keeps the channel up and the channel is never failed for the unrelated HTLC
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, unrelatedId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, settledId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Never);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(InvoiceStatus.Open)]
+    [InlineData(InvoiceStatus.Accepted)]
+    public async Task Given_MarkedHtlcOfAnInvoiceNotSettled_When_FulfillDeadline_Then_FailedBackNotChannelFailed(
+        InvoiceStatus status)
+    {
+        // Arrange (NL-337, NL-323): a mark left by a set that never settled commits to nothing
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        MarkPreimage(_pair.Bob, id, preimage);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), status));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_MarkWithAnotherPreimageThanTheSettledInvoice_When_FulfillDeadline_Then_FailedBack()
+    {
+        // Arrange (NL-337): the invoice is Settled with another preimage than the one on the record
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        MarkPreimage(_pair.Bob, id, preimage);
+        UseChannel(_pair.Bob);
+        var settled = new InvoiceModel(RealSigningCommitmentPair.Hash(preimage), RealSigningCommitmentPair.Preimage(2),
+                                       new Secret(new byte[32]), LightningMoney.MilliSatoshis(20_000_000), "test",
+                                       "lnbcrt1test", DateTimeOffset.UtcNow, 3600, 40, InvoiceStatus.Settled,
+                                       LightningMoney.MilliSatoshis(20_000_000), DateTimeOffset.UtcNow);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>())).ReturnsAsync(settled);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_IncomingHtlcWeFulfilled_When_FulfillDeadline_Then_ChannelFailed()
+    {
+        // Arrange: Bob sent update_fulfill_htlc, the peer never committed it
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        _pair.Fulfill(_pair.Bob, id, preimage);
+        UseChannel(_pair.Bob);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - 19, TestContext.Current.CancellationToken);
+        _failureService.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - 18, TestContext.Current.CancellationToken);
+
+        // Assert
+        _failureService.Verify(f => f.FailChannelAsync(_channel.ChannelId,
+                                                       It.Is<ChannelFailureRequest>(r =>
+                                                           r.RequirementId == "B2-CLTV-06"),
+                                                       It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ForwardedIncomingWithLiveDownstream_When_PastEveryIncomingDeadline_Then_NeverFailedUpstream()
+    {
+        // Arrange: Bob forwarded Alice's HTLC (circuit Offered); the downstream HTLC is still unresolved
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Offered, outgoingHtlcId: 99));
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var height in new[] { Cltv - Delta, Cltv - 18, Cltv, Cltv + 2 })
+            await monitor.CheckAsync(height, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ForwardedIncomingWhoseDownstreamWasFulfilled_When_FulfillDeadline_Then_ChannelFailed()
+    {
+        // Arrange: Alice → Bob (incoming) and Bob → Alice (the "downstream" of the same channel, fulfilled by Alice,
+        // so Bob holds its preimage) while the upstream fulfill is not committed
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        var outgoingId = _pair.Add(_pair.Bob, 19_000_000, preimage, Cltv - Delta);
+        _pair.Settle(_pair.Alice);
+        _pair.Fulfill(_pair.Alice, outgoingId, preimage);
+        UseChannel(_pair.Bob);
+        _stateDb.Setup(r => r.FindHtlcsByOriginAsync(HtlcOrigin.Forwarded(_channel.ChannelId, incomingId)))
+                .ReturnsAsync([(_channel.ChannelId, new HtlcKey(HtlcDirection.Outgoing, outgoingId))]);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Offered, outgoingId));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta + 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - 18, TestContext.Current.CancellationToken);
+
+        // Assert: the incoming HTLC's preimage is known, so it is never failed back, and the channel goes on chain
+        _operations.VerifyNoOtherCalls();
+        _failureService.Verify(f => f.FailChannelAsync(_channel.ChannelId,
+                                                       It.Is<ChannelFailureRequest>(r =>
+                                                           r.RequirementId == "B2-CLTV-06"),
+                                                       It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_OfferedCircuitOnAClosedOutgoingChannelWithoutPreimage_When_FailBackDue_Then_FailedBack()
+    {
+        // Arrange (NL-320 review): Bob forwarded Alice's HTLC over another channel that has closed on chain (Closed,
+        // no longer loaded) without a preimage; the switch fails such a forward only when the lock-in is replayed, and
+        // the link to Alice stays up
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        var closed = new NormalOperationTestContext(state: ChannelState.Closed).Channel;
+        Assert.NotEqual(_channel.ChannelId, closed.ChannelId);
+        _channelDb.Setup(r => r.GetByIdAsync(closed.ChannelId)).ReturnsAsync(closed);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Offered, 7, closed.ChannelId));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta - 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert (B2-FWD-03): failed back at the fail-back deadline, the channel is not failed
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, incomingId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(ChannelState.OnchainResolving)]
+    [InlineData(ChannelState.Failed)]
+    public async Task Given_OfferedCircuitOnAnUnloadedOutgoingChannelNotClosed_When_PastEveryIncomingDeadline_Then_NeverFailedBack(
+        ChannelState state)
+    {
+        // Arrange (NL-320 review): only a Closed outgoing channel can no longer resolve the forward
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        var outgoing = new NormalOperationTestContext(state: state).Channel;
+        _channelDb.Setup(r => r.GetByIdAsync(outgoing.ChannelId)).ReturnsAsync(outgoing);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Offered, 7, outgoing.ChannelId));
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var height in new[] { Cltv - Delta, Cltv - 18, Cltv })
+            await monitor.CheckAsync(height, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_FailedCircuit_When_FailBackDue_Then_FailedBack()
+    {
+        // Arrange: the forward failed (refused offer or irrevocable downstream failure)
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Failed, outgoingHtlcId: null));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, incomingId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_FailedCircuitOfABlindedHtlc_When_FailBackDue_Then_FailedMalformedWithInvalidOnionBlinding()
+    {
+        // Arrange: the incoming update_add_htlc carried a path_key (we are inside a blinded route)
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        SetPathKey(_pair.Bob, incomingId, NormalOperationTestContext.Point(0x33));
+        UseChannel(_pair.Bob);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Failed, outgoingHtlcId: null));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert (BOLT 2): update_fail_malformed_htlc + invalid_onion_blinding, never temporary_node_failure
+        _operations.Verify(o => o.FailMalformedHtlcAsync(_channel.ChannelId, incomingId,
+                                                         Domain.Protocol.Onion.Enums.FailureCode.InvalidOnionBlinding,
+                                                         It.IsAny<Hash>(), It.IsAny<CancellationToken>()),
+                           Times.Once);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_FailedChannel_When_UnresolvedIncomingDue_Then_NotFailedBack()
+    {
+        // Arrange: nothing can be sent on a failed channel
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _channel.UpdateState(ChannelState.Failed);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_Started_When_NewBlockEvent_Then_RoundRunsAndStopUnsubscribes()
+    {
+        // Arrange
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Alice);
+        var monitor = CreateMonitor();
+        monitor.Start();
+
+        // Act
+        _blockchainMonitor.Raise(m => m.OnNewBlockDetected += null, new NewBlockEventArgs(Cltv + 2, new byte[32]));
+        await monitor.WhenIdleAsync();
+        await monitor.StopAsync();
+        _blockchainMonitor.Raise(m => m.OnNewBlockDetected += null, new NewBlockEventArgs(Cltv + 3, new byte[32]));
+        await monitor.WhenIdleAsync();
+
+        // Assert
+        _failureService.Verify(f => f.FailChannelAsync(It.IsAny<ChannelId>(), It.IsAny<ChannelFailureRequest>(),
+                                                       It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public void Given_SafetyServices_When_Registered_Then_Resolvable()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(Options.Create(new NodeOptions()));
+        services.AddSingleton(_blockchainMonitor.Object);
+        services.AddSingleton(_memory.Object);
+        services.AddSingleton(_operations.Object);
+        services.AddSingleton(_failureOnion.Object);
+        services.AddSingleton(new Mock<IChannelLockProvider>().Object);
+        services.AddSingleton(new Mock<Domain.Bitcoin.Interfaces.ILightningSigner>().Object);
+        services.AddSingleton(new Mock<Domain.Bitcoin.Transactions.Interfaces.ICommitmentTransactionModelFactory>()
+                                 .Object);
+        services.AddSingleton(new Mock<Infrastructure.Bitcoin.Builders.Interfaces.ICommitmentTransactionBuilder>()
+                                 .Object);
+
+        // Act
+        services.AddChannelSafetyServices();
+        services.AddChannelSafetyServices();
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+
+        // Assert: one instance behind each interface
+        Assert.Same(provider.GetRequiredService<ChannelFailureService>(),
+                    provider.GetRequiredService<IChannelFailureService>());
+        Assert.Same(provider.GetRequiredService<HtlcExpiryMonitor>(), provider.GetRequiredService<IHtlcExpiryMonitor>());
+        Assert.IsType<PeerChannelErrorSender>(provider.GetRequiredService<IChannelErrorSender>());
+        Assert.Equal(Delta, provider.GetRequiredService<HtlcExpiryMonitor>().Policy.FailBackBlocks);
+    }
+
+    public void Dispose()
+    {
+        _provider.Dispose();
+        _pair.Dispose();
+    }
+
+    private void UseChannel(RealSigningNode node)
+    {
+        node.Channel.UpdateCommitments(node.State);
+        _channel = node.Channel;
+    }
+
+    /// <summary>What the switch's <c>MarkPartAsync</c> persists: the preimage on the incoming HTLC's record.</summary>
+    private static void MarkPreimage(RealSigningNode node, ulong htlcId, Secret preimage)
+    {
+        var state = node.State;
+        var record = state.GetHtlc(HtlcDirection.Incoming, htlcId)! with { KnownPreimage = preimage };
+        node.State = ChannelCommitments.Restore(state.ChannelId, state.Params, state.LocalBalanceMsat,
+                                                state.RemoteBalanceMsat, state.Htlcs.SetItem(record.Key, record).Values,
+                                                state.FeeUpdates, state.LocalNextHtlcId, state.RemoteNextHtlcId,
+                                                state.LocalCommit, state.RemoteCommit, state.RemoteNextCommit,
+                                                state.RemoteNextPerCommitmentPoint);
+    }
+
+    private static void SetPathKey(RealSigningNode node, ulong htlcId, CompactPubKey pathKey)
+    {
+        var state = node.State;
+        var record = state.GetHtlc(HtlcDirection.Incoming, htlcId)! with { PathKey = pathKey };
+        node.State = ChannelCommitments.Restore(state.ChannelId, state.Params, state.LocalBalanceMsat,
+                                                state.RemoteBalanceMsat, state.Htlcs.SetItem(record.Key, record).Values,
+                                                state.FeeUpdates, state.LocalNextHtlcId, state.RemoteNextHtlcId,
+                                                state.LocalCommit, state.RemoteCommit, state.RemoteNextCommit,
+                                                state.RemoteNextPerCommitmentPoint);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPartWhoseRelayIsSending_When_PastIncomingDeadlines_Then_NeverFailedBack()
+    {
+        // Arrange (NL-875): the relay's engine may still offer an outgoing attempt; the outgoing HTLCs' own deadlines
+        // protect the part, failing it upstream could lose the amount
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Sending);
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var h in new[] { Cltv - Delta, Cltv - FulfillSafety, Cltv })
+            await monitor.CheckAsync(h, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPartWithAnOutgoingHtlcOnAnUnloadedChannel_When_PastDeadlines_Then_NeverFailedBack()
+    {
+        // Arrange (NL-875): an outgoing HTLC of the relay on a channel that is not loaded (and not closed) may still be
+        // fulfilled downstream, even with the relay collecting
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        UseRelayPart(incomingId, hash, TrampolineRelayStatus.Collecting);
+        var unloaded = new ChannelId(Enumerable.Repeat((byte)0x77, 32).ToArray());
+        _stateDb.Setup(r => r.FindHtlcsByOriginAsync(HtlcOrigin.Trampoline(hash)))
+                .ReturnsAsync([(unloaded, new HtlcKey(HtlcDirection.Outgoing, 3))]);
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var h in new[] { Cltv - Delta, Cltv - FulfillSafety, Cltv })
+            await monitor.CheckAsync(h, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AFailedTrampolineRelayWithNoOutgoingHtlc_When_TheFailBackDeadlineIsReached_Then_ThePartIsFailedBack()
+    {
+        // Arrange (NL-875): nothing downstream can fulfill it any more; failed with its row's secrets at the trampoline
+        // layer (NL-897), so the failure onion is the real one (NL-921: a zero secret is never used)
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Failed,
+                     outerSecret: new Secret(Enumerable.Repeat((byte)0x0A, 32).ToArray()),
+                     trampolineSecret: new Secret(Enumerable.Repeat((byte)0x0B, 32).ToArray()));
+        var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta - 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, incomingId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AFulfilledTrampolineRelay_When_ThePartIsStillUnfulfilledAtItsFulfillDeadline_Then_TheChannelIsFailed()
+    {
+        // Arrange (NL-875): the relay knows the preimage (B2-CLTV-06), so the part is never failed back
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Fulfilled, preimage);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety - 1, TestContext.Current.CancellationToken);
+        _failureService.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        _failureService.Verify(f => f.FailChannelAsync(_channel.ChannelId, It.IsAny<ChannelFailureRequest>(),
+                                                       It.IsAny<CancellationToken>()), Times.Once);
+        _operations.VerifyNoOtherCalls();
+    }
+
+    #region NL-897: trampoline HTLCs failed at the trampoline layer
+
+    [Fact]
+    public async Task Given_AHeldFinalTrampolinePart_When_ItsFulfillDeadlineIsReached_Then_ThePayerReadsTheFailureAtTheTrampolineLayer()
+    {
+        // Arrange: Bob is the final trampoline node of Alice's HTLC; the switch stored only the outer secret
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildFinalAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        StoreOuterSecret(onion.OuterSecret);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: created with the trampoline secret, then the outer one (TR-R-14)
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AHeldFinalTrampolinePartAndAttribution_When_FailedBack_Then_AttributedOnTheOuterLayerAndReadAtTheTrampolineLayer()
+    {
+        // Arrange
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildFinalAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var attributed = new List<AttributedErrorPacket>();
+        _operations.Setup(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                               It.IsAny<AttributedErrorPacket>(), It.IsAny<CancellationToken>()))
+                   .Callback((ChannelId _, ulong _, AttributedErrorPacket packet, CancellationToken _) =>
+                                 attributed.Add(packet))
+                   .Returns(Task.CompletedTask);
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor, kit.Us.AttributionData);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        var packet = Assert.Single(attributed);
+        Assert.NotEmpty(packet.AttributionData);
+        kit.AssertTrampolineLayer(onion, packet.Reason, FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPart_When_TheFailBackDeadlineIsReached_Then_ThePayerReadsTheFailureAtTheTrampolineLayer()
+    {
+        // Arrange: a relay part whose relay failed; its row's secrets are zero, so only the re-peeled onion's keys
+        // give a failure the payer can read
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildRelayAsync(hash, 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPartAndNoOnionProcessor_When_FailedBack_Then_TheRowsSecretsGiveTheTrampolineLayer()
+    {
+        // Arrange: the monitor cannot peel; the relay part's row holds both secrets
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildRelayAsync(hash, 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed, outerSecret: onion.OuterSecret,
+                     trampolineSecret: onion.TrampolineSecrets[0]);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_AnOrdinaryFinalHop_When_FailedBack_Then_StillTheOuterSecretOnlyAndNoAttribution()
+    {
+        // Arrange (regression): a plain final-hop onion with its stored secret, the attribution service registered
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildOrdinaryFinalAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet.ToBytes());
+        UseChannel(_pair.Bob);
+        StoreOuterSecret(onion.SharedSecrets[0]);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor, kit.Us.AttributionData);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: the plain error onion of the stored secret, as before NL-897
+        var decrypted = kit.Payer.FailureOnion.DecryptErrorPacket(onion.SharedSecrets, Assert.Single(reasons));
+        Assert.NotNull(decrypted);
+        Assert.Equal(0, decrypted.ErringHopIndex);
+        Assert.Equal(FailureCode.TemporaryNodeFailure, decrypted.Code);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<AttributedErrorPacket>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    #endregion
+
+    #region NL-921: blinded trampoline failures, zero secrets, attribution off
+
+    [Fact]
+    public async Task Given_AnIntroductionNodeRelayWhoseRecipientDataFails_When_FailedBack_Then_OurOwnInvalidOnionBlindingAtTheTrampolineLayer()
+    {
+        // Arrange: we introduce a blinded trampoline route that is not ours to end, and our recipient data refuses the
+        // HTLC (max_cltv_expiry below its expiry): the processor's answer is our own invalid_onion_blinding
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildBlindedRelayAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv,
+                                                     introduction: true, maxCltvExpiry: Cltv - 1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: never temporary_node_failure (BOLT 4: the introduction node replaces every error by its own)
+        var failure = kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.InvalidOnionBlinding);
+        Assert.Equal(onion.TrampolineSha256, failure.Sha256OfOnion!.Value.ToArray());
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AnIntroductionNodeRelay_When_FailedBack_Then_OurOwnInvalidOnionBlindingAtTheTrampolineLayer()
+    {
+        // Arrange: a valid blinded trampoline relay part we introduce, never relayed
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildBlindedRelayAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv,
+                                                     introduction: true);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        var failure = kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.InvalidOnionBlinding);
+        Assert.Equal(onion.TrampolineSha256, failure.Sha256OfOnion!.Value.ToArray());
+    }
+
+    [Fact]
+    public async Task Given_ARelayPastTheIntroductionNode_When_FailedBack_Then_MalformedWithTheTrampolinePacketHash()
+    {
+        // Arrange: our path key came in the outer payload
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildBlindedRelayAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv,
+                                                     introduction: false);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: update_fail_malformed_htlc + invalid_onion_blinding with the trampoline packet's sha256 (PR 836)
+        VerifyMalformedOnce(id, onion.TrampolineSha256);
+    }
+
+    [Fact]
+    public async Task Given_ARelayPartPastTheIntroductionNodeAndRouteBlindingOff_When_FailedBack_Then_MalformedNotAWrappedFailure()
+    {
+        // Arrange: a relay part past a blinded introduction node with its row, then a restart with route blinding
+        // off: the onion peeled again only says malformed invalid_onion_blinding, the row has the secrets
+        using var kit = new TrampolineFailureTestKit();
+        using var restarted = TrampolineFailureTestKit.CreateUsWithoutRouteBlinding();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildBlindedRelayAsync(hash, 20_000_000, Cltv, introduction: false);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed, outerSecret: onion.OuterSecret,
+                     trampolineSecret: onion.TrampolineSecrets[0]);
+        var monitor = CreateMonitor(restarted.FailureOnion, restarted.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert: as the switch and the relay engine fail it, never temporary_node_failure double-wrapped
+        VerifyMalformedOnce(id, onion.TrampolineSha256);
+    }
+
+    [Fact]
+    public async Task Given_ARelayRowWithAZeroTrampolineSecret_When_FailedBack_Then_TheOuterSecretAloneMakesAReadableFailure()
+    {
+        // Arrange: the monitor cannot peel; the row's trampoline secret is zero (damaged), its outer secret real
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildRelayAsync(hash, 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed, outerSecret: onion.OuterSecret);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert: our failure with the outer secret only, not one wrapped under a zero key nobody can read
+        kit.AssertOuterLayerOnly(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_ARelayRowWithZeroSecrets_When_FailedBack_Then_TheHtlcsStoredSecretIsUsed()
+    {
+        // Arrange: no usable secret in the row: the HTLC is failed as an ordinary one, with its stored outer secret
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildRelayAsync(hash, 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed);
+        StoreOuterSecret(onion.OuterSecret);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        kit.AssertOuterLayerOnly(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_AttributionNotAdvertised_When_ATrampolinePartIsFailedBack_Then_NoAttributionData()
+    {
+        // Arrange: the attribution service is there, option_attribution_data is not advertised
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildFinalAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var reasons = CaptureFailures();
+        var options = new NodeOptions();
+        options.Features.OptionAttributionData = FeatureSupport.No;
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor, kit.Us.AttributionData, options);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: the plain double-wrapped reason
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<AttributedErrorPacket>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    private void VerifyMalformedOnce(ulong htlcId, byte[] sha256)
+    {
+        _operations.Verify(o => o.FailMalformedHtlcAsync(_channel.ChannelId, htlcId, FailureCode.InvalidOnionBlinding,
+                                                         It.Is<Hash>(h => ((byte[])h).SequenceEqual(sha256)),
+                                                         It.IsAny<CancellationToken>()), Times.Once);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    private List<byte[]> CaptureFailures()
+    {
+        var reasons = new List<byte[]>();
+        _operations.Setup(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                               It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()))
+                   .Callback((ChannelId _, ulong _, ReadOnlyMemory<byte> reason, CancellationToken _) =>
+                                 reasons.Add(reason.ToArray()))
+                   .Returns(Task.CompletedTask);
+        return reasons;
+    }
+
+    private void StoreOuterSecret(Secret secret) =>
+        _stateDb.Setup(r => r.GetOnionSharedSecretAsync(It.IsAny<ChannelId>(), It.IsAny<HtlcKey>()))
+                .ReturnsAsync(secret);
+
+    private static void SetOnion(RealSigningNode node, ulong htlcId, byte[] onion)
+    {
+        var state = node.State;
+        var record = state.GetHtlc(HtlcDirection.Incoming, htlcId)! with { OnionRoutingPacket = onion };
+        node.State = ChannelCommitments.Restore(state.ChannelId, state.Params, state.LocalBalanceMsat,
+                                                state.RemoteBalanceMsat, state.Htlcs.SetItem(record.Key, record).Values,
+                                                state.FeeUpdates, state.LocalNextHtlcId, state.RemoteNextHtlcId,
+                                                state.LocalCommit, state.RemoteCommit, state.RemoteNextCommit,
+                                                state.RemoteNextPerCommitmentPoint);
+    }
+
+    #endregion
+
+    private void UseRelayPart(ulong incomingId, Hash hash, TrampolineRelayStatus status, Secret? preimage = null,
+                              Secret? outerSecret = null, Secret? trampolineSecret = null)
+    {
+        var relay = new TrampolineRelayModel(hash, _pair.Alice.Channel.RemoteNodeId,
+                                             LightningMoney.MilliSatoshis(19_000_000), Cltv - Delta,
+                                             LightningMoney.MilliSatoshis(20_000_000), DateTimeOffset.UnixEpoch);
+        if (status is TrampolineRelayStatus.Sending or TrampolineRelayStatus.Fulfilled)
+            relay.MarkSending();
+        if (status == TrampolineRelayStatus.Fulfilled)
+            relay.MarkFulfilled(preimage!.Value, LightningMoney.MilliSatoshis(1_000_000), DateTimeOffset.UnixEpoch);
+        if (status == TrampolineRelayStatus.Failed)
+            relay.MarkFailed(0x2002, "no route", DateTimeOffset.UnixEpoch);
+
+        var part = new TrampolineRelayPartModel(hash, _channel.ChannelId, incomingId,
+                                                LightningMoney.MilliSatoshis(20_000_000), Cltv,
+                                                outerSecret ?? new Secret(new byte[32]),
+                                                trampolineSecret ?? new Secret(new byte[32]), null);
+        _relays.Setup(r => r.GetPartAsync(_channel.ChannelId, incomingId)).ReturnsAsync(part);
+        _relays.Setup(r => r.GetAsync(hash)).ReturnsAsync((relay, [part]));
+    }
+
+    private HtlcExpiryMonitor CreateMonitor() =>
+        new(_blockchainMonitor.Object, _failureService.Object, _memory.Object, _operations.Object,
+            _failureOnion.Object, NullLogger<HtlcExpiryMonitor>.Instance, Options.Create(new NodeOptions()),
+            _provider.GetRequiredService<IServiceScopeFactory>());
+
+    private HtlcExpiryMonitor CreateMonitor(IFailureOnionService failureOnion, IncomingOnionProcessor? processor,
+                                            IAttributionDataService? attribution = null,
+                                            NodeOptions? nodeOptions = null) =>
+        new(_blockchainMonitor.Object, _failureService.Object, _memory.Object, _operations.Object, failureOnion,
+            NullLogger<HtlcExpiryMonitor>.Instance, Options.Create(nodeOptions ?? new NodeOptions()),
+            _provider.GetRequiredService<IServiceScopeFactory>(), incomingOnionProcessor: processor,
+            attributionDataService: attribution);
+
+    private ForwardCircuitModel Circuit(ulong incomingId, ForwardCircuitStatus status, ulong? outgoingHtlcId,
+                                        ChannelId? outgoingChannelId = null) =>
+        ForwardCircuitModel.Restore(_channel.ChannelId, incomingId, LightningMoney.MilliSatoshis(20_000_000), Cltv,
+                                    new Hash(new byte[32]), new Secret(new byte[32]), new ShortChannelId(1, 2, 3),
+                                    LightningMoney.MilliSatoshis(19_000_000), Cltv - Delta, DateTimeOffset.UnixEpoch,
+                                    status,
+                                    outgoingHtlcId is null ? (ChannelId?)null : outgoingChannelId ?? _channel.ChannelId,
+                                    outgoingHtlcId,
+                                    status is ForwardCircuitStatus.Failed or ForwardCircuitStatus.Fulfilled
+                                        ? DateTimeOffset.UnixEpoch
+                                        : null);
+
+    private static InvoiceModel Invoice(Hash hash, InvoiceStatus status) =>
+        new(hash, RealSigningCommitmentPair.Preimage(1), new Secret(new byte[32]),
+            LightningMoney.MilliSatoshis(20_000_000), "test", "lnbcrt1test", DateTimeOffset.UtcNow, 3600, 40, status,
+            status == InvoiceStatus.Open ? null : LightningMoney.MilliSatoshis(20_000_000),
+            status == InvoiceStatus.Settled ? DateTimeOffset.UtcNow : null);
+}

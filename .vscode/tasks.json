@@ -2,12 +2,16 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "build all",
+            // Builds only what the Daemon launch config needs, with -m:1: the Persistence provider projects share
+            // src/NLightning.Infrastructure.Persistence/bin (BaseOutputPath, needed by the dotnet ef scripts), and a
+            // parallel build can hit a file lock on the shared *.deps.json files.
+            "label": "build daemon",
             "command": "dotnet",
             "type": "process",
             "args": [
                 "build",
-                "${workspaceFolder}",
+                "${workspaceFolder}/src/NLightning.Daemon/NLightning.Daemon.csproj",
+                "-m:1",
                 "/property:GenerateFullPaths=true",
                 "/consoleloggerparameters:NoSummary"
             ],

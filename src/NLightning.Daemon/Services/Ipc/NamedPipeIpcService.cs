@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Services.Ipc;
@@ -15,6 +16,19 @@ using Transport.Ipc;
 /// </summary>
 internal sealed class NamedPipeIpcService : INamedPipeIpcService
 {
+    /// <summary>
+    /// How many pipe instances (connected clients) can exist at once. A <c>PayInvoice</c> holds one for its whole wait
+    /// (up to <c>PayInvoiceClientHandler.MaxTimeoutSeconds</c>), so the cap must leave room for the short commands
+    /// (listchannels, listpayments) polled meanwhile; the CLI gives up connecting after 2 s.
+    /// </summary>
+    internal const int MaxServerInstances = 64;
+
+    /// <summary>
+    /// How long a client has to send its request, before it is authenticated. A connection that sends nothing (or
+    /// trickles bytes) would otherwise hold one of the <see cref="MaxServerInstances"/> instances forever.
+    /// </summary>
+    internal static TimeSpan DefaultRequestReadTimeout { get; } = TimeSpan.FromSeconds(30);
+
     private readonly ILogger<NamedPipeIpcService> _logger;
     private readonly IIpcAuthenticator _authenticator;
     private readonly IIpcFraming _framing;
@@ -24,6 +38,21 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
 
     private CancellationTokenSource? _cts;
     private Task? _listenerTask;
+
+    /// <summary>
+    /// See <see cref="DefaultRequestReadTimeout"/>; settable for tests.
+    /// </summary>
+    internal TimeSpan RequestReadTimeout { get; init; } = DefaultRequestReadTimeout;
+
+    /// <summary>
+    /// Stops the host after the answer to an accepted <c>shutdown</c> was written (NL-591); null without one.
+    /// </summary>
+    internal NodeShutdownTrigger? ShutdownTrigger { get; init; }
+
+    /// <summary>
+    /// Hands the connection a request is served on to the handlers (NL-592); null without one.
+    /// </summary>
+    internal IpcClientConnectionAccessor? ConnectionAccessor { get; init; }
 
     public NamedPipeIpcService(IIpcAuthenticator authenticator, string configPath, IIpcFraming framing,
                                ILogger<NamedPipeIpcService> logger, IIpcRequestRouter router)
@@ -41,17 +70,18 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        EnsureCookieExists();
+        WriteNewCookie();
 
-        _listenerTask = ListenToIpcClientAsync(cancellationToken);
+        _listenerTask = ListenToIpcClientAsync(_cts.Token);
 
         return Task.CompletedTask;
     }
 
     public async Task StopAsync()
     {
+        // Nothing to stop if StartAsync never ran
         if (_cts is null)
-            throw new InvalidOperationException("Service is not running");
+            return;
 
         await _cts.CancelAsync();
 
@@ -66,6 +96,8 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
                 // Expected during cancellation
             }
         }
+
+        DeleteCookie();
     }
 
     private async Task ListenToIpcClientAsync(CancellationToken cancellationToken)
@@ -76,9 +108,13 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             {
                 try
                 {
-                    var server = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 10,
+                    // CurrentUserOnly: on Unix the socket is created owner-only and a peer running as another user
+                    // is refused; on Windows the pipe's ACL grants only the current user. The cookie stays the
+                    // authentication; this keeps other local users away from the unauthenticated request parser.
+                    var server = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, MaxServerInstances,
                                                            PipeTransmissionMode.Byte,
-                                                           PipeOptions.Asynchronous);
+                                                           PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                    RestrictSocketPermissions();
                     await server.WaitForConnectionAsync(cancellationToken);
 
                     _ = Task.Run(() => HandleClientAsync(server, cancellationToken), cancellationToken);
@@ -102,9 +138,24 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
 
     private async Task HandleClientAsync(NamedPipeServerStream stream, CancellationToken ct)
     {
+        var authenticated = false;
         try
         {
-            var request = await _framing.ReadAsync(stream, ct);
+            IpcEnvelope request;
+            using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                readCts.CancelAfter(RequestReadTimeout);
+                try
+                {
+                    request = await _framing.ReadAsync(stream, readCts.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning("IPC client sent no request within {Timeout}; closing the connection",
+                                       RequestReadTimeout);
+                    return;
+                }
+            }
 
             if (!await _authenticator.ValidateAsync(request.AuthToken, ct))
             {
@@ -114,17 +165,33 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
                 return;
             }
 
-            var response = await _router.RouteAsync(request, ct);
-            await _framing.WriteAsync(stream, response, ct);
+            authenticated = true;
+
+            // Watch for the client's disappearance, so a long handler (shutdown --wait, NL-592) can give up when
+            // Ctrl-C closed it; short handlers never read the token
+            using var connection = new IpcClientConnection(stream, ct);
+            connection.WatchForDisconnect();
+            ConnectionAccessor?.Current = connection;
+            try
+            {
+                var response = await _router.RouteAsync(request, ct);
+                await _framing.WriteAsync(stream, response, ct);
+            }
+            finally
+            {
+                ConnectionAccessor?.Current = null;
+            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "IPC client handling failed");
             try
             {
-                // Try to write a generic error if we still can read an envelope
+                // Try to write a generic error if we still can read an envelope. Only an authenticated client gets
+                // the exception's message: before that, whoever opened the pipe could read internals from it.
                 var env = new IpcEnvelope { Version = 1, CorrelationId = Guid.NewGuid(), Kind = IpcEnvelopeKind.Error };
-                var err = IpcErrorFactory.CreateErrorEnvelope(env, ErrorCodes.ServerError, ex.Message);
+                var err = IpcErrorFactory.CreateErrorEnvelope(env, ErrorCodes.ServerError,
+                                                              authenticated ? ex.Message : "Invalid request.");
                 await _framing.WriteAsync(stream, err, ct);
             }
             catch
@@ -139,10 +206,16 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             {
                 //ignore
             }
+
+            // After the answer: an accepted shutdown stops the host now (NL-591)
+            ShutdownTrigger?.StopIfRequested();
         }
     }
 
-    private void EnsureCookieExists()
+    /// <summary>
+    /// Writes a fresh random cookie on every start, so a leaked cookie stops working after a restart.
+    /// </summary>
+    private void WriteNewCookie()
     {
         try
         {
@@ -150,16 +223,54 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            if (File.Exists(_cookiePath))
-                return;
+            // Delete first, so the file is recreated with owner-only permissions
+            File.Delete(_cookiePath);
 
-            var token = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
-            File.WriteAllText(_cookiePath, token);
+            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+            if (!OperatingSystem.IsWindows())
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+            using var writer = new StreamWriter(_cookiePath, options);
+            writer.Write(token);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to ensure IPC cookie exists at {Path}", _cookiePath);
+            _logger.LogError(ex, "Failed to write the IPC cookie at {Path}", _cookiePath);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// On Unix the pipe is a socket file created with the umask's mode (often 0755); make it owner-only (0600), like
+    /// the cookie. .NET recreates the socket when the last server instance goes away, so this runs for every instance.
+    /// </summary>
+    private void RestrictSocketPermissions()
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(_pipeName))
+            return;
+
+        const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        try
+        {
+            if (File.GetUnixFileMode(_pipeName) != ownerOnly)
+                File.SetUnixFileMode(_pipeName, ownerOnly);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not restrict the IPC socket at {Path} to its owner", _pipeName);
+        }
+    }
+
+    private void DeleteCookie()
+    {
+        try
+        {
+            File.Delete(_cookiePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete the IPC cookie at {Path}", _cookiePath);
         }
     }
 }

@@ -65,6 +65,7 @@ public sealed class SecureMemory : IDisposable
 
     #region Dispose Pattern
     private bool _disposed;
+    private int _released;
     private void ReleaseUnmanagedResources()
     {
         if (_handle == IntPtr.Zero)
@@ -89,16 +90,16 @@ public sealed class SecureMemory : IDisposable
 
     private void Dispose(bool disposing)
     {
-        if (_disposed)
+        // Claims the release before it runs, so two callers never free the memory twice (NL-560)
+        if (Interlocked.Exchange(ref _released, 1) != 0)
             return;
 
+        _disposed = true;
         ReleaseUnmanagedResources();
         if (disposing)
         {
             _cryptoProvider.Dispose();
         }
-
-        _disposed = true;
     }
 
     public void Dispose()

@@ -1,0 +1,536 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using NBitcoin;
+
+namespace NLightning.Infrastructure.Bitcoin.Wallet;
+
+using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Constants;
+using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Bitcoin.Wallet.Models;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
+using Interfaces;
+using Networks;
+
+/// <summary>
+/// Picks confirmed wallet outputs for a fee, largest first, and reserves them in memory and in the database before it
+/// returns them (BOLT 5 plan O7-T1).
+/// </summary>
+/// <remarks>
+/// One reservation at a time per process (the selector is a singleton); the in-memory reservation is taken atomically
+/// against channel fundings by <see cref="IUtxoMemoryRepository.TryReserveForFee"/>, and the table's key on the
+/// outpoint refuses a second reservation of an output even across processes sharing a database. A failed save releases
+/// the in-memory reservation. The chain monitor restores the persisted reservations with the UTXO set at startup.
+/// </remarks>
+public sealed class FeeInputSelector : IFeeInputSelector
+{
+    private const int MaxPurposeLength = 128;
+    private const int MaxReserveAttempts = 3;
+
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly ILogger<FeeInputSelector> _logger;
+    private readonly Network _network;
+    private readonly IWalletMempoolCatalog? _mempoolCatalog;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly TimeProvider _timeProvider;
+    private readonly IUtxoMemoryRepository _utxoMemoryRepository;
+
+    public FeeInputSelector(IUtxoMemoryRepository utxoMemoryRepository, IServiceScopeFactory scopeFactory,
+                            IOptions<NodeOptions> nodeOptions, ILogger<FeeInputSelector> logger,
+                            TimeProvider? timeProvider = null, IWalletMempoolCatalog? mempoolCatalog = null)
+    {
+        _utxoMemoryRepository = utxoMemoryRepository;
+        _mempoolCatalog = mempoolCatalog;
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
+    }
+
+    /// <inheritdoc />
+    public async Task<FeeInputReservation> ReserveAsync(LightningMoney targetFee, LightningMoney feeRatePerKw,
+                                                        int extraWeight, string purpose,
+                                                        CancellationToken cancellationToken = default)
+    {
+        return await ReserveAsync(targetFee, feeRatePerKw, extraWeight, purpose, WalletSelectionPolicy.Default,
+                                  cancellationToken);
+    }
+
+    public async Task<FeeInputReservation> ReserveAsync(LightningMoney targetFee, LightningMoney feeRatePerKw,
+                                                        int extraWeight, string purpose, WalletSelectionPolicy policy,
+                                                        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(targetFee);
+        ArgumentNullException.ThrowIfNull(feeRatePerKw);
+        ArgumentOutOfRangeException.ThrowIfNegative(extraWeight);
+        if (string.IsNullOrWhiteSpace(purpose) || purpose.Length > MaxPurposeLength)
+            throw new ArgumentException($"The purpose must be 1 to {MaxPurposeLength} characters", nameof(purpose));
+        if (feeRatePerKw.Satoshi <= 0)
+            throw new ArgumentOutOfRangeException(nameof(feeRatePerKw), "The fee rate must be positive");
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            // Outputs our own pending broadcasts spend (a funding transaction not yet mined, whose channel lock is
+            // memory only and lost on a restart; a sweep or an earlier child): the chain monitor removes them from the
+            // wallet only when a block holds the spend, and a child built from them would conflict with it
+            var spentByPendingBroadcasts = await GetOutpointsSpentByPendingBroadcastsAsync();
+
+            for (var attempt = 1; attempt <= MaxReserveAttempts; attempt++)
+            {
+                if (policy.IncludeUnconfirmed)
+                    await (_mempoolCatalog ?? throw new NotSupportedException("Unconfirmed wallet catalogue unavailable."))
+                        .RefreshAsync(cancellationToken);
+                var candidates = GetCandidates(spentByPendingBroadcasts, policy);
+                var selection = policy.Inputs is { } required
+                                    ? SelectExact(candidates, required, CeilSatoshis(targetFee), feeRatePerKw.Satoshi,
+                                                  extraWeight, policy.PreferP2TrChange)
+                                    : SelectWithPolicy(candidates, CeilSatoshis(targetFee), feeRatePerKw.Satoshi,
+                                                       extraWeight, policy);
+                var reservationId = Guid.NewGuid();
+                var outpoints = selection.Inputs.Select(i => (i.TxId, i.Index)).ToList();
+
+                // A channel funding may have locked one of them since the snapshot: select again
+                if (!_utxoMemoryRepository.TryReserveForFee(outpoints, reservationId))
+                {
+                    _logger.LogDebug("Fee inputs were taken while selecting (attempt {Attempt}); selecting again",
+                                     attempt);
+                    continue;
+                }
+
+                try
+                {
+                    return await PersistAsync(reservationId, purpose, selection, policy);
+                }
+                catch
+                {
+                    _utxoMemoryRepository.ReleaseFeeReservation(reservationId);
+                    throw;
+                }
+            }
+
+            throw new InvalidOperationException("Could not reserve fee inputs: they were taken by other spends");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            // Database first: if the save fails the outputs stay reserved, which never double-spends
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                if (await uow.FeeInputReservationDbRepository.DeleteAsync(reservationId))
+                    await uow.SaveChangesAsync();
+            }
+
+            _utxoMemoryRepository.ReleaseFeeReservation(reservationId);
+            _logger.LogInformation("Released fee input reservation {ReservationId}", reservationId);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ConfirmAsync(Guid reservationId, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var reservation = await uow.FeeInputReservationDbRepository.GetByIdAsync(reservationId);
+                if (reservation is null)
+                    return true;
+
+                // Only the chain monitor removes wallet outputs, when it processes the block that spends them: while one
+                // is still in the wallet the spend is not seen on chain (not yet processed, or another transaction won),
+                // and ending the reservation now would hand the output to the next selection
+                var unspent = reservation.Inputs.Where(i => _utxoMemoryRepository.TryGetUtxo(i.TxId, i.Index, out _))
+                                         .ToList();
+                if (unspent.Count > 0)
+                {
+                    _logger.LogWarning(
+                        "Fee input reservation {ReservationId} not confirmed: {Count} of its inputs are still unspent in "
+                      + "the wallet", reservationId, unspent.Count);
+                    return false;
+                }
+
+                await uow.FeeInputReservationDbRepository.DeleteAsync(reservationId);
+                await uow.SaveChangesAsync();
+            }
+
+            _utxoMemoryRepository.ReleaseFeeReservation(reservationId);
+            _logger.LogInformation("Fee input reservation {ReservationId} confirmed", reservationId);
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<FeeInputReservation?> GetAsync(Guid reservationId,
+                                                     CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        return await uow.FeeInputReservationDbRepository.GetByIdAsync(reservationId);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<FeeInputReservation>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        return await uow.FeeInputReservationDbRepository.GetAllAsync();
+    }
+
+    /// <summary>
+    /// Largest first until the inputs pay the target fee plus the fee rate over the extra weight and their own; a change
+    /// output is added (and charged) when what is left after it is at least the P2WPKH dust limit, otherwise the excess
+    /// goes to the fee.
+    /// </summary>
+    internal static Selection Select(IReadOnlyList<WalletInput> candidates, long targetFeeSat, long feeRatePerKw,
+                                     int extraWeight, bool preferP2TrChange = false)
+    {
+        var changeWeight = preferP2TrChange ? 172 : WalletWeights.P2WpkhOutputWeight;
+        var changeDust = preferP2TrChange ? 330 : WalletWeights.P2WpkhDustLimitSat;
+        var inputs = new List<WalletInput>();
+        long total = 0;
+        long inputWeight = 0;
+        foreach (var candidate in candidates)
+        {
+            inputs.Add(candidate);
+            total += candidate.Amount.Satoshi;
+            inputWeight += candidate.InputWeight;
+
+            var feeWithChange = targetFeeSat
+                              + FeeSat(feeRatePerKw, extraWeight + inputWeight + changeWeight);
+            if (total - feeWithChange >= changeDust)
+                return new Selection(inputs, feeWithChange, total - feeWithChange);
+
+            var feeWithoutChange = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight);
+            if (total >= feeWithoutChange)
+                return new Selection(inputs, total, 0);
+        }
+
+        var required = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight
+                                                         + (inputs.Count == 0 ? WalletWeights.P2WpkhInputWeight : 0));
+        throw new InsufficientFundsException(LightningMoney.Satoshis(required), LightningMoney.Satoshis(total));
+    }
+
+    /// <summary>
+    /// The operator's explicit choice (NL-1296): exactly the <paramref name="required"/> outputs, all of them, in the
+    /// order given. A change output is added when what is left after it is at least the change dust limit, otherwise
+    /// the excess goes to the fee. Silent payment coins among them are spent (the operator opted in); linking several
+    /// coins is logged like any other linkage.
+    /// </summary>
+    /// <exception cref="WalletSpendException"><see cref="WalletSpendError.InputUnavailable"/>: an output is not among
+    /// the selectable wallet outputs (not in the wallet, not mined, of an unknown script, locked to a channel, reserved
+    /// or spent by a pending broadcast), or one is listed twice.</exception>
+    /// <exception cref="InsufficientFundsException">They cannot pay the target and the fee.</exception>
+    internal Selection SelectExact(IReadOnlyList<WalletInput> candidates,
+                                   IReadOnlyList<(TxId TxId, uint Index)> required, long targetFeeSat,
+                                   long feeRatePerKw, int extraWeight, bool preferP2TrChange)
+    {
+        if (required.Count == 0)
+            throw new WalletSpendException(WalletSpendError.InputUnavailable, "No input given.");
+
+        var byOutpoint = candidates.ToDictionary(c => (c.TxId, c.Index));
+        var inputs = new List<WalletInput>(required.Count);
+        var seen = new HashSet<(TxId, uint)>();
+        foreach (var outpoint in required)
+        {
+            if (!seen.Add(outpoint))
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               $"Input {outpoint.TxId}:{outpoint.Index} is listed twice.");
+            if (!byOutpoint.TryGetValue(outpoint, out var input))
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               $"Input {outpoint.TxId}:{outpoint.Index} is not a spendable wallet "
+                                             + "output: unknown, not mined, locked to a channel, reserved or spent by a "
+                                             + "pending broadcast.");
+            inputs.Add(input);
+        }
+
+        var changeWeight = preferP2TrChange ? 172 : WalletWeights.P2WpkhOutputWeight;
+        var changeDust = preferP2TrChange ? 330 : WalletWeights.P2WpkhDustLimitSat;
+        var total = inputs.Sum(i => i.Amount.Satoshi);
+        var inputWeight = inputs.Sum(i => (long)i.InputWeight);
+        var feeWithChange = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight + changeWeight);
+        Selection selection;
+        if (total - feeWithChange >= changeDust)
+        {
+            selection = new Selection(inputs, feeWithChange, total - feeWithChange);
+        }
+        else
+        {
+            var feeWithoutChange = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight);
+            if (total < feeWithoutChange)
+                throw new InsufficientFundsException(LightningMoney.Satoshis(feeWithoutChange),
+                                                     LightningMoney.Satoshis(total));
+            selection = new Selection(inputs, total, 0);
+        }
+
+        LogSilentPaymentLinkage(selection);
+        return selection;
+    }
+
+    private Selection SelectWithPolicy(IReadOnlyList<WalletInput> candidates, long target, long rate, int weight,
+                                       WalletSelectionPolicy policy)
+    {
+        if (policy.AvoidMixing)
+        {
+            var groups = new List<IReadOnlyList<WalletInput>>
+            {
+                candidates.Where(c => !c.IsSilentPayment).ToList()
+            };
+            groups.AddRange(candidates.Where(c => c.IsSilentPayment).Select(c => (IReadOnlyList<WalletInput>)new[] { c }));
+            groups.AddRange(candidates.Where(c => c.IsSilentPayment).GroupBy(c => c.SilentPaymentLabel)
+                                      .Select(g => (IReadOnlyList<WalletInput>)g.ToList()));
+            foreach (var group in groups)
+                try
+                {
+                    var grouped = Select(group, target, rate, weight, policy.PreferP2TrChange);
+                    LogSilentPaymentLinkage(grouped);
+                    return grouped;
+                }
+                catch (InsufficientFundsException)
+                {
+                    // This privacy-preserving group cannot fund the transaction; try the next group.
+                }
+        }
+        var selection = Select(candidates, target, rate, weight, policy.PreferP2TrChange);
+        LogSilentPaymentLinkage(selection);
+        return selection;
+    }
+
+    private void LogSilentPaymentLinkage(Selection selection)
+    {
+        if (selection.Inputs.Count(c => c.IsSilentPayment) > 1 ||
+            (selection.Inputs.Any(c => c.IsSilentPayment) && selection.Inputs.Any(c => !c.IsSilentPayment)))
+            _logger.LogInformation("Wallet spend links silent payment coins with other inputs ({Count} inputs)",
+                                   selection.Inputs.Count);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<WalletInput>> ReserveInputsAsync(
+        IReadOnlyList<(TxId TxId, uint Index)> outpoints, string purpose,
+        CancellationToken cancellationToken = default) =>
+        await ReserveInputsAsync(outpoints, purpose, false, cancellationToken);
+
+    public async Task<IReadOnlyList<WalletInput>> ReserveInputsAsync(
+        IReadOnlyList<(TxId TxId, uint Index)> outpoints, string purpose, bool includeUnconfirmed,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(outpoints);
+        if (outpoints.Count == 0)
+            return [];
+        if (string.IsNullOrWhiteSpace(purpose) || purpose.Length > MaxPurposeLength)
+            throw new ArgumentException($"The purpose must be 1 to {MaxPurposeLength} characters", nameof(purpose));
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            // Only the outpoints the wallet still holds and nothing else claims (NL-384): a reorg restored them, and
+            // the reservation of the spend that first confirmed them ended before the rewind
+            if (includeUnconfirmed)
+                await (_mempoolCatalog ?? throw new NotSupportedException("Unconfirmed wallet catalogue unavailable."))
+                    .RefreshParentsAsync(outpoints.Select(point => point.TxId).Distinct().ToArray(), cancellationToken);
+            var inputs = new List<WalletInput>();
+            foreach (var (txId, index) in outpoints)
+            {
+                if (_utxoMemoryRepository.TryGetFeeReservation(txId, index, out _))
+                    continue;
+
+                if (!_utxoMemoryRepository.TryGetUtxo(txId, index, out var utxo) || utxo.LockedToChannelId is not null
+                 || (!includeUnconfirmed && utxo.BlockHeight == 0) || (utxo.WalletAddress is null && utxo.SilentPayment is null)
+                 || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
+                    continue;
+
+                Script scriptPubKey;
+                try
+                {
+                    scriptPubKey = GetCoinScript(utxo);
+                }
+                catch (FormatException e)
+                {
+                    _logger.LogWarning(e, "Wallet output {TxId}:{Index} has an address of another network; not "
+                                       + "re-reserved", txId, index);
+                    continue;
+                }
+
+                inputs.Add(new WalletInput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
+                                           scriptPubKey.ToBytes(), WalletWeights.GetInputWeight(utxo.AddressType))
+                {
+                    IsSilentPayment = utxo.SilentPayment is not null,
+                    SilentPaymentLabel = utxo.SilentPayment?.Label
+                });
+            }
+
+            if (inputs.Count == 0)
+                return [];
+
+            var reservationId = Guid.NewGuid();
+            if (!_utxoMemoryRepository.TryReserveForFee(inputs.Select(i => (i.TxId, i.Index)).ToList(), reservationId))
+            {
+                _logger.LogWarning("Fee inputs for {Purpose} were taken while re-reserving; none is reserved", purpose);
+                return [];
+            }
+
+            try
+            {
+                await PersistReReservationAsync(reservationId, purpose, inputs);
+            }
+            catch
+            {
+                _utxoMemoryRepository.ReleaseFeeReservation(reservationId);
+                throw;
+            }
+
+            return inputs;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The re-reservation's row: no fee and no change is being sized (nothing is built from it yet), so the whole
+    /// value is recorded as what goes back to the wallet.
+    /// </summary>
+    private async Task PersistReReservationAsync(Guid reservationId, string purpose, List<WalletInput> inputs)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var reservation = new FeeInputReservation(reservationId, purpose, inputs, LightningMoney.Zero,
+                                                  LightningMoney.Satoshis(inputs.Sum(i => i.Amount.Satoshi)), null);
+        uow.FeeInputReservationDbRepository.Add(reservation, _timeProvider.GetUtcNow());
+        await uow.SaveChangesAsync();
+
+        _logger.LogInformation("Re-reserved {Count} fee input(s) worth {Total} sat for {Purpose} (reservation "
+                             + "{ReservationId}) after a reorg", inputs.Count, reservation.Total.Satoshi, purpose,
+                               reservationId);
+    }
+
+    private async Task<HashSet<(TxId TxId, uint Index)>> GetOutpointsSpentByPendingBroadcastsAsync()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        return await PendingBroadcastOutpoints.GetAsync(uow, _network, _logger);
+    }
+
+    private List<WalletInput> GetCandidates(HashSet<(TxId TxId, uint Index)> spentByPendingBroadcasts, WalletSelectionPolicy? policy = null)
+    {
+        var candidates = new List<WalletInput>();
+        foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos().Concat(
+                     policy?.IncludeUnconfirmed == true ? _utxoMemoryRepository.GetUnconfirmedUtxos()
+                                                       : Array.Empty<UtxoModel>()))
+        {
+            if (spentByPendingBroadcasts.Contains((utxo.TxId, utxo.Index)))
+                continue;
+
+            // Only mined outputs whose script we know
+            if ((!(policy?.IncludeUnconfirmed ?? false) && utxo.BlockHeight == 0) || (utxo.WalletAddress is null && utxo.SilentPayment is null)
+                                      || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
+                continue;
+
+            if (_utxoMemoryRepository.TryGetFeeReservation(utxo.TxId, utxo.Index, out _) ||
+                (utxo.WalletAddress?.AccountName ?? "default") != (policy?.Account ?? "default")) continue;
+            if (policy?.ConfirmationTip is { } tip &&
+                (utxo.BlockHeight == 0 || utxo.BlockHeight > tip ? 0 : tip - utxo.BlockHeight + 1) < policy.MinConfirmations) continue;
+            Script scriptPubKey;
+            try
+            {
+                scriptPubKey = GetCoinScript(utxo);
+            }
+            catch (FormatException e)
+            {
+                _logger.LogWarning(e, "Wallet output {TxId}:{Index} has an address of another network; not used",
+                                   utxo.TxId, utxo.Index);
+                continue;
+            }
+
+            candidates.Add(new WalletInput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
+                                           scriptPubKey.ToBytes(), WalletWeights.GetInputWeight(utxo.AddressType))
+            {
+                IsSilentPayment = utxo.SilentPayment is not null,
+                SilentPaymentLabel = utxo.SilentPayment?.Label
+            });
+        }
+
+        // Largest first (fewest inputs, so the least weight to pay for); ties in a stable order
+        return candidates.OrderByDescending(c => c.Amount.Satoshi)
+                         .ThenBy(c => c.TxId.ToInternalHex(), StringComparer.Ordinal)
+                         .ThenBy(c => c.Index)
+                         .ToList();
+    }
+
+    private async Task<FeeInputReservation> PersistAsync(Guid reservationId, string purpose, Selection selection,
+                                                          WalletSelectionPolicy policy)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        BitcoinScript? changeScript = null;
+        if (selection.ChangeSat > 0 &&
+            !(policy.ChangeToSilentPayment && selection.ChangeSat >= policy.MinimumSilentChangeSat))
+        {
+            WalletAddressModel changeAddress;
+            if (policy.Account != "default")
+            {
+                var account = await uow.WalletAccountDbRepository.GetAsync(policy.Account, CancellationToken.None)
+                    ?? throw new WalletPsbtException(WalletPsbtError.NotFound, "wallet account not found");
+                changeAddress = await scope.ServiceProvider.GetRequiredService<WalletAccountService>()
+                    .NextAsync(policy.Account, account.AddressType, true, CancellationToken.None);
+            }
+            else
+                changeAddress = await scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>()
+                    .GetUnusedAddressAsync(policy.PreferP2TrChange ? AddressType.P2Tr : AddressType.P2Wpkh, true);
+            changeScript = BitcoinAddress.Create(changeAddress.Address, _network).ScriptPubKey.ToBytes();
+        }
+
+        var reservation = new FeeInputReservation(reservationId, purpose, selection.Inputs,
+                                                  LightningMoney.Satoshis(selection.FeeSat),
+                                                  LightningMoney.Satoshis(selection.ChangeSat), changeScript);
+        uow.FeeInputReservationDbRepository.Add(reservation, _timeProvider.GetUtcNow());
+        await uow.SaveChangesAsync();
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation(
+                "Reserved {Count} fee input(s) worth {Total} sat for {Purpose} (reservation {ReservationId}, fee "
+              + "{Fee} sat, change {Change} sat)", reservation.Inputs.Count, reservation.Total.Satoshi, purpose,
+                reservationId, selection.FeeSat, selection.ChangeSat);
+
+        return reservation;
+    }
+
+    private Script GetCoinScript(UtxoModel utxo) => utxo.SilentPayment is { } silent
+        ? new Script(new byte[] { 0x51, 0x20 }.Concat(silent.OutputKey).ToArray())
+        : BitcoinAddress.Create(utxo.WalletAddress!.Address, _network).ScriptPubKey;
+
+    private static long CeilSatoshis(LightningMoney amount) => (long)((amount.MilliSatoshi + 999) / 1000);
+
+    private static long FeeSat(long feeRatePerKw, long weight) => (feeRatePerKw * weight + 999) / 1000;
+
+    internal sealed record Selection(IReadOnlyList<WalletInput> Inputs, long FeeSat, long ChangeSat);
+}

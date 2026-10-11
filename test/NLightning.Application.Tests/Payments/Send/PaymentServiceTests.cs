@@ -1,0 +1,998 @@
+using System.Security.Cryptography;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace NLightning.Application.Tests.Payments.Send;
+
+using Application.Channels.Interfaces;
+using Application.Payments;
+using Application.Payments.Routing;
+using Application.Payments.Send;
+using Application.Payments.Send.Interfaces;
+using Bolt11.Models;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Enums;
+using Domain.Channels.Commitments;
+using Domain.Channels.Commitments.Events;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Enums;
+using Domain.Money;
+using Domain.Node.Interfaces;
+using Domain.Node.Models;
+using Domain.Node.Options;
+using Domain.Payments.Enums;
+using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
+using Domain.Payments.ValueObjects;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
+using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Interfaces;
+using Domain.Protocol.ValueObjects;
+using Infrastructure.Bitcoin;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Protocol.Onion;
+using Infrastructure.Serialization;
+
+/// <summary>
+/// <see cref="PaymentService"/> with mocked channels and persistence: invoice validation, refusals, no-route
+/// failures, and the outcome hook's matching and interpretation rules. The end-to-end paths are in
+/// <see cref="PaymentHarnessTests"/>.
+/// </summary>
+public class PaymentServiceTests : IDisposable
+{
+    private const uint Height = 500;
+    private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(50_000_123);
+    private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(5);
+    private static readonly ChannelId s_channelId = new(Enumerable.Repeat((byte)0x42, 32).ToArray());
+
+    private readonly TestNodeKeyManager _us = new(0x0b);
+    private readonly TestNodeKeyManager _payee = new(0x0c);
+    private readonly InMemoryPaymentDbRepository _payments = new();
+    private readonly InMemoryPaymentPartDbRepository _parts = new();
+    private readonly InMemoryInvoiceDbRepository _invoices = new();
+    private readonly RecordingAccountingEvents _accounting = new();
+    private readonly Mock<IChannelStateDbRepository> _channelState = new();
+    private readonly Mock<IChannelOperations> _channelOperations = new();
+    private readonly Mock<IChannelMemoryRepository> _channels = new();
+    private readonly Mock<IBlockchainMonitor> _blockchainMonitor = new();
+    private readonly Mock<IPeerManager> _peerManager = new();
+    private readonly ShiftedTimeProvider _time = new();
+    private readonly ServiceProvider _provider;
+
+    public PaymentServiceTests()
+    {
+        _blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(Height);
+        _channels.Setup(c => c.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
+
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(_channelState.Object);
+        unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(_invoices);
+        var accounting = _accounting.Begin();
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(accounting.Repository);
+        unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
+        {
+            accounting.Commit();
+            return Task.CompletedTask;
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<ISecureKeyManager>(_us);
+        services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(
+                                  new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }));
+        services.AddSingleton<IOnionReplayStore>(new InMemoryOnionReplayStore());
+        services.AddSerializationInfrastructureServices();
+        services.AddBitcoinInfrastructure();
+        services.AddSingleton(_blockchainMonitor.Object);
+        services.AddSingleton(_channels.Object);
+        services.AddSingleton(_channelOperations.Object);
+        services.AddSingleton(new Mock<IPeerLivenessProbe>().Object);
+        services.AddSingleton(_peerManager.Object);
+        services.AddSingleton<TimeProvider>(_time);
+        services.AddScoped(_ => unitOfWork.Object);
+        services.AddScoped<IPaymentDbRepository>(_ => _payments);
+        services.AddScoped<IPaymentPartDbRepository>(_ => _parts);
+        services.AddPaymentsServices();
+        services.AddPaymentSendServices();
+        _provider = services.BuildServiceProvider();
+    }
+
+    private PaymentService Service => _provider.GetRequiredService<PaymentService>();
+
+    public void Dispose() => _provider.Dispose();
+
+    [Fact]
+    public void Given_OurHtlcTimedOutOnChain_When_Interpreted_Then_PermanentChannelFailureFromUs()
+    {
+        // Arrange (BOLT 5 plan O3-T4: no hop sent an error, the channel to our peer closed on chain)
+        var payment = StoredPayment(HashOf(Preimage()), PaymentStatus.InFlight, 3);
+
+        // Act
+        var (code, sourceIndex, reason) = Service.InterpretFailure(payment, HtlcRemoval.OnchainTimeout());
+
+        // Assert
+        Assert.Equal(FailureCode.PermanentChannelFailure, code);
+        Assert.Null(sourceIndex);
+        Assert.Contains("closed on chain", reason);
+    }
+
+    [Fact]
+    public void Given_SendServices_When_Resolved_Then_OneServiceBehindBothInterfaces()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+
+        // Act
+        services.AddPaymentSendServices();
+        services.AddPaymentSendServices();
+
+        // Assert
+        Assert.Single(services, d => d.ServiceType == typeof(IPaymentService));
+        Assert.Single(services, d => d.ServiceType == typeof(IPaymentOutcomeHandler));
+        Assert.Same(_provider.GetRequiredService<IPaymentService>(),
+                    _provider.GetRequiredService<IPaymentOutcomeHandler>());
+    }
+
+    [Fact]
+    public async Task Given_InvoiceForAnotherNetwork_When_Paying_Then_ArgumentExceptionAndNothingPersisted()
+    {
+        // Arrange
+        var (bolt11, _) = CreateInvoice(_payee, s_amount, BitcoinNetwork.Mainnet);
+
+        // Act / Assert
+        await Assert.ThrowsAnyAsync<ArgumentException>(
+            () => Service.PayInvoiceAsync(bolt11, null, s_timeout, TestContext.Current.CancellationToken));
+        Assert.Equal(0, _payments.AddCalls);
+    }
+
+    [Fact]
+    public async Task Given_ExpiredInvoice_When_Paying_Then_ArgumentException()
+    {
+        // Arrange
+        var (bolt11, _) = CreateInvoice(_payee, s_amount, expirySeconds: 60);
+        _time.Shift = TimeSpan.FromMinutes(2);
+
+        // Act
+        var exception = await Assert.ThrowsAnyAsync<ArgumentException>(
+                            () => Service.PayInvoiceAsync(bolt11, null, s_timeout,
+                                                          TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Contains("expired", exception.Message);
+        Assert.Equal(0, _payments.AddCalls);
+    }
+
+    [Theory]
+    [InlineData(true, 1_000UL)]
+    [InlineData(false, null)]
+    [InlineData(true, 0UL)]
+    public async Task Given_InconsistentAmount_When_Paying_Then_ArgumentException(bool invoiceHasAmount,
+                                                                                 ulong? amountMsat)
+    {
+        // Arrange
+        var (bolt11, _) = CreateInvoice(_payee, invoiceHasAmount ? s_amount : null);
+        var amount = amountMsat is { } msat ? LightningMoney.MilliSatoshis(msat) : null;
+
+        // Act / Assert
+        await Assert.ThrowsAnyAsync<ArgumentException>(
+            () => Service.PayInvoiceAsync(bolt11, amount, s_timeout, TestContext.Current.CancellationToken));
+        Assert.Equal(0, _payments.AddCalls);
+    }
+
+    [Fact]
+    public async Task Given_OurOwnInvoice_When_Paying_Then_ArgumentException()
+    {
+        // Arrange
+        var (bolt11, _) = CreateInvoice(_us, s_amount);
+
+        // Act / Assert
+        await Assert.ThrowsAnyAsync<ArgumentException>(
+            () => Service.PayInvoiceAsync(bolt11, null, s_timeout, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_NoBlockProcessed_When_Paying_Then_InvalidOperationAndNothingPersisted()
+    {
+        // Arrange
+        _blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(0u);
+        var (bolt11, _) = CreateInvoice(_payee, s_amount);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Service.PayInvoiceAsync(bolt11, null, s_timeout, TestContext.Current.CancellationToken));
+        Assert.Equal(0, _payments.AddCalls);
+    }
+
+    [Fact]
+    public async Task Given_NoUsableChannel_When_Paying_Then_FailedPaymentIsStoredAndNothingOffered()
+    {
+        // Arrange
+        var (bolt11, hash) = CreateInvoice(_payee, s_amount);
+
+        // Act
+        var payment = await Service.PayInvoiceAsync(bolt11, null, s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(PaymentStatus.Failed, payment.Status);
+        Assert.Null(payment.FailureCode);
+        Assert.Contains("No route", payment.FailureReason);
+        Assert.Equal(PaymentStatus.Failed, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+        _channelOperations.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_InvoiceWithoutAmount_When_PayingWithAmount_Then_ThePaymentCarriesIt()
+    {
+        // Arrange
+        var (bolt11, _) = CreateInvoice(_payee, null);
+
+        // Act
+        var payment = await Service.PayInvoiceAsync(bolt11, LightningMoney.MilliSatoshis(7_000), s_timeout,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert: no route, but the attempt is recorded with the caller's amount
+        Assert.Equal(7_000UL, payment.Amount.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(PaymentStatus.InFlight)]
+    [InlineData(PaymentStatus.Succeeded)]
+    public async Task Given_StoredPayment_When_PayingTheSameHash_Then_InvalidOperationException(PaymentStatus status)
+    {
+        // Arrange
+        var (bolt11, hash) = CreateInvoice(_payee, s_amount);
+        await _payments.AddAsync(StoredPayment(hash, status, htlcId: 3));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                            () => Service.PayInvoiceAsync(bolt11, null, s_timeout,
+                                                          TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Contains(status.ToString(), exception.Message);
+        Assert.Equal(1, _payments.AddCalls);
+    }
+
+    [Fact]
+    public async Task Given_InFlightPaymentWithAnotherHtlc_When_AFulfillWithTheRightPreimageArrives_Then_ItIsRecorded()
+    {
+        // Arrange
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 4, hash, preimage),
+                          TestContext.Current.CancellationToken);
+
+        // Assert: the preimage proves the payment; the recorded HTLC is kept
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(preimage, stored.Preimage);
+        Assert.Equal(3UL, stored.OutgoingHtlcId);
+    }
+
+    [Fact]
+    public async Task Given_FailedPayment_When_AFulfillWithTheRightPreimageArrives_Then_ItSucceedsWithThePreimage()
+    {
+        // Arrange: e.g. a failure was applied to the wrong attempt, then the real HTLC was fulfilled
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.Failed, htlcId: 3));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 3, hash, preimage),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(preimage, stored.Preimage);
+        Assert.Null(stored.FailureReason);
+
+        // NL-602: the payment did leave: PaymentSucceeded is recorded even though the row was Failed
+        var succeeded = Assert.Single(_accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
+        Assert.Equal(-(long)s_amount.MilliSatoshi, succeeded.AmountMsat);
+    }
+
+    [Fact]
+    public async Task Given_AFailedRowWithoutARecordedHtlc_When_AnHtlcIsFulfilledLate_Then_NoFeeIsTakenFromTheRoute()
+    {
+        // Arrange (NL-924): the row's route pays Carol 1,000 msat, but no HTLC was recorded for it, so the fulfilled
+        // HTLC may be another part's (no stored part names it either)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash,
+                                                                         preimage),
+                                                                     TestContext.Current.CancellationToken);
+
+        // Assert: succeeded with the preimage, the fee unknown (zero) in the row and the books
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.True(stored.Fee.IsZero);
+        Assert.Equal(0, Assert.Single(_accounting.Saved, e => e.Kind == AccountingEventKind.PaymentSucceeded).FeeMsat);
+    }
+
+    [Fact]
+    public async Task Given_AFailedRowWithItsHtlcRecorded_When_ThatHtlcIsFulfilledLate_Then_ItsRoutesFeeIsRecorded()
+    {
+        // Arrange
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: 7));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(1_000UL, stored.Fee.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(true, 1_000UL)]
+    [InlineData(false, 0UL)]
+    public async Task Given_AFailedRowAndAStoredPartOfTheFulfilledHtlc_When_FulfilledLate_Then_ThePartsFeeOnlyIfWhole(
+        bool partCarriedTheWholeAmount, ulong expectedFeeMsat)
+    {
+        // Arrange (NL-924): no HTLC recorded on the row; the stored part of HTLC 7 paid Carol 1,000 msat for the whole
+        // amount, or for half of it (one part of a split: the others' fees are unknown)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+        var delivered = partCarriedTheWholeAmount ? s_amount.MilliSatoshi : s_amount.MilliSatoshi / 2;
+        await _parts.AddAsync(new PaymentPartModel(hash, 0, s_channelId, 7, PaymentPartState.InFlight,
+                                                   RouteThroughCarol(delivered)));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(expectedFeeMsat, stored.Fee.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(PaymentPartState.InFlight, 0UL)]
+    [InlineData(PaymentPartState.Failed, 3_001UL)]
+    public async Task Given_ASplitTrampolineOuterLeg_When_APartAboveTheAmountIsFulfilledLate_Then_NoFeeUnlessItWasAlone(
+        PaymentPartState otherPartState, ulong expectedFeeMsat)
+    {
+        // Arrange (NL-924): a trampoline payment's outer parts add up to the amount plus the trampoline fee, so one part
+        // may deliver more than the amount (here amount + 2,001 msat, its first hop 1,000 msat more) while another part
+        // of 5,000 msat is in flight, or failed (then the fulfilled part paid alone)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+        await _parts.AddAsync(new PaymentPartModel(hash, 0, s_channelId, 7, PaymentPartState.InFlight,
+                                                   RouteThroughCarol(s_amount.MilliSatoshi + 2_001)));
+        await _parts.AddAsync(new PaymentPartModel(hash, 1, s_channelId, 8, otherPartState, RouteThroughCarol(5_000)));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert: a part of a live split says nothing of the payment's fee
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(expectedFeeMsat, stored.Fee.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void Given_ATrampolinePeerAndItsInitFeatures_When_AskedWhetherItTakesASplitOuterLeg_Then_BasicMppDecides(
+        bool peerSupportsBasicMpp, bool expected)
+    {
+        // Arrange (NL-924): the trampoline node is a connected peer whose init sets basic_mpp or not; we do not
+        // advertise basic_mpp ourselves, so the negotiated set never has it: the peer's own features decide
+        var trampoline = new TestNodeKeyManager(0x0d).NodeId;
+        var peerService = new Mock<IPeerService>();
+        peerService.SetupGet(p => p.Features).Returns(new FeatureOptions { BasicMpp = FeatureSupport.No });
+        peerService.SetupGet(p => p.PeerFeatures).Returns(new FeatureOptions
+        {
+            BasicMpp = peerSupportsBasicMpp ? FeatureSupport.Optional : FeatureSupport.No
+        });
+        var peer = new PeerModel(trampoline, "127.0.0.1", 9735, "IPv4");
+        peer.SetPeerService(peerService.Object);
+        _peerManager.Setup(m => m.GetPeer(trampoline)).Returns(peer);
+
+        // Act
+        var accepts = Service.TrampolineAcceptsMpp(trampoline);
+
+        // Assert
+        Assert.Equal(expected, accepts);
+    }
+
+    [Fact]
+    public void Given_ATrampolineNodeNeitherPeerNorInTheGraph_When_AskedWhetherItTakesASplitOuterLeg_Then_Yes()
+    {
+        // Arrange: nothing is known of its features (BOLTs PR 836: a trampoline node collects the outer parts)
+        var trampoline = new TestNodeKeyManager(0x0d).NodeId;
+
+        // Act
+        var accepts = Service.TrampolineAcceptsMpp(trampoline);
+
+        // Assert
+        Assert.True(accepts);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelaysOutgoingPayment_When_ItSucceeds_Then_NoPaymentEventIsRecorded()
+    {
+        // Arrange (NL-875): the relay's TrampolineRelaySettled books it (incoming parts minus this payment)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3, isTrampolineRelay: true));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 3, hash, preimage),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.True(stored.IsTrampolineRelay);
+        Assert.Empty(_accounting.Saved);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelaysOutgoingPayment_When_ItFails_Then_NoPaymentEventIsRecorded()
+    {
+        // Arrange (NL-875)
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3, isTrampolineRelay: true));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 3, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        Assert.Equal(PaymentStatus.Failed, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+        Assert.Empty(_accounting.Saved);
+    }
+
+    [Fact]
+    public async Task Given_FulfillOfAForwardedHtlcWithTheSameHash_When_Handled_Then_PaymentUnchanged()
+    {
+        // Arrange
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.Failed, htlcId: 3));
+        _channelState.Setup(s => s.GetHtlcOriginAsync(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 9)))
+                     .ReturnsAsync(HtlcOrigin.Forwarded(s_channelId, 1));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 9, hash, preimage),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(PaymentStatus.Failed, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_AnotherPartWithOurOriginFailsAndNoneIsLive_When_Handled_Then_ThePaymentFailsWithoutCode()
+    {
+        // Arrange: after a restart (no session), a part of a split payment that the row does not record fails; its
+        // stored origin says it is ours, and no HTLC of the payment is live any more (NL-270)
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+        _channelState.Setup(s => s.GetHtlcOriginAsync(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 4)))
+                     .ReturnsAsync(HtlcOrigin.Local(hash));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 4, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert: its route was not stored, so the failure is recorded without a code
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.Null(stored.FailureCode);
+        Assert.Contains("one part of the payment", stored.FailureReason);
+        Assert.Equal(3UL, stored.OutgoingHtlcId);
+
+        // NL-602: the final failure staged in the save that failed the payment
+        var failed = Assert.Single(_accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentFailed, failed.Kind);
+        Assert.Equal(AccountingEventKeys.PaymentFailed(hash, stored.CreatedAt.UtcTicks), failed.EventKey);
+        Assert.Equal((0L, 0L), (failed.AmountMsat, failed.FeeMsat));
+        Assert.Equal(_payee.NodeId, failed.Counterparty);
+        Assert.Equal(stored.FailureReason, failed.Details["reason"]);
+    }
+
+    [Fact]
+    public async Task Given_FailOfAnotherHtlc_When_Handled_Then_PaymentUnchanged()
+    {
+        // Arrange
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 4, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_HtlcIdNotRecordedAndNoStoredOrigin_When_Failed_Then_ThePaymentFails()
+    {
+        // Arrange: production before NL-250 stores no origin, and a failed HTLC has left channel memory
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 9, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.Equal(9UL, stored.OutgoingHtlcId);
+    }
+
+    [Fact]
+    public async Task Given_InFlightPaymentThatWasNeverOffered_When_PayingTheHashAgain_Then_TheNewAttemptProceeds()
+    {
+        // Arrange: a crash after the InFlight save, before the offer (no HTLC anywhere)
+        var (bolt11, hash) = CreateInvoice(_payee, s_amount);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+
+        // Act
+        var payment = await Service.PayInvoiceAsync(bolt11, null, s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert: the stale attempt was failed, then replaced by the new one (no route here)
+        Assert.Equal(PaymentStatus.Failed, payment.Status);
+        Assert.Contains("No route", payment.FailureReason);
+        Assert.Equal(2, _payments.AddCalls);
+        Assert.Equal(PaymentStatus.Failed, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_InFlightPaymentsWithoutHtlc_When_ReconcilingAtStartup_Then_OnlyTheNeverOfferedOneFails()
+    {
+        // Arrange: one attempt has no HTLC at all, the other has one on a channel that is not in memory
+        var neverOffered = HashOf(Preimage());
+        var unknownChannel = HashOf(Preimage());
+        var recorded = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(neverOffered, PaymentStatus.InFlight));
+        await _payments.AddAsync(StoredPayment(unknownChannel, PaymentStatus.InFlight));
+        await _payments.AddAsync(StoredPayment(recorded, PaymentStatus.InFlight, htlcId: 3));
+        _channelState.Setup(s => s.FindHtlcsByOriginAsync(HtlcOrigin.Local(unknownChannel)))
+                     .ReturnsAsync([(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 5))]);
+
+        // Act
+        var reconciled = await Service.ReconcileInFlightPaymentsAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, reconciled);
+        var failed = await _payments.GetByPaymentHashAsync(neverOffered);
+        Assert.Equal(PaymentStatus.Failed, failed!.Status);
+        Assert.Null(failed.FailureCode);
+        Assert.Contains("never offered", failed.FailureReason);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(unknownChannel))!.Status);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(recorded))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_OneHashLocked_When_LockingAnotherHashWithTheSameFirstByte_Then_ItDoesNotWait()
+    {
+        // Arrange: the old 64 striped locks put these two hashes in the same stripe
+        var ct = TestContext.Current.CancellationToken;
+        var service = Service;
+        var first = HashOf(Preimage());
+        var bytes = ((byte[])first).ToArray();
+        bytes[31] ^= 0xFF;
+        var second = new Hash(bytes);
+        var held = await service.AcquireHashLockAsync(first, ct);
+
+        // Act
+        var other = service.AcquireHashLockAsync(second, ct);
+        var same = service.AcquireHashLockAsync(first, ct);
+
+        // Assert
+        Assert.True(other.IsCompletedSuccessfully);
+        Assert.False(same.IsCompleted);
+        held.Dispose();
+        (await same.WaitAsync(TimeSpan.FromSeconds(5), ct)).Dispose();
+        (await other).Dispose();
+    }
+
+    [Fact]
+    public async Task Given_ACanceledWaitForAHashLock_When_TheHolderReleases_Then_TheLockIsFreeAgain()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var service = Service;
+        var hash = HashOf(Preimage());
+        var held = await service.AcquireHashLockAsync(hash, ct);
+        using var canceled = new CancellationTokenSource();
+        var waiting = service.AcquireHashLockAsync(hash, canceled.Token);
+
+        // Act
+        await canceled.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        held.Dispose();
+        held.Dispose();
+
+        // Assert: released once despite the double dispose, and reusable
+        using var again = await service.AcquireHashLockAsync(hash, ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
+    }
+
+    [Fact]
+    public async Task Given_PreimageNotMatchingTheHash_When_Handled_Then_Ignored()
+    {
+        // Arrange
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 3, hash, new Secret(new byte[32])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_SucceededPayment_When_TheFulfillIsReplayed_Then_NothingChanges()
+    {
+        // Arrange
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+        var fulfilled = new OutgoingHtlcFulfilled(s_channelId, 3, hash, preimage);
+        Assert.True(await Service.HandleOutgoingHtlcFulfilledAsync(fulfilled, TestContext.Current.CancellationToken));
+        var updates = _payments.UpdateCalls;
+        Assert.Single(_accounting.Saved);
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(fulfilled, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(updates, _payments.UpdateCalls);
+        Assert.Equal(preimage, (await _payments.GetByPaymentHashAsync(hash))!.Preimage);
+        Assert.Single(_accounting.Saved); // NL-602: the replay stages nothing
+    }
+
+    [Fact]
+    public async Task Given_InFlightPaymentWithoutASession_When_ItsFulfillArrives_Then_PaymentSucceededIsRecordedInItsSave()
+    {
+        // Arrange - NL-602: the outcome of a payment after a restart (no session) goes through the stored row
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+
+        // Act
+        Assert.True(await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 3, hash,
+                                                                       preimage),
+                                                                   TestContext.Current.CancellationToken));
+
+        // Assert: the whole amount (and the route fee, none here) left our channel
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        var succeeded = Assert.Single(_accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
+        Assert.Equal(AccountingEventKeys.PaymentSucceeded(hash), succeeded.EventKey);
+        Assert.Equal(-(long)s_amount.MilliSatoshi, succeeded.AmountMsat);
+        Assert.Equal(0, succeeded.FeeMsat);
+        Assert.Equal(_payee.NodeId, succeeded.Counterparty);
+        Assert.Equal(s_channelId, succeeded.ChannelId);
+        Assert.Equal(hash, succeeded.PaymentHash);
+        Assert.Equal(stored!.CompletedAt, succeeded.OccurredAt);
+        Assert.Equal(AccountingFinality.Final, succeeded.Finality);
+        Assert.Equal("blinded", succeeded.Details["kind"]); // no invoice string, offer or keysend on the row
+        Assert.False(succeeded.Details.ContainsKey("selfPayment"));
+    }
+
+    [Fact]
+    public async Task Given_APaymentOfOurOwnInvoice_When_ItSucceeds_Then_ItIsFlaggedAsASelfPayment()
+    {
+        // Arrange - a rebalance: the hash is one of our invoices and we are the payee
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3, payee: _us.NodeId));
+        await _invoices.AddAsync(new InvoiceModel(hash, preimage, Preimage(), s_amount, "rebalance", "lnbcrt1self",
+                                                  DateTimeOffset.UtcNow, 3_600, 18));
+
+        // Act
+        Assert.True(await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 3, hash,
+                                                                       preimage),
+                                                                   TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal("true", Assert.Single(_accounting.Saved).Details["selfPayment"]);
+    }
+
+    [Fact]
+    public async Task Given_AnotherNodesInvoiceOnTheHashOfOurInvoice_When_OurPaymentSucceeds_Then_ItIsNoSelfPayment()
+    {
+        // Arrange - NL-670: Mallory learned the preimage of our invoice (she paid it) and billed us on the same hash
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+        await _invoices.AddAsync(new InvoiceModel(hash, preimage, Preimage(), s_amount, "ours", "lnbcrt1ours",
+                                                  DateTimeOffset.UtcNow, 3_600, 18));
+
+        // Act
+        Assert.True(await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 3, hash,
+                                                                       preimage),
+                                                                   TestContext.Current.CancellationToken));
+
+        // Assert: an ordinary payment (Sent and RoutingFees in the books), not a rebalance
+        Assert.False(Assert.Single(_accounting.Saved).Details.ContainsKey("selfPayment"));
+    }
+
+    [Fact]
+    public async Task Given_HtlcIdNotRecordedButLocalOrigin_When_Fulfilled_Then_PaymentSucceedsWithTheHtlc()
+    {
+        // Arrange: a crash between the offer's save and the save of the HTLC id
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+        _channelState.Setup(s => s.GetHtlcOriginAsync(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 9)))
+                     .ReturnsAsync(HtlcOrigin.Local(hash));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 9, hash, preimage),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal((s_channelId, 9UL), (stored.OutgoingChannelId!.Value, stored.OutgoingHtlcId!.Value));
+    }
+
+    [Fact]
+    public async Task Given_ATrampolinePeersHtlcWithALocalOrigin_When_Failed_Then_ThePaymentFails()
+    {
+        // Arrange: a crash between the offer's save and the save of the HTLC id. The only outer hop of a payment
+        // through a trampoline node that is our peer is stored under the payee (BuildHops), so the channel's peer
+        // never matches it (NL-925); the stored origin proves the HTLC ours
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+        _channelState.Setup(s => s.GetHtlcOriginAsync(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 9)))
+                     .ReturnsAsync(HtlcOrigin.Local(hash));
+        WithChannelHtlc(hash, 9, new TestNodeKeyManager(0x0e).NodeId);
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 9, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert: the origin is authoritative, so the first-hop mismatch does not leave the payment in flight
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.Equal(9UL, stored.OutgoingHtlcId);
+    }
+
+    [Fact]
+    public async Task Given_NoStoredOriginAndAnotherPeersHtlc_When_Failed_Then_ThePaymentStaysInFlight()
+    {
+        // Arrange: production before NL-250 stores no origin, and channel memory still holds the HTLC record on a
+        // channel of a peer the stored route never names: the first-hop check must still refuse it
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+        WithChannelHtlc(hash, 9, new TestNodeKeyManager(0x0e).NodeId);
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 9, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_HtlcIdNotRecordedAndForwardedOrigin_When_Failed_Then_Ignored()
+    {
+        // Arrange: same hash, but the HTLC forwards someone else's payment
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+        _channelState.Setup(s => s.GetHtlcOriginAsync(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 9)))
+                     .ReturnsAsync(HtlcOrigin.Forwarded(s_channelId, 1));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 9, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_FailMalformed_When_Handled_Then_TheCodeIsStoredAgainstOurPeer()
+    {
+        // Arrange
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 3, hash,
+                                                 HtlcRemoval.FailMalformed((ushort)FailureCode.InvalidOnionHmac,
+                                                                           new byte[32])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.Equal(FailureCode.InvalidOnionHmac, stored.FailureCode);
+        Assert.Equal(0, stored.FailureSourceIndex);
+        Assert.Contains("malformed", stored.FailureReason);
+    }
+
+    [Fact]
+    public async Task Given_ErrorOnionNoHopAuthenticated_When_Handled_Then_FailedWithoutCodeOrSource()
+    {
+        // Arrange
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 3, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.Null(stored.FailureCode);
+        Assert.Null(stored.FailureSourceIndex);
+        Assert.Contains("no hop", stored.FailureReason);
+    }
+
+    [Theory]
+    [InlineData(100_000UL, 5_000UL)]
+    [InlineData(50_000_123UL, 250_000UL)]
+    [InlineData(10_000_000_000UL, 50_000_000UL)]
+    public void Given_Amount_When_GettingTheDefaultFeeLimit_Then_HalfAPercentWithA5000MsatFloor(ulong amountMsat,
+        ulong expectedMsat)
+    {
+        // Arrange
+        var options = new PaymentSendOptions();
+
+        // Act
+        var maxFee = options.GetMaxFee(LightningMoney.MilliSatoshis(amountMsat));
+
+        // Assert
+        Assert.Equal(expectedMsat, maxFee.MilliSatoshi);
+    }
+
+    private (string Bolt11, Hash PaymentHash) CreateInvoice(TestNodeKeyManager payee, LightningMoney? amount,
+                                                            BitcoinNetwork? network = null, long expirySeconds = 3_600)
+    {
+        var hash = HashOf(Preimage());
+        var invoice = new Invoice(amount ?? LightningMoney.Zero, "test", PaymentTarget.FromWireBytes(hash),
+                                  PaymentTarget.FromWireBytes(RandomNumberGenerator.GetBytes(32)),
+                                  network ?? BitcoinNetwork.Regtest, payee);
+        invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + expirySeconds);
+        return (invoice.Encode(), hash);
+    }
+
+    private PaymentModel StoredPayment(Hash hash, PaymentStatus status, ulong? htlcId = null,
+                                       CompactPubKey? payee = null, bool isTrampolineRelay = false)
+    {
+        var payeeNodeId = payee ?? _payee.NodeId;
+        var hop = new PaymentHop(payeeNodeId, new ShortChannelId(400, 1, 0), s_amount, Height + 21,
+                                 new Secret(RandomNumberGenerator.GetBytes(32)));
+        var now = DateTimeOffset.UtcNow;
+        return PaymentModel.Restore(hash, null, payeeNodeId, s_amount, LightningMoney.Zero, now, status,
+                                    htlcId is null ? (ChannelId?)null : s_channelId, htlcId,
+                                    status == PaymentStatus.Succeeded ? Preimage() : (Secret?)null, null, null, null,
+                                    status == PaymentStatus.InFlight ? null : now, [hop],
+                                    isTrampolineRelay: isTrampolineRelay);
+    }
+
+    /// <summary>A failed row whose route paid Carol 1,000 msat to deliver the whole amount (NL-924).</summary>
+    private PaymentModel FailedRowThroughCarol(Hash hash, ulong? htlcId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return PaymentModel.Restore(hash, null, _payee.NodeId, s_amount, LightningMoney.Zero, now,
+                                    PaymentStatus.Failed, htlcId is null ? (ChannelId?)null : s_channelId, htlcId,
+                                    null, null, null, "failed", now, RouteThroughCarol(s_amount.MilliSatoshi));
+    }
+
+    /// <summary>Our HTLC to Carol (1,000 msat above <paramref name="deliveredMsat"/>), then the payee.</summary>
+    private List<PaymentHop> RouteThroughCarol(ulong deliveredMsat) =>
+    [
+        new(new TestNodeKeyManager(0x0e).NodeId, new ShortChannelId(400, 1, 0),
+            LightningMoney.MilliSatoshis(deliveredMsat + 1_000), Height + 61,
+            new Secret(RandomNumberGenerator.GetBytes(32))),
+        new(_payee.NodeId, new ShortChannelId(401, 1, 0), LightningMoney.MilliSatoshis(deliveredMsat), Height + 21,
+            new Secret(RandomNumberGenerator.GetBytes(32)))
+    ];
+
+    private static Secret Preimage() => new(RandomNumberGenerator.GetBytes(32));
+
+    private static Hash HashOf(Secret preimage) => new(SHA256.HashData((byte[])preimage));
+
+    private delegate bool TryGetChannelCallback(ChannelId channelId, out ChannelModel? channel);
+
+    /// <summary>
+    /// Channel memory holds our open channel to <paramref name="peerNodeId"/> (a peer the payee's route never names,
+    /// e.g. a trampoline node, NL-925) with one non-final outgoing HTLC of the payment: its amount and CLTV expiry are
+    /// the stored first hop's, so only the peer differs.
+    /// </summary>
+    private void WithChannelHtlc(Hash paymentHash, ulong htlcId, CompactPubKey peerNodeId)
+    {
+        var channel = new ChannelModel(new ChannelParams(), s_channelId, null, null, true, null, null,
+                                       LightningMoney.Satoshis(100_000),
+                                       new ChannelKeySetModel(0, peerNodeId, peerNodeId, peerNodeId, peerNodeId,
+                                                              peerNodeId, peerNodeId),
+                                       0, 0, LightningMoney.Zero, null, 0, peerNodeId, 0, ChannelState.Open,
+                                       ChannelVersion.V1);
+        var htlc = new HtlcRecord(HtlcDirection.Outgoing, htlcId, s_amount.MilliSatoshi, paymentHash, Height + 21,
+                                  HtlcState.SentAddAckRevocation);
+        var party = new CommitmentParty(354, 10_000, 1_000, 30, 1_000_000_000);
+        var @params = new CommitmentParams(true, 1_000_000, false, party, party);
+        const ulong localMsat = 700_000_000;
+        const ulong remoteMsat = 300_000_000;
+        channel.UpdateCommitments(ChannelCommitments.Restore(
+                                       s_channelId, @params, localMsat, remoteMsat, [htlc],
+                                       [new FeeUpdate(0, 1_000, HtlcState.SentAddAckRevocation)], htlcId + 1, 0,
+                                       new LocalCommit(1, new CommitmentSpec(CommitmentSide.Local, 1_000, localMsat,
+                                                                             remoteMsat, []), null),
+                                       new RemoteCommit(1, new CommitmentSpec(CommitmentSide.Remote, 1_000, localMsat,
+                                                                              remoteMsat, []),
+                                                        peerNodeId),
+                                       null, peerNodeId));
+        _channels.Setup(c => c.TryGetChannel(s_channelId, out It.Ref<ChannelModel?>.IsAny))
+                 .Returns(new TryGetChannelCallback((ChannelId _, out ChannelModel? found) =>
+                 {
+                     found = channel;
+                     return true;
+                 }));
+    }
+
+    private sealed class ShiftedTimeProvider : TimeProvider
+    {
+        public TimeSpan Shift { get; set; }
+
+        public override DateTimeOffset GetUtcNow() => base.GetUtcNow() + Shift;
+    }
+}

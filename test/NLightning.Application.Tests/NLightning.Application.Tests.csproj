@@ -1,34 +1,64 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>AnyCPU</Platforms>
     <Deterministic>true</Deterministic>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <Configurations>Debug;Release;Debug.Native;Release.Native</Configurations>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug.Native' ">
+    <DebugSymbols Condition=" '$(DebugSymbols)' == '' ">true</DebugSymbols>
+    <Optimize Condition=" '$(Optimize)' == '' ">false</Optimize>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release.Native' ">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="8.0.1">
+    <PackageReference Include="coverlet.collector" Version="10.1.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.12"/>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>
     <PackageReference Include="Moq" Version="4.20.72"/>
-    <PackageReference Include="NBitcoin" Version="9.0.5"/>
+    <PackageReference Include="NBitcoin" Version="10.0.14"/>
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="xunit.v3" Version="3.2.2"/>
   </ItemGroup>
+
+  <ItemGroup><InternalsVisibleTo Include="NLightning.RemoteSigning.Tests" /></ItemGroup>
 
   <ItemGroup>
     <Folder Include="Node\"/>
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The BOLT 4 onion message vector, shared with the Integration tests (OnionMessageVectorTests) -->
+    <Content Include="..\NLightning.Integration.Tests\BOLT4\Vectors\blinded-onion-message-onion-test.json"
+             Link="OnionMessages\Vectors\blinded-onion-message-onion-test.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The accounting export golden files (NL-602 A2) -->
+    <None Include="Accounting\Export\Golden\*" CopyToOutputDirectory="PreserveNewest"/>
+    <None Include="Accounting\Financial\Golden\*" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Application\NLightning.Application.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Infrastructure.Serialization\NLightning.Infrastructure.Serialization.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Infrastructure.Repositories\NLightning.Infrastructure.Repositories.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Infrastructure.Persistence.Sqlite\NLightning.Infrastructure.Persistence.Sqlite.csproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
   </ItemGroup>
 

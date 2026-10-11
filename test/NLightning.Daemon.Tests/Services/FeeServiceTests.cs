@@ -23,9 +23,9 @@ public class FeeServiceTests
                                         new Mock<ILogger<FeeService>>().Object);
         var cachedFeeRate = LightningMoney.Satoshis(1000);
         var cachedFeeRateField = typeof(FeeService)
-           .GetField("_cachedFeeRate", BindingFlags.NonPublic | BindingFlags.Instance);
+           .GetField("_cachedFeeRatePerKw", BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(cachedFeeRateField);
-        cachedFeeRateField.SetValue(feeService, cachedFeeRate);
+        cachedFeeRateField.SetValue(feeService, cachedFeeRate.Satoshi);
         var lastFetchTimeField = typeof(FeeService)
            .GetField("_lastFetchTime", BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(lastFetchTimeField);
@@ -67,18 +67,42 @@ public class FeeServiceTests
         // Act
         var result = await feeService.GetFeeRatePerKwAsync(TestContext.Current.CancellationToken);
 
+        // Assert: 2 sat/vB is 500 sat/kw (x 250), not 2000 (x 1000, sat/kvB; NL-288)
+        Assert.Equal(500, result.Satoshi);
+    }
+
+    [Theory]
+    [InlineData("{\"fastestFee\": 10}", 2_500)]
+    [InlineData("{\"fastestFee\": 1}", 253)]
+    [InlineData("{\"fastestFee\": 1.5}", 375)]
+    public async Task Given_EstimateInSatPerVbyte_When_Refreshed_Then_SatPerKwWithBolt3Floor(string body,
+        long expectedPerKw)
+    {
+        // Arrange (NL-288: sat/vB x 250 = sat/kw; 1 sat/vB is 250, below BOLT 3's 253 floor)
+        var handler = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        handler.Protected()
+               .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(),
+                                                 ItExpr.IsAny<CancellationToken>())
+               .ReturnsAsync(() => new HttpResponseMessage
+               {
+                   StatusCode = HttpStatusCode.OK,
+                   Content = new StringContent(body)
+               });
+        var feeService = new FeeService(new OptionsWrapper<FeeEstimationOptions>(new FeeEstimationOptions()),
+                                        new HttpClient(handler.Object), new Mock<ILogger<FeeService>>().Object);
+
+        // Act
+        await feeService.RefreshFeeRateAsync(TestContext.Current.CancellationToken);
+
         // Assert
-        Assert.Equal(2000, result.Satoshi);
+        Assert.Equal(expectedPerKw, feeService.GetCachedFeeRatePerKw().Satoshi);
     }
 
     [Fact]
     public async Task GivenApiFails_WhenRefreshFeeRateAsync_ThenUsesCachedValue()
     {
         // Arrange
-        var feeEstimationOptions = new FeeEstimationOptions
-        {
-            CacheFile = "GivenApiFails_WhenRefreshFeeRateAsync_ThenUsesCachedValue.test"
-        };
+        var feeEstimationOptions = new FeeEstimationOptions();
         var httpMessageHandlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
         httpMessageHandlerMock.Protected()
                               .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(),
@@ -89,9 +113,9 @@ public class FeeServiceTests
                                         new Mock<ILogger<FeeService>>().Object);
         var expectedCachedFeeRate = LightningMoney.Satoshis(1000);
         var cachedFeeRateField = typeof(FeeService)
-           .GetField("_cachedFeeRate", BindingFlags.NonPublic | BindingFlags.Instance);
+           .GetField("_cachedFeeRatePerKw", BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(cachedFeeRateField);
-        cachedFeeRateField.SetValue(feeService, expectedCachedFeeRate);
+        cachedFeeRateField.SetValue(feeService, expectedCachedFeeRate.Satoshi);
         var ctsField = typeof(FeeService).GetField("_cts", BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(ctsField);
         ctsField.SetValue(feeService, null);
@@ -101,35 +125,6 @@ public class FeeServiceTests
 
         // Assert
         Assert.Equal(expectedCachedFeeRate, cachedFeeRate);
-    }
-
-    [Fact]
-    public async Task GivenValidCache_WhenRefreshFeeRateAsync_ThenSavesCacheToFile()
-    {
-        // Arrange
-        var feeService = new FeeService(new OptionsWrapper<FeeEstimationOptions>(new FeeEstimationOptions()),
-                                        new HttpClient(new Mock<HttpMessageHandler>().Object),
-                                        new Mock<ILogger<FeeService>>().Object);
-        var tempFilePath = Path.GetTempFileName();
-        var cacheFilePathField = typeof(FeeService)
-           .GetField("_cacheFilePath", BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(cacheFilePathField);
-        cacheFilePathField.SetValue(feeService, tempFilePath);
-        var feeRate = LightningMoney.Satoshis(1500);
-        var cachedFeeRateField = typeof(FeeService)
-           .GetField("_cachedFeeRate", BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(cachedFeeRateField);
-        cachedFeeRateField.SetValue(feeService, feeRate);
-        var ctsField = typeof(FeeService).GetField("_cts", BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(ctsField);
-        ctsField.SetValue(feeService, null);
-
-        // Act
-        await feeService.RefreshFeeRateAsync(CancellationToken.None);
-
-        // Assert
-        Assert.True(File.Exists(tempFilePath));
-        File.Delete(tempFilePath);
     }
 
     [Fact]
@@ -158,7 +153,7 @@ public class FeeServiceTests
                                });
         var feeOptions = new FeeEstimationOptions
         {
-            CacheExpiration = "1s"
+            CacheExpiration = "10s"
         };
         var feeService = new FeeService(new OptionsWrapper<FeeEstimationOptions>(feeOptions),
                                         new HttpClient(httpMessageHandlerMock.Object),

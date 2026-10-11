@@ -14,6 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # SDK 10 only: the Blazor projects target net10.0 alone, and without SDK 11 the src projects build net10.0 only.
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:

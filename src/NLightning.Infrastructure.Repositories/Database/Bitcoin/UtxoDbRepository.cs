@@ -1,4 +1,3 @@
-using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Bitcoin;
@@ -21,6 +20,20 @@ public class UtxoDbRepository(NLightningDbContext context)
 
     public void Spend(UtxoModel utxoModel)
     {
+        // If the utxo was added in this same unit of work and not saved yet, just cancel the pending insert
+        var trackedEntity = DbSet.Local.FirstOrDefault(e => e.TransactionId.Equals(utxoModel.TxId)
+                                                         && e.Index == utxoModel.Index);
+        if (trackedEntity is not null)
+        {
+            var entry = DbSet.Entry(trackedEntity);
+            if (entry.State == EntityState.Added)
+                entry.State = EntityState.Detached;
+            else
+                DbSet.Remove(trackedEntity);
+
+            return;
+        }
+
         var utxoEntity = MapDomainToEntity(utxoModel);
         Delete(utxoEntity);
     }
@@ -33,7 +46,7 @@ public class UtxoDbRepository(NLightningDbContext context)
 
     public async Task<IEnumerable<UtxoModel>> GetUnspentAsync(bool includeWalletAddress = false)
     {
-        var query = Get(asNoTracking: true).AsQueryable();
+        var query = Get(asNoTracking: true).Include(x => x.SilentPayment).AsQueryable();
         if (includeWalletAddress)
             query = query.Include(x => x.WalletAddress);
 
@@ -44,10 +57,10 @@ public class UtxoDbRepository(NLightningDbContext context)
 
     public async Task<UtxoModel?> GetByIdAsync(TxId txId, uint index, bool includeWalletAddress = false)
     {
-        Expression<Func<UtxoEntity, object>>? include = includeWalletAddress
-                                                            ? entity => entity.WalletAddress!
-                                                            : null;
-        var utxoEntity = await GetByIdAsync(new { txId, index }, true, include);
+        var query = DbSet.AsNoTracking().Include(x => x.SilentPayment).AsQueryable();
+        if (includeWalletAddress)
+            query = query.Include(x => x.WalletAddress);
+        var utxoEntity = await query.SingleOrDefaultAsync(x => x.TransactionId == txId && x.Index == index);
         return utxoEntity is null
                    ? null
                    : MapEntityToModel(utxoEntity);
@@ -61,17 +74,25 @@ public class UtxoDbRepository(NLightningDbContext context)
             Index = model.Index,
             AmountSats = model.Amount.Satoshi,
             BlockHeight = model.BlockHeight,
-            AddressIndex = model.AddressIndex,
-            IsAddressChange = model.IsAddressChange,
-            AddressType = model.AddressType
+            AddressIndex = model.SilentPayment is null ? model.AddressIndex : null,
+            IsAddressChange = model.SilentPayment is null ? model.IsAddressChange : null,
+            AddressType = model.SilentPayment is null ? model.AddressType : null,
+            SilentPaymentTransactionId = model.SilentPayment?.TransactionId,
+            SilentPaymentIndex = model.SilentPayment?.Index,
+            LockedToChannelId = model.LockedToChannelId,
+            UsedInTransactionId = model.UsedInTransactionId
         };
     }
 
     private UtxoModel MapEntityToModel(UtxoEntity entity)
     {
-        var utxoModel = new UtxoModel(entity.TransactionId, entity.Index, LightningMoney.Satoshis(entity.AmountSats),
-                                      entity.BlockHeight, entity.AddressIndex, entity.IsAddressChange,
-                                      entity.AddressType);
+        var utxoModel = entity.SilentPayment is not null
+            ? new UtxoModel(SilentPaymentDbRepository.MapEntityToModel(entity.SilentPayment))
+            : new UtxoModel(entity.TransactionId, entity.Index, LightningMoney.Satoshis(entity.AmountSats),
+                                      entity.BlockHeight, entity.AddressIndex!.Value, entity.IsAddressChange!.Value,
+                                      entity.AddressType!.Value);
+        utxoModel.LockedToChannelId = entity.LockedToChannelId;
+        utxoModel.UsedInTransactionId = entity.UsedInTransactionId;
 
         if (entity.WalletAddress is null)
             return utxoModel;

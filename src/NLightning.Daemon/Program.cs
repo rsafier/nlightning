@@ -1,18 +1,23 @@
+using System.Runtime.CompilerServices;
 using MessagePack;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using NBitcoin;
+using NLightning.Daemon.Configuration;
 using NLightning.Daemon.Contracts.Helpers;
 using NLightning.Daemon.Contracts.Utilities;
 using NLightning.Daemon.Extensions;
+using NLightning.Daemon.Provisioning;
 using NLightning.Daemon.Utilities;
 using NLightning.Domain.Node.Options;
+using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Protocol.ValueObjects;
 using NLightning.Infrastructure.Bitcoin.Managers;
 using NLightning.Infrastructure.Bitcoin.Options;
 using NLightning.Infrastructure.Bitcoin.Wallet;
+using NLightning.Infrastructure.RemoteSigning;
+using NLightning.Infrastructure.VlsSigning;
 using NLightning.Transport.Ipc.MessagePack;
 using Serilog;
 
@@ -28,6 +33,13 @@ try
         var exception = (Exception)e.ExceptionObject;
         Log.Logger.Error("An unhandled exception occurred: {exception}", exception);
     };
+
+    // Check if help is requested (before reading the config, which creates the config dir)
+    if (CommandLineHelper.IsHelpRequested(args))
+    {
+        DaemonUtils.ShowUsage();
+        return 0;
+    }
 
     // Read the configuration file to check for daemon setting
     var (initialConfig, network, configPath) = NodeConfigurationExtensions.ReadInitialConfiguration(args);
@@ -49,80 +61,165 @@ try
         return 0;
     }
 
-    // Check if help is requested
-    if (CommandLineHelper.IsHelpRequested(args))
+    // Bind and validate the configuration, then exit (NL-338): no key, bitcoind or database needed
+    if (DaemonUtils.IsCheckConfigRequested(args))
     {
-        DaemonUtils.ShowUsage();
-        return 0;
+        var failures = ConfigurationCheck.Run(initialConfig, network).ToList();
+        var checkedStartup = StartupOptions.Read(initialConfig, DaemonUtils.IsLockedRequested(args));
+        if (checkedStartup.Locked)
+            failures.AddRange(checkedStartup.GetValidationErrors(configPath));
+        foreach (var failure in failures)
+            Console.Error.WriteLine(failure);
+
+        Console.WriteLine(failures.Count == 0 ? "Configuration OK" : $"Configuration invalid: {failures.Count} error(s)");
+        return failures.Count == 0 ? 0 : 1;
     }
 
-    string? password = null;
-
-    // Try to get password from args or prompt
-    if (args.Contains("--password"))
+    // A NativeAOT build cannot run the node yet (NL-708): it has EF Core's compiled model, but EF refuses every LINQ
+    // query that was not precompiled when dynamic code is not supported, and our repositories' queries cannot be
+    // precompiled yet. Stop before the password prompt; the commands above work
+    if (!RuntimeFeature.IsDynamicCodeSupported)
     {
-        var idx = Array.IndexOf(args, "--password");
-        if (idx >= 0 && idx + 1 < args.Length)
-            password = args[idx + 1];
-    }
-
-    if (string.IsNullOrWhiteSpace(password))
-    {
-        password = ConsoleUtils.ReadPassword("Enter password for key encryption: ");
-    }
-
-    if (string.IsNullOrWhiteSpace(password))
-    {
-        Log.Error("Password cannot be empty.");
+        Log.Error("This NativeAOT build of nltg cannot run the node yet: its database layer (EF Core) needs precompiled "
+                + "queries (NL-708). Use the JIT build to run the node; --help, --status, --stop and --check-config "
+                + "work in this build.");
         return 1;
     }
 
-    SecureKeyManager keyManager;
-    var keyFilePath = SecureKeyManager.GetKeyFilePath(configPath);
-    if (!File.Exists(keyFilePath))
+    SensitiveLoggingUtils.WarnIfSensitiveQueryLoggingEnabled(initialConfig, Log.Logger);
+
+    // The database may sit outside the configuration directory (a Database:ConnectionString with a path), whose
+    // warning does not cover it (NL-439)
+    FilePermissionUtils.WarnIfDatabaseAccessibleByOthers(initialConfig["Database:Provider"],
+                                                         initialConfig["Database:ConnectionString"], Log.Logger);
+
+    var signingOptions = SigningOptions.Read(initialConfig);
+    ISecureKeyManager keyManager;
+    var password = string.Empty;
+    var nodeConfig = initialConfig;
+
+    // Locked start (NL-1349): no key material at start; the node waits for its key on the provisioning endpoint
+    var startupOptions = StartupOptions.Read(initialConfig, DaemonUtils.IsLockedRequested(args));
+    using var remoteConnection = signingOptions.IsRemoteNative && !startupOptions.Locked
+        ? new RemoteSignerConnection(new RemoteSignerOptions
+        {
+            NodeId = signingOptions.NodeId,
+            OwnerId = signingOptions.OwnerId,
+            SignerId = signingOptions.SignerId,
+            SocketPath = signingOptions.SocketPath,
+            AuthToken = signingOptions.ReadAuthToken(),
+            WriterId = signingOptions.WriterId,
+            WriterEpoch = signingOptions.WriterEpoch,
+            WriterCredential = signingOptions.ReadWriterCredential(),
+            Network = network,
+            TimeoutSeconds = signingOptions.TimeoutSeconds,
+            ExpectedNodePublicKey = signingOptions.ExpectedNodePublicKey
+        })
+        : null;
+    var vlsConnection = signingOptions.IsVls && !startupOptions.Locked
+        ? new VlsSignerConnection(new VlsSignerOptions
+        {
+            SocketPath = signingOptions.SocketPath,
+            TokenFile = signingOptions.AuthTokenFile,
+            Network = network,
+            TimeoutSeconds = signingOptions.TimeoutSeconds,
+            ExpectedNodePublicKey = signingOptions.ExpectedNodePublicKey
+        })
+        : null;
+    if (startupOptions.Locked)
     {
-        // Get current Block Height for key birth
-        try
-        {
-            // Create the logger for the wallet service using Serilog
-            var loggerFactory = LoggerFactory.Create(b => b.AddSerilog(Log.Logger, dispose: false));
-            var walletLogger = loggerFactory.CreateLogger<BitcoinChainService>();
+        var (lockedExitCode, unlocked) = await LockedStartupRunner.RunAsync(args, initialConfig, network, configPath,
+                                                                            pidFilePath, startupOptions,
+                                                                            signingOptions);
+        if (lockedExitCode is { } exitCode)
+            return exitCode;
 
-            // Bind options from initialConfig
-            var bitcoinOptions = initialConfig.GetSection("Bitcoin").Get<BitcoinOptions>()
-                              ?? throw new InvalidOperationException(
-                                     "Bitcoin configuration section is missing or invalid.");
-            var nodeOptions = initialConfig.GetSection("Node").Get<NodeOptions>()
-                           ?? throw new InvalidOperationException("Node configuration section is missing or invalid.");
-
-            // Instantiate the service
-            var bitcoinChainService = new BitcoinChainService(Options.Create(bitcoinOptions), walletLogger,
-                                                              Options.Create(nodeOptions)
-            );
-
-            var heightOfBirth = await bitcoinChainService.GetCurrentBlockHeightAsync();
-
-            // Creates new key
-            var key = new Key();
-            keyManager = new SecureKeyManager(key.ToBytes(), new BitcoinNetwork(network), keyFilePath, heightOfBirth);
-            keyManager.SaveToFile(password);
-            Console.WriteLine($"New key created and saved to {keyFilePath}");
-        }
-        catch (Exception e)
-        {
-            Log.Logger.Error(e, "An error occurred while creating new key.");
-            return 1;
-        }
+        keyManager = unlocked!.KeyManager;
+        nodeConfig = unlocked.Configuration;
+    }
+    else if (vlsConnection is not null)
+    {
+        keyManager = new VlsSecureKeyManager(vlsConnection);
+        Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
+        Log.Information("Connected to VLS signer: {NodePublicKey}", keyManager.GetNodePubKey().ToString());
+    }
+    else if (remoteConnection is not null)
+    {
+        keyManager = new RemoteSecureKeyManager(remoteConnection);
+        Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
+        Log.Information("Connected to remote signer: {NodePublicKey}", keyManager.GetNodePubKey().ToString());
     }
     else
     {
-        // Load the existing key
-        keyManager = SecureKeyManager.FromFilePath(keyFilePath, new BitcoinNetwork(network), password);
-        Console.WriteLine($"Loaded key from {keyFilePath}");
+        // Get the password from --password-file, --password-stdin, --password or NLTG_PASSWORD, or prompt for it
+        password = PasswordUtils.ResolvePassword(args, PasswordUtils.OpenStdinReader(), Log.Logger);
+
+        // Don't leak the password to anything else that reads our environment
+        Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
+
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            password = ConsoleUtils.ReadPassword("Enter password for key encryption: ");
+        }
+
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            Log.Error("Password cannot be empty.");
+            return 1;
+        }
+
+        var keyFilePath = SecureKeyManager.GetKeyFilePath(configPath);
+        if (!File.Exists(keyFilePath))
+        {
+            // Get current Block Height for key birth
+            try
+            {
+                // Create the logger for the wallet service using Serilog
+                var loggerFactory = LoggerFactory.Create(b => b.AddSerilog(Log.Logger, dispose: false));
+                var walletLogger = loggerFactory.CreateLogger<BitcoinChainService>();
+
+                // Bind options from initialConfig
+                var bitcoinOptions = initialConfig.GetSection(BitcoinOptions.SectionName).Get<BitcoinOptions>()
+                                  ?? throw new InvalidOperationException(
+                                         "Bitcoin configuration section is missing or invalid.");
+                var bitcoinErrors = bitcoinOptions.GetValidationErrors();
+                if (bitcoinErrors.Count > 0)
+                    throw new InvalidOperationException(string.Join(" ", bitcoinErrors));
+
+                var nodeOptions = initialConfig.GetSection("Node").Get<NodeOptions>()
+                               ?? throw new InvalidOperationException("Node configuration section is missing or invalid.");
+
+                // Instantiate the service
+                var bitcoinChainService = new BitcoinChainService(Options.Create(bitcoinOptions), walletLogger,
+                                                                  Options.Create(nodeOptions)
+                );
+
+                var heightOfBirth = await bitcoinChainService.GetCurrentBlockHeightAsync();
+
+                // Creates a new key: a BIP32 master key with the node key on its own path (version 3 key file, NL-159)
+                var localKeyManager = SecureKeyManager.CreateNew(new BitcoinNetwork(network), keyFilePath, heightOfBirth);
+                localKeyManager.SaveToFile(password);
+                keyManager = localKeyManager;
+                Console.WriteLine($"New key created and saved to {keyFilePath}");
+            }
+            catch (Exception e)
+            {
+                // The birth height comes from bitcoind (NL-153: the service itself constructs without it)
+                Log.Logger.Error(e, "An error occurred while creating new key; a new key needs a reachable bitcoind for "
+                                  + "its birth height.");
+                return 1;
+            }
+        }
+        else
+        {
+            // Load the existing key
+            keyManager = SecureKeyManager.FromFilePath(keyFilePath, new BitcoinNetwork(network), password);
+            Console.WriteLine($"Loaded key from {keyFilePath}");
+        }
     }
 
-    // Start as a daemon if requested
-    if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger))
+    // Start as a daemon if requested (a locked start daemonized before its wait: the child returns false here)
+    if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger, password))
     {
         // The parent process exits immediately after starting the daemon
         return 0;
@@ -134,13 +231,14 @@ try
     Log.Information("Starting NLTG...");
 
     // Create and run host
-    var host = Host.CreateDefaultBuilder(args)
-                   .ConfigureNltg(initialConfig)
-                   .ConfigureNltgServices(keyManager, configPath)
+    var host = Host.CreateDefaultBuilder(DaemonUtils.NormalizeArgs(args))
+                   .ConfigureNltg(nodeConfig)
+                   .ConfigureNltgServices(keyManager, configPath, remoteConnection, vlsConnection)
                    .Build();
 
     // Run migrations if configured
     await host.MigrateDatabaseIfConfiguredAsync();
+    await host.ValidateNodeSigningEnrollmentAsync();
 
     // Run the host
     await host.RunAsync();

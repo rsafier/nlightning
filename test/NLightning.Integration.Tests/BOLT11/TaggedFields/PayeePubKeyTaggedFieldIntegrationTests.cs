@@ -38,6 +38,7 @@ public class PayeePubKeyTaggedFieldIntegrationTests
 
         var parsed = PayeePubKeyTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
         Assert.Equal(s_knownPubKey.ToHex(), parsed.Value.ToHex());
     }
 
@@ -50,6 +51,7 @@ public class PayeePubKeyTaggedFieldIntegrationTests
 
         var parsed = PayeePubKeyTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
         Assert.Equal(s_knownPubKey.ToHex(), parsed.Value.ToHex());
     }
 
@@ -62,6 +64,7 @@ public class PayeePubKeyTaggedFieldIntegrationTests
 
         var parsed = PayeePubKeyTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
         Assert.Equal(s_knownPubKey.ToHex(), parsed.Value.ToHex());
     }
 
@@ -74,6 +77,7 @@ public class PayeePubKeyTaggedFieldIntegrationTests
 
         var parsed = PayeePubKeyTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
         Assert.Equal(s_knownPubKey.ToHex(), parsed.Value.ToHex());
     }
 
@@ -86,6 +90,7 @@ public class PayeePubKeyTaggedFieldIntegrationTests
 
         var parsed = PayeePubKeyTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
         Assert.Equal(s_knownPubKey.ToHex(), parsed.Value.ToHex());
     }
 
@@ -98,6 +103,7 @@ public class PayeePubKeyTaggedFieldIntegrationTests
 
         var parsed = PayeePubKeyTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
         Assert.Equal(s_knownPubKey.ToHex(), parsed.Value.ToHex());
     }
 }

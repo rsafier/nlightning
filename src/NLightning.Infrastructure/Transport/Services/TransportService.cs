@@ -22,18 +22,57 @@ internal sealed class TransportService : ITransportService
     private readonly TimeSpan _networkTimeout;
     private readonly SemaphoreSlim _networkWriteSemaphore = new(1, 1);
     private readonly TcpClient _tcpClient;
+    private long _bytesSent;
+    private long _bytesReceived;
     private readonly TaskCompletionSource<bool> _tcs = new();
+
+    /// <summary>
+    /// Guards starting the read loop and <see cref="_messageReceived"/>.
+    /// </summary>
+    private readonly Lock _readLoopLock = new();
 
     private IHandshakeService? _handshakeService;
     private ITransport? _transport;
+    private EventHandler<MemoryStream>? _messageReceived;
+    private bool _handshakeCompleted;
+    private bool _readLoopStarted;
     private bool _disposed;
+    private volatile bool _writeFaulted;
 
-    // event that will be called when a message is received
-    public event EventHandler<MemoryStream>? MessageReceived;
+    /// <summary>
+    /// Raised, on the read loop, for every message the peer sends.
+    /// </summary>
+    /// <remarks>
+    /// The read loop only starts once the handshake is done <b>and</b> someone subscribed here, so a message the peer
+    /// sends right after the handshake (its <c>init</c>) waits in the socket instead of being raised to nobody
+    /// (NL-239).
+    /// </remarks>
+    public event EventHandler<MemoryStream>? MessageReceived
+    {
+        add
+        {
+            lock (_readLoopLock)
+                _messageReceived += value;
+
+            StartReadLoopIfReady();
+        }
+        remove
+        {
+            lock (_readLoopLock)
+                _messageReceived -= value;
+        }
+    }
+
     public event EventHandler<Exception>? ExceptionRaised;
 
     public bool IsInitiator { get; }
     public bool IsConnected => _tcpClient.Connected;
+
+    /// <inheritdoc />
+    public long BytesSent => Interlocked.Read(ref _bytesSent);
+
+    /// <inheritdoc />
+    public long BytesReceived => Interlocked.Read(ref _bytesReceived);
     public CompactPubKey? RemoteStaticPublicKey { get; private set; }
 
     public TransportService(IEcdh ecdh, ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
@@ -43,6 +82,18 @@ internal sealed class TransportService : ITransportService
     {
         _messageSerializer = messageSerializer;
         _networkTimeout = networkTimeout;
+    }
+
+    /// <summary>
+    /// Creates a transport service whose local static ECDH is computed by
+    /// <paramref name="protectedStaticEcdh"/>, so the static private key never leaves its key manager (NL-436).
+    /// </summary>
+    public TransportService(IEcdh ecdh, ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
+                            bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey, ReadOnlySpan<byte> rs,
+                            TcpClient tcpClient, ProtectedStaticEcdh protectedStaticEcdh)
+        : this(logger, messageSerializer, networkTimeout,
+               new HandshakeService(isInitiator, localStaticPublicKey, rs, ecdh, protectedStaticEcdh), tcpClient)
+    {
     }
 
     internal TransportService(ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
@@ -97,6 +148,10 @@ internal sealed class TransportService : ITransportService
                                                     out _transport);
                 await stream.WriteAsync(writeBuffer.AsMemory()[..len], CancellationToken.None);
                 await stream.FlushAsync(CancellationToken.None);
+
+                // BOLT 8: acts one (50) and three (66) out, act two (50) in
+                Interlocked.Add(ref _bytesSent, 50 + 66);
+                Interlocked.Add(ref _bytesReceived, 50);
             }
             catch (Exception e)
             {
@@ -144,16 +199,20 @@ internal sealed class TransportService : ITransportService
                 // Read Act Three
                 _ = _handshakeService.PerformStep(readBuffer.AsSpan()[..66], writeBuffer.AsSpan()[..50],
                                                   out _transport);
+
+                // BOLT 8: acts one (50) and three (66) in, act two (50) out
+                Interlocked.Add(ref _bytesSent, 50);
+                Interlocked.Add(ref _bytesReceived, 50 + 66);
             }
             catch (TaskCanceledException tce)
             {
-                _tcs.SetResult(true);
+                _tcs.TrySetResult(true);
                 throw new ConnectionTimeoutException(
                     $"Timeout while reading Handshake's Act {act} from host {host}", tce);
             }
             catch (Exception e)
             {
-                _tcs.SetResult(true);
+                _tcs.TrySetResult(true);
                 throw new ConnectionException($"Host {host} closed the connection", e);
             }
             finally
@@ -170,18 +229,37 @@ internal sealed class TransportService : ITransportService
         RemoteStaticPublicKey = _handshakeService.RemoteStaticPublicKey
                              ?? throw new InvalidOperationException($"RemoteStaticPublicKey is null for host {host}");
 
-        // Listen to messages and raise event
-        _logger.LogTrace("Handshake completed with host {host}, listening to messages from peer {peer}", host,
-                         RemoteStaticPublicKey);
-        _ = Task.Run(ReadResponseAsync, _cts.Token).ContinueWith(task =>
-        {
-            if (task.Exception?.InnerExceptions.Count > 0)
-                ExceptionRaised?.Invoke(this, task.Exception.InnerExceptions[0]);
-        }, _cts.Token);
-
         // Dispose of the handshake service
         _handshakeService.Dispose();
         _handshakeService = null;
+
+        // Listen to messages as soon as someone subscribed (maybe already)
+        _logger.LogTrace("Handshake completed with host {host} (peer {peer})", host, RemoteStaticPublicKey);
+        lock (_readLoopLock)
+            _handshakeCompleted = true;
+
+        StartReadLoopIfReady();
+    }
+
+    /// <summary>
+    /// Starts the read loop once, when the handshake is done and <see cref="MessageReceived"/> has a subscriber.
+    /// </summary>
+    private void StartReadLoopIfReady()
+    {
+        lock (_readLoopLock)
+        {
+            if (_readLoopStarted || !_handshakeCompleted || _messageReceived is null || _disposed)
+                return;
+
+            _readLoopStarted = true;
+        }
+
+        _logger.LogTrace("Listening to messages from peer {peer}", RemoteStaticPublicKey);
+        _ = Task.Run(ReadResponseAsync, CancellationToken.None).ContinueWith(task =>
+        {
+            if (task.Exception?.InnerExceptions.Count > 0)
+                ExceptionRaised?.Invoke(this, task.Exception.InnerExceptions[0]);
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     public async Task WriteMessageAsync(IMessage message, CancellationToken cancellationToken = default)
@@ -190,7 +268,9 @@ internal sealed class TransportService : ITransportService
             throw new ConnectionException("TcpClient was null while trying to write a message",
                                           new NullReferenceException(nameof(_tcpClient)));
 
-        if (!IsSocketConnected())
+        // Not IsSocketConnected: its Poll + Available probe races with the read loop, which can drain the socket in
+        // between and make a live connection look closed (NL-240). A closed socket fails the write itself.
+        if (!_tcpClient.Connected)
             throw new ConnectionException("TcpClient was not connected while trying to write a message");
 
         if (_transport is null)
@@ -200,22 +280,34 @@ internal sealed class TransportService : ITransportService
         using var messageStream = new MemoryStream();
         await _messageSerializer.SerializeAsync(message, messageStream);
 
-        // Encrypt the message
-        var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxMessageLength);
-        var size = _transport.WriteMessage(messageStream.ToArray(),
-                                           buffer.AsSpan()[..ProtocolConstants.MaxMessageLength]);
+        var payload = messageStream.ToArray();
 
-        // Write the message to stream
+        // Encrypt and write under the same lock so ciphertexts hit the wire in nonce order
         await _networkWriteSemaphore.WaitAsync(cancellationToken);
+        var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxEncryptedPacketLength);
         try
         {
-            var stream = _tcpClient.GetStream();
-            await stream.WriteAsync(buffer.AsMemory()[..size], cancellationToken);
-            await stream.FlushAsync(cancellationToken);
-        }
-        catch (Exception e)
-        {
-            throw new ConnectionException("Error writing message", e);
+            if (_writeFaulted)
+                throw new ConnectionException("Connection was closed after a failed write");
+
+            var size = _transport.WriteMessage(payload,
+                                               buffer.AsSpan()[..ProtocolConstants.MaxEncryptedPacketLength]);
+
+            // The frame's nonces are now spent: it must reach the wire whole, so the caller's token no longer
+            // applies, and any failure leaves the stream out of sync with the peer's nonces, so it is fatal.
+            try
+            {
+                var stream = _tcpClient.GetStream();
+                await stream.WriteAsync(buffer.AsMemory()[..size], _cts.Token);
+                await stream.FlushAsync(_cts.Token);
+                Interlocked.Add(ref _bytesSent, size);
+            }
+            catch (Exception e)
+            {
+                _writeFaulted = true;
+                _tcpClient.Close();
+                throw new ConnectionException("Error writing message", e);
+            }
         }
         finally
         {
@@ -249,83 +341,82 @@ internal sealed class TransportService : ITransportService
 
     private async Task ReadResponseAsync()
     {
-        while (!_cts.IsCancellationRequested)
+        // Always signal the end, also when the loop ends with an exception: Dispose waits for it, and it often runs
+        // because of that very exception (a peer that hung up), which used to cost it its full 5 s timeout
+        try
         {
-            var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxMessageLength);
-            var memoryBuffer = buffer.AsMemory();
-
-            try
+            while (!_cts.IsCancellationRequested)
             {
-                if (_transport == null)
-                    throw new InvalidOperationException("Handshake not completed while trying to read a message");
+                var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxEncryptedPacketLength);
+                var memoryBuffer = buffer.AsMemory();
 
-                if (_tcpClient is null || !IsSocketConnected())
-                    throw new InvalidOperationException("TcpClient is not connected while trying to read a message");
-
-                // Read response
-                var stream = _tcpClient.GetStream();
-                var lenRead = await stream.ReadAsync(memoryBuffer[..ProtocolConstants.MessageHeaderSize], _cts.Token);
-                if (_cts.IsCancellationRequested)
-                    break;
-
-                if (lenRead != ProtocolConstants.MessageHeaderSize)
+                try
                 {
-                    if (!IsSocketConnected() || lenRead == 0)
-                        throw new ConnectionException(
-                            "TcpClient is not connected while trying to read a message header");
+                    if (_transport == null)
+                        throw new InvalidOperationException("Handshake not completed while trying to read a message");
 
-                    throw new ConnectionException("Peer sent wrong length");
+                    if (_tcpClient is null || !IsSocketConnected())
+                        throw new InvalidOperationException("TcpClient is not connected while trying to read a message");
+
+                    // Read the encrypted header; a TCP read may return fewer bytes than requested
+                    var stream = _tcpClient.GetStream();
+                    await stream.ReadExactlyAsync(memoryBuffer[..ProtocolConstants.MessageHeaderSize], _cts.Token);
+                    if (_cts.IsCancellationRequested)
+                        break;
+
+                    var messageLen =
+                        _transport.ReadMessageLength(memoryBuffer[..ProtocolConstants.MessageHeaderSize].Span);
+                    if (_cts.IsCancellationRequested)
+                        break;
+
+                    if (messageLen > ProtocolConstants.MaxEncryptedMessageLength)
+                        throw new ConnectionException("Peer sent message too long");
+
+                    await stream.ReadExactlyAsync(memoryBuffer[..messageLen], _cts.Token);
+                    if (_cts.IsCancellationRequested)
+                        break;
+
+                    Interlocked.Add(ref _bytesReceived, ProtocolConstants.MessageHeaderSize + messageLen);
+
+                    messageLen = _transport.ReadMessagePayload(memoryBuffer[..messageLen].Span, buffer);
+
+                    // Raise event
+                    var messageStream = new MemoryStream(buffer[..messageLen]);
+                    _messageReceived?.Invoke(this, messageStream);
                 }
-
-                var messageLen =
-                    _transport.ReadMessageLength(memoryBuffer[..ProtocolConstants.MessageHeaderSize].Span);
-                if (_cts.IsCancellationRequested)
-                    break;
-
-                if (messageLen > ProtocolConstants.MaxMessageLength)
-                    throw new ConnectionException("Peer sent message too long");
-
-                if (!IsSocketConnected())
-                    throw new ConnectionException("TcpClient is not connected while trying to read a message body");
-
-                lenRead = await stream.ReadAsync(memoryBuffer[..messageLen], _cts.Token);
-                if (_cts.IsCancellationRequested)
-                    break;
-
-                if (lenRead != messageLen)
-                    throw new ConnectionException("Peer sent wrong body length");
-
-                messageLen = _transport.ReadMessagePayload(memoryBuffer[..lenRead].Span, buffer);
-
-                // Raise event
-                var messageStream = new MemoryStream(buffer[..messageLen]);
-                MessageReceived?.Invoke(this, messageStream);
-            }
-            catch (OperationCanceledException)
-            {
-                // Ignore cancellation
-            }
-            catch (ConnectionException)
-            {
-                throw;
-            }
-            catch (Exception e)
-            {
-                if (!_cts.IsCancellationRequested)
+                catch (OperationCanceledException)
                 {
-                    if (_tcpClient is null || !_tcpClient.Connected)
-                        throw new ConnectionException("Peer closed the connection");
-
-                    throw new ConnectionException("Error reading response", e);
+                    // Ignore cancellation
                 }
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer, true);
+                catch (ConnectionException)
+                {
+                    throw;
+                }
+                catch (EndOfStreamException e) when (!_cts.IsCancellationRequested)
+                {
+                    // The peer closed the stream (NL-532: routine, not an error of ours)
+                    throw new PeerClosedConnectionException("Peer closed the connection", e);
+                }
+                catch (Exception e)
+                {
+                    if (!_cts.IsCancellationRequested)
+                    {
+                        if (_tcpClient is null || !_tcpClient.Connected)
+                            throw new PeerClosedConnectionException("Peer closed the connection");
+
+                        throw new ConnectionException("Error reading response", e);
+                    }
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer, true);
+                }
             }
         }
-
-        _tcs.TrySetResult(true);
+        finally
+        {
+            _tcs.TrySetResult(true);
+        }
     }
 
     #region Dispose Pattern
@@ -343,9 +434,17 @@ internal sealed class TransportService : ITransportService
 
         if (disposing)
         {
-            // Cancel and wait for an elegant shutdown
+            // Cancel and wait for an elegant shutdown (of the read loop, if it ever started)
+            bool readLoopStarted;
+            lock (_readLoopLock)
+            {
+                readLoopStarted = _readLoopStarted;
+                _disposed = true;
+            }
+
             _cts.Cancel();
-            _tcs.Task.Wait(TimeSpan.FromSeconds(5));
+            if (readLoopStarted)
+                _tcs.Task.Wait(TimeSpan.FromSeconds(5));
 
             _handshakeService?.Dispose();
             _transport?.Dispose();

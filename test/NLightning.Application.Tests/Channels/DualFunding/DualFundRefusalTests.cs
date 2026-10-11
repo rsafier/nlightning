@@ -1,0 +1,257 @@
+namespace NLightning.Application.Tests.Channels.DualFunding;
+
+using Domain.Channels.DualFunding.Models;
+using Domain.Channels.Enums;
+using Domain.Enums;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Node.Options;
+using Domain.Protocol.InteractiveTx.Enums;
+using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
+using InteractiveTx.TestDoubles;
+using NLightning.Tests.Utils;
+
+/// <summary>
+/// The refusals of the dual-funded open (splicing plan wave DF, BOLT 2 "Channel Establishment v2") on
+/// <see cref="DualFundHarness"/>: no <c>option_dual_fund</c>, an accepter that cannot fund its share, a first
+/// <c>commitment_signed</c> with an HTLC signature. RBF contributions are in <see cref="DualFundRbfContributionTests"/>
+/// (a changed contribution is accepted since NL-521).
+/// </summary>
+public class DualFundRefusalTests
+{
+    private static readonly LightningMoney s_aliceShare = LightningMoney.Satoshis(600_000);
+
+    [Fact]
+    public async Task Given_NoDualFundNegotiated_When_OpenChannel2Arrives_Then_RefusedAndTheOpenForgotten()
+    {
+        // Arrange
+        await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        // option_dual_fund is on by default since D13: pin it off
+        harness.NegotiatedFeatures = new FeatureOptions { DualFund = FeatureSupport.No };
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert: Bob sent an error for the temporary channel and kept nothing; Alice gave the open up
+        var error = Assert.IsType<ChannelErrorException>(Assert.Single(harness.Bob.Errors));
+        Assert.Contains("option_dual_fund", error.PeerMessage);
+        Assert.NotNull(result.FailureReason);
+        Assert.Empty(harness.Bob.Memory.FindChannels(_ => true));
+        Assert.False(harness.Alice.Memory.TryGetTemporaryChannelState(harness.Bob.NodeId, result.ChannelId, out _));
+        Assert.False(harness.Alice.DualFund.IsOpening(result.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_AnOpenerDelayOf720_When_OpenChannel2Arrives_Then_TheChannelOpens()
+    {
+        // Arrange (NL-550: Eclair's default to_self_delay; the old limit was 1.5 x our own 144)
+        await using var harness = await DualFundHarness.CreateAsync(0);
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Alice.Options.ToSelfDelay = 720;
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
+        Assert.Equal((ushort)720, harness.Bob.Channel(result.ChannelId).ChannelParams.Remote.ToSelfDelay);
+    }
+
+    [Fact]
+    public async Task Given_AnOpenerDelayAboveMaxAcceptedToSelfDelay_When_OpenChannel2Arrives_Then_Refused()
+    {
+        // Arrange
+        await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Alice.Options.ToSelfDelay = 720;
+        harness.Bob.Options.MaxAcceptedToSelfDelay = 500;
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert
+        var error = Assert.IsType<ChannelErrorException>(Assert.Single(harness.Bob.Errors));
+        Assert.Contains("To self delay is too large", error.Message);
+        Assert.NotNull(result.FailureReason);
+        Assert.Empty(harness.Bob.Memory.FindChannels(_ => true));
+    }
+
+    [Fact]
+    public async Task Given_AnOpenerInFlightLimitBelowTheAcceptersFloor_When_OpenChannel2Arrives_Then_Refused()
+    {
+        // Arrange (NL-552: the v1 rule applies to v2 too); Alice offers 80 % of the channel
+        await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Bob.Options.MinAcceptedMaxHtlcValueInFlightPercent = 90;
+        // A channel that can be spliced announces no in-flight cap (NL-880): pin option_splice off
+        harness.NegotiatedFeatures = new FeatureOptions
+        {
+            DualFund = FeatureSupport.Optional,
+            OptionSplice = FeatureSupport.No
+        };
+        foreach (var node in harness.Nodes)
+            node.Options.Features.OptionSplice = FeatureSupport.No;
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert
+        var error = Assert.IsType<ChannelErrorException>(Assert.Single(harness.Bob.Errors));
+        Assert.Contains("Max htlc value in flight is too small", error.Message);
+        Assert.NotNull(result.FailureReason);
+        Assert.Empty(harness.Bob.Memory.FindChannels(_ => true));
+    }
+
+    [Fact]
+    public async Task Given_AnAccepterInFlightLimitBelowTheOpenersFloor_When_AcceptChannel2Arrives_Then_TheOpenFails()
+    {
+        // Arrange (NL-552); Bob offers 80 % of the channel
+        await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Alice.Options.MinAcceptedMaxHtlcValueInFlightPercent = 90;
+        // A channel that can be spliced announces no in-flight cap (NL-880): pin option_splice off
+        harness.NegotiatedFeatures = new FeatureOptions
+        {
+            DualFund = FeatureSupport.Optional,
+            OptionSplice = FeatureSupport.No
+        };
+        foreach (var node in harness.Nodes)
+            node.Options.Features.OptionSplice = FeatureSupport.No;
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.NotNull(result.FailureReason);
+        Assert.Contains("Max htlc value in flight is too small", result.FailureReason);
+        Assert.False(harness.Alice.DualFund.IsOpening(result.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_TheAccepterCannotFundItsShare_When_Opened_Then_TheChannelOpensWithTheOpenersFundsOnly()
+    {
+        // Arrange: Bob would contribute 400,000 sat but his wallet is empty
+        await using var harness = await DualFundHarness.CreateAsync(400_000);
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert: accept_channel2 said 0, Bob added no input, the funding output is Alice's share alone
+        Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
+        var (_, accept) = Assert.Single(harness.Transcript, t => t.Message is AcceptChannel2Message);
+        Assert.True(((AcceptChannel2Message)accept).Payload.FundingAmount.IsZero);
+        Assert.DoesNotContain(harness.Transcript, t => t is { From: "Bob", Message: TxAddInputMessage });
+        Assert.Equal(s_aliceShare, harness.Bob.Channel(result.ChannelId).FundingOutput!.Amount);
+        Assert.True(harness.Bob.Channel(result.ChannelId).LocalBalance.IsZero);
+
+        // BOLT 2: the reserve is 1% of the funding_satoshis both sent (600,000 sat), not of the 1,000,000 sat Bob
+        // intended, and both sides agree on it
+        var expectedReserve = LightningMoney.Satoshis(6_000);
+        foreach (var node in harness.Nodes)
+        {
+            var channelParams = node.Channel(result.ChannelId).ChannelParams;
+            Assert.Equal(expectedReserve, channelParams.Local.ChannelReserveAmount);
+            Assert.Equal(expectedReserve, channelParams.Remote.ChannelReserveAmount);
+        }
+
+        // Act: confirmed, then Alice pays Bob
+        await harness.ConfirmFundingAsync(result.ChannelId, result.FundingTxId!.Value);
+        await harness.Alice.PayAsync(harness.Bob, result.ChannelId, LightningMoney.Satoshis(25_000));
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
+        Assert.Equal(LightningMoney.Satoshis(25_000), harness.Bob.Channel(result.ChannelId).LocalBalance);
+    }
+
+    [Fact]
+    public async Task Given_AFirstCommitmentSignedWithAnHtlcSignature_When_Received_Then_TheNegotiationFailsWithTxAbort()
+    {
+        // Arrange: hold back the first commitment_signed and send one that carries an HTLC signature instead
+        await using var harness = await DualFundHarness.CreateAsync(400_000, TimeSpan.FromSeconds(2));
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
+        var open = harness.Alice.DualFund.OpenAsync(new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                    TestContext.Current.CancellationToken);
+        string? senderName = null;
+        await harness.PumpAsync((from, message) =>
+        {
+            senderName = from;
+            return message is CommitmentSignedMessage;
+        });
+        var sender = harness.Nodes.Single(n => n.Name == senderName);
+        Assert.IsType<CommitmentSignedMessage>(harness.TakeNext(sender));
+        var channelId = harness.Alice.Memory.FindChannels(_ => true).Single().ChannelId;
+        var genuine = harness.Transcript.Count;
+        var signature = new byte[64];
+        signature[31] = 1;
+        signature[63] = 1;
+        var tampered = new CommitmentSignedMessage(new CommitmentSignedPayload(channelId, [signature], signature));
+
+        // Act
+        await harness.DeliverAsync(sender, tampered);
+        await harness.PumpAsync();
+        var result = await harness.RunAsync(open);
+
+        // Assert: the receiver answered tx_abort (never a channel failure) and forgot the unsigned open: persisted
+        // Stale, its negotiation Aborted, nothing published. The open's 2 s deadline sits on the harness's stepped
+        // clock (nothing advances it), so the negotiation ends through the tx_abort exchange alone, and the
+        // forgetting runs behind the handler: wait for the whole aborted state instead of racing it (NL-499)
+        Assert.True(genuine < harness.Transcript.Count);
+        var receiver = harness.Other(sender);
+        Assert.Contains(harness.Transcript, t => t.From == receiver.Name && t.Message is TxAbortMessage);
+        Assert.NotNull(result.FailureReason);
+        await WaitFor.TrueAsync(async () =>
+        {
+            if (receiver.Memory.TryGetChannel(channelId, out _))
+                return false;
+            var stored = await receiver.InScopeAsync(u => u.ChannelDbRepository.GetByIdAsync(channelId));
+            if (stored is not null && stored.State != ChannelState.Stale)
+                return false;
+            var sessions = await receiver.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                              .GetByChannelIdAsync(channelId));
+            return sessions.All(x => x.State == InteractiveTxSessionState.Aborted);
+        }, TimeSpan.FromSeconds(15), $"{receiver.Name} to forget the aborted open (memory, row, sessions)",
+                                  TestContext.Current.CancellationToken);
+        Assert.False(receiver.Memory.TryGetChannel(channelId, out var kept),
+                     $"{receiver.Name} kept {kept?.State}\n{harness.Describe()}");
+        var storedAfter = await receiver.InScopeAsync(u => u.ChannelDbRepository.GetByIdAsync(channelId));
+        Assert.True(storedAfter is null or { State: ChannelState.Stale });
+        var sessionsAfter = await receiver.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                                .GetByChannelIdAsync(channelId));
+        Assert.All(sessionsAfter, x => Assert.Equal(InteractiveTxSessionState.Aborted, x.State));
+        Assert.Empty(receiver.Published);
+
+        // The sender verified the receiver's genuine commitment_signed and, signing first, sent tx_signatures: from
+        // then on it MUST keep the negotiation (IT-ABT-01) until an input of the transaction is spent
+        var senderSessions = await sender.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                             .GetByChannelIdAsync(channelId));
+        var senderSession = Assert.Single(senderSessions);
+        if (senderSession.TxSignaturesSent)
+        {
+            Assert.Equal(ChannelState.V1FundingSigned, sender.Channel(channelId).State);
+            Assert.NotEqual(InteractiveTxSessionState.Aborted, senderSession.State);
+        }
+        else
+        {
+            Assert.Equal(InteractiveTxSessionState.Aborted, senderSession.State);
+        }
+
+        Assert.Empty(sender.Published);
+    }
+}

@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NBitcoin.RPC;
 using NetMQ;
 using NetMQ.Sockets;
 
@@ -13,107 +15,346 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Events;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.ValueObjects;
 using Interfaces;
+using Networks;
 using Options;
+using SilentPayments;
 
-public class BlockchainMonitorService : IBlockchainMonitor
+/// <summary>
+/// Follows the chain: ZMQ <c>rawblock</c> for new blocks, RPC to catch up, one unit of work per block.
+/// </summary>
+/// <remarks>
+/// <para>Tip poll: ZMQ announces only what bitcoind publishes after the subscription reached it, so every
+/// <see cref="BitcoinOptions.TipPollInterval"/> the monitor also reads bitcoind's tip over RPC and catches up the blocks
+/// ZMQ never announced (mined right after the start's catch-up, or while the connection was down); see
+/// <see cref="PollTipAsync"/>.</para>
+/// <para>Per block (BOLT 5 plan O0): watched transactions (first sighting and depth), wallet deposits and spends,
+/// spends of watched outpoints, confirmations of the transactions we broadcast, the blockchain state and the header
+/// ring are staged in one unit of work and saved together (NL-214). Memory is updated and the events are raised only
+/// after that save; a failed attempt leaves nothing behind and is retried (NL-097).</para>
+/// <para>Reorgs (NL-096): the hashes of the last <see cref="HeaderRingSize"/> processed blocks are kept. A block whose
+/// hash differs from the stored one at its height, or whose parent is not the stored tip, starts a rewind: the fork
+/// point is found by asking bitcoind for the active chain's hashes, the rows the disconnected blocks changed are
+/// rolled back in one save (first-seen heights of pending watches, outpoint spends, broadcast confirmations, headers,
+/// state), <see cref="OnBlockDisconnected"/> is raised per disconnected block, and the new branch is processed. The fork
+/// is searched from our last processed block down; a block that is not in the active chain while every block we
+/// processed still is (a late notification of an orphan) is dropped without a rewind. A reorg deeper than the ring
+/// halts processing (Critical). A watch that completed in a disconnected block is pending again (NL-292: its confirmation
+/// is raised again from the new branch, so a funding transaction's short channel id follows it); wallet deposits of the
+/// disconnected blocks are removed and wallet outputs they spent are restored when bitcoind reports them unspent
+/// (NL-293).</para>
+/// <para>Broadcasts (NL-258): every stored <see cref="BroadcastState.Pending"/> transaction is sent again after each
+/// processing round (also a halted one) and at startup (also when halted), until a processed block holds it, or, for a
+/// transaction that confirmed in a block processed before the monitor tracked it, until a refusal that may mean it is
+/// confirmed finds it in the chain (NL-779, <see cref="TrySettleConfirmedAsync"/>).</para>
+/// <para>Mempool (BOLT 5 plan O8, NL-098): with <see cref="BitcoinOptions.WatchMempool"/> a second loop reads ZMQ
+/// <c>rawtx</c> and raises <see cref="OnWatchedOutpointSpentInMempool"/> for a transaction that spends a watched
+/// outpoint, or an output of a transaction it reported before. Nothing is saved or marked spent for it: only a
+/// processed block confirms a spend.</para>
+/// <para>Poll mode (<see cref="ChainNotificationMode.Poll"/>, NL-1094): no ZMQ socket is opened. Every
+/// <see cref="BitcoinOptions.GetPollInterval"/> the monitor reads bitcoind's tip and hands a tip it has not processed to
+/// <see cref="ProcessNewBlockAsync"/>, exactly as a ZMQ <c>rawblock</c> would arrive (<see cref="PollChainAsync"/>), and,
+/// when the mempool is watched, asks <c>gettxspendingprevout</c> for the watched outputs and feeds each new spender to
+/// the same mempool path (<see cref="PollMempoolAsync"/>).</para>
+/// </remarks>
+public partial class BlockchainMonitorService : IBlockchainMonitor
 {
+    // bitcoind rejections that mean it already has the transaction (mempool or chain)
+    private static readonly string[] s_alreadyKnownRejections =
+    [
+        "txn-already-in-mempool", "txn-already-known", "txn-same-nonwitness-data-in-mempool",
+        "already in block chain"
+    ];
+
     private readonly BitcoinOptions _bitcoinOptions;
     private readonly IBitcoinChainService _bitcoinChainService;
     private readonly ILogger<BlockchainMonitorService> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly Network _network;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _newBlockSemaphore = new(1, 1);
     private readonly SemaphoreSlim _blockBacklogSemaphore = new(1, 1);
+    private readonly SemaphoreSlim _walletLoadSemaphore = new(1, 1);
     private readonly ConcurrentDictionary<uint256, WatchedTransactionModel> _watchedTransactions = new();
     private readonly ConcurrentDictionary<string, WalletAddressModel> _watchedAddresses = new();
+    private readonly ConcurrentDictionary<OutPoint, ChannelId> _watchedOutpoints = new();
+    private readonly ConcurrentDictionary<uint256, BroadcastTransactionModel> _pendingBroadcasts = new();
+
+    // NL-606: the earlier members of each pending RBF replacement's chain (the rows it replaced), by the head's txid
+    private readonly ConcurrentDictionary<uint256, IReadOnlyList<uint256>> _replacementChains = new();
+    private readonly ConcurrentDictionary<uint256, int> _refusals = new();
+    private readonly ConcurrentDictionary<uint256, int> _permanentRefusals = new();
+    private readonly SortedDictionary<uint, BlockHeaderModel> _headers = new();
     private readonly OrderedDictionary<uint, Block> _blocksToProcess = new();
+    private readonly Lock _mempoolLock = new();
+    private readonly HashSet<uint256> _seenMempoolTransactions = [];
+    private readonly Queue<uint256> _seenMempoolOrder = new();
+    private readonly Dictionary<uint256, ChannelId> _reportedMempoolParents = [];
+    private readonly Queue<uint256> _reportedMempoolOrder = new();
 
     private BlockchainState _blockchainState = new(0, Hash.Empty, DateTime.UtcNow);
     private CancellationTokenSource? _cts;
     private Task? _monitoringTask;
+    private Task? _mempoolTask;
     private uint _lastProcessedBlockHeight;
+    private uint _catchUpHeight;
+    private bool _walletLoaded;
+    private BlockchainState? _loadedState;
+    private IReadOnlyList<BroadcastTransactionModel>? _loadedPendingBroadcasts;
     private SubscriberSocket? _blockSocket;
-    // private SubscriberSocket? _transactionSocket;
+    private SubscriberSocket? _txSocket;
+
+    // The tip poll: our last processed height when a poll first found bitcoind's tip above it, null otherwise
+    private uint? _tipPollBehindAt;
+    private long _tipPollCatchUps;
+
+    // Poll mode (NL-1094): the last tip the poll handed to block processing, and the outputs of transactions the
+    // mempool poll reported (a spend of one is reported too, as ZMQ rawtx reports it), oldest first
+    private uint256? _polledTipHash;
+    private readonly Dictionary<uint256, int> _polledMempoolParents = [];
+    private readonly Queue<uint256> _polledMempoolParentOrder = new();
+    private readonly BitcoinNetwork _bitcoinNetwork;
 
     public event EventHandler<NewBlockEventArgs>? OnNewBlockDetected;
+    public event EventHandler<BlockInputsEventArgs>? OnBlockInputs;
     public event EventHandler<TransactionConfirmedEventArgs>? OnTransactionConfirmed;
     public event EventHandler<WalletMovementEventArgs>? OnWalletMovementDetected;
+    public event EventHandler<OutpointSpentEventArgs>? OnWatchedOutpointSpent;
+    public event EventHandler<BlockDisconnectedEventArgs>? OnBlockDisconnected;
+    public event EventHandler<MempoolSpendEventArgs>? OnWatchedOutpointSpentInMempool;
 
     public uint LastProcessedBlockHeight => _lastProcessedBlockHeight;
 
+    /// <summary>
+    /// How many times the tip poll (<see cref="BitcoinOptions.TipPollInterval"/>) caught up blocks ZMQ never announced
+    /// since the service was created.
+    /// </summary>
+    public long TipPollCatchUps => Interlocked.Read(ref _tipPollCatchUps);
+
+    /// <inheritdoc />
+    public bool IsChainProcessingHalted { get; private set; }
+
+    /// <inheritdoc />
+    public string? ChainProcessingHaltReason { get; private set; }
+
+    /// <summary>
+    /// How many mempool txids are remembered to raise each transaction once (ZMQ <c>rawtx</c> announces a transaction on
+    /// mempool acceptance and again when a block holding it is connected), and how many reported transactions are
+    /// remembered as parents whose outputs are followed too. The oldest are forgotten first.
+    /// </summary>
+    internal int MaxRememberedMempoolTransactions { get; set; } = 10_000;
+
+    /// <summary>
+    /// How many times a block is tried in one processing round before the round halts (NL-097).
+    /// </summary>
+    internal int MaxBlockProcessingAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// Delay before the first retry of a failed block; it doubles on every further retry within the round.
+    /// </summary>
+    internal TimeSpan BlockRetryBaseDelay { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Most blocks held in the processing queue at once. Blocks past this are not kept in memory; they are refetched
+    /// from bitcoind once the queue drains, so a halted queue does not grow with every new block.
+    /// </summary>
+    internal int MaxQueuedBlocks { get; set; } = 144;
+
+    /// <summary>
+    /// How many processed block headers are kept for reorg detection; a deeper reorg halts processing.
+    /// </summary>
+    internal int HeaderRingSize { get; set; } = 100;
+
+    /// <summary>
+    /// A pending broadcast the node keeps refusing is logged at Warning on its first refusal and then once every this
+    /// many refusals in a row (it is retried after every block).
+    /// </summary>
+    internal int RefusalWarningInterval { get; set; } = 6;
+
+    /// <summary>
+    /// A pending funding or wallet send refused this many times in a row for a permanent reason is abandoned (NL-294,
+    /// <see cref="BroadcastRefusalRules"/>); other transactions are only reported at Error once they get there.
+    /// </summary>
+    internal int AbandonAfterPermanentRefusals { get; set; } = 12;
+
     public BlockchainMonitorService(IOptions<BitcoinOptions> bitcoinOptions, IBitcoinChainService bitcoinChainService,
                                     ILogger<BlockchainMonitorService> logger, IOptions<NodeOptions> nodeOptions,
-                                    IServiceProvider serviceProvider)
+                                    IServiceProvider serviceProvider, TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _bitcoinOptions = bitcoinOptions.Value;
         _bitcoinChainService = bitcoinChainService;
         _logger = logger;
         _serviceProvider = serviceProvider;
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ?? Network.Main;
+        // Fails on an unknown network; signet and custom signets (Mutinynet) map to NBitcoin's signet (W4-D)
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
+        _bitcoinNetwork = nodeOptions.Value.BitcoinNetwork;
+    }
+
+    /// <summary>True when blocks come from the RPC poll only (<see cref="ChainNotificationMode.Poll"/>, NL-1094).</summary>
+    public bool IsPollMode => _bitcoinOptions.Notifications == ChainNotificationMode.Poll;
+
+    /// <inheritdoc />
+    public async Task LoadWalletAsync(CancellationToken cancellationToken = default)
+    {
+        await _walletLoadSemaphore.WaitAsync(cancellationToken);
+        try
+        {
+            if (_walletLoaded)
+                return;
+
+            using var scope = _serviceProvider.CreateScope();
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            await LoadPendingWatchedTransactionsAsync(uow);
+            LoadBitcoinAddresses(uow);
+            var endedReservations = await LoadUtxoSetAsync(uow);
+
+            // The channel locks are restored from the pending funding broadcasts (NL-462)
+            var pendingBroadcasts = await uow.BroadcastTransactionDbRepository.GetPendingAsync();
+            await RestoreChannelUtxoLocksAsync(uow, pendingBroadcasts);
+
+            // The last processed height, so what runs before the start (the peers' first messages, the retired SCID
+            // map) does not see height 0. Only block processing changes the state, so StartAsync uses this read (or
+            // creates the state at the height of birth)
+            var state = await uow.BlockchainStateDbRepository.GetStateAsync();
+            if (state is not null)
+                _lastProcessedBlockHeight = state.LastProcessedHeight;
+
+            // The fee input reservations whose inputs are all spent are deleted in their own save
+            if (endedReservations)
+                await uow.SaveChangesAsync();
+
+            _loadedState = state;
+            _loadedPendingBroadcasts = pendingBroadcasts;
+            _walletLoaded = true;
+        }
+        finally
+        {
+            _walletLoadSemaphore.Release();
+        }
     }
 
     public async Task StartAsync(uint heightOfBirth, CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        using var scope = _serviceProvider.CreateScope();
-        using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        // The host loads the wallet before the peers connect (NL-600); a host that did not gets it loaded here
+        var loadedByHost = _walletLoaded;
+        await LoadWalletAsync(cancellationToken);
 
-        // Load pending transactions
-        await LoadPendingWatchedTransactionsAsync(uow);
-
-        // Load existing addresses
-        LoadBitcoinAddresses(uow);
-
-        // Load UtxoSet
-        await LoadUtxoSetAsync(uow);
-
-        // Get the current state or create a new one if it doesn't exist
-        var currentBlockchainState = await uow.BlockchainStateDbRepository.GetStateAsync();
-        if (currentBlockchainState is null)
+        using (var scope = _serviceProvider.CreateScope())
         {
-            _logger.LogInformation("No blockchain state found, starting from height {Height}", heightOfBirth);
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-            _lastProcessedBlockHeight = heightOfBirth;
-            _blockchainState = new BlockchainState(_lastProcessedBlockHeight, Hash.Empty, DateTime.UtcNow);
-            uow.BlockchainStateDbRepository.Add(_blockchainState);
+            // Every still pending broadcast is sent again after the start: read again when the host loaded the wallet
+            // earlier (the peers may have stored some since)
+            var pendingBroadcasts = loadedByHost || _loadedPendingBroadcasts is null
+                                        ? await uow.BroadcastTransactionDbRepository.GetPendingAsync()
+                                        : _loadedPendingBroadcasts;
+            _loadedPendingBroadcasts = null;
+
+            // Every channel past funding_created that is not closed gets its funding output watched (backfill for
+            // channels stored before the watch existed, or whose watch was never saved)
+            var backfilled = await uow.WatchedOutpointDbRepository.AddMissingFundingOutpointsAsync();
+            if (backfilled.Count > 0 && _logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation("Watching the funding outputs of {Count} channels that had no watch",
+                                       backfilled.Count);
+
+            // The current state (read by the wallet load; only block processing changes it) or a new one
+            var currentBlockchainState = _loadedState;
+            _loadedState = null;
+            if (currentBlockchainState is null)
+            {
+                _logger.LogInformation("No blockchain state found, starting from height {Height}", heightOfBirth);
+
+                _lastProcessedBlockHeight = heightOfBirth;
+                _blockchainState = new BlockchainState(_lastProcessedBlockHeight, Hash.Empty, DateTime.UtcNow);
+                uow.BlockchainStateDbRepository.Add(_blockchainState);
+            }
+            else
+            {
+                _blockchainState = currentBlockchainState;
+                _lastProcessedBlockHeight = _blockchainState.LastProcessedHeight;
+                _logger.LogInformation("Starting blockchain monitoring at height {Height}, last block hash {LastBlockHash}",
+                                       _lastProcessedBlockHeight, _blockchainState.LastProcessedBlockHash);
+            }
+
+            // The state and the backfilled watches are saved before any block is processed (each block updates them
+            // in a unit of work of its own)
+            await uow.SaveChangesAsync();
+
+            foreach (var watchedOutpoint in await uow.WatchedOutpointDbRepository.GetActiveAsync())
+                TrackWatchedOutpoint(watchedOutpoint);
+
+            foreach (var header in await uow.BlockHeaderDbRepository.GetAllAsync())
+                _headers[header.Height] = header;
+
+            foreach (var broadcast in pendingBroadcasts)
+                _pendingBroadcasts[new uint256(broadcast.TransactionId)] = broadcast;
+        }
+
+        var currentBlockHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+        await InitializeSilentPaymentsAsync(currentBlockHeight, cancellationToken);
+        if (currentBlockHeight < _lastProcessedBlockHeight && _headers.Count > 0)
+        {
+            // The chain is shorter than what we processed (reorg or invalidateblock while we were down)
+            _logger.LogWarning("The chain tip {Tip} is below our last processed block {Height}; rewinding",
+                               currentBlockHeight, _lastProcessedBlockHeight);
+            if (!await TryRewindAsync(currentBlockHeight))
+                Halt($"the chain tip {currentBlockHeight} is below our last processed block "
+                   + $"{_lastProcessedBlockHeight} and no fork point was found in the header ring");
+        }
+        else if (currentBlockHeight >= _lastProcessedBlockHeight)
+        {
+            // The last processed block is processed again (a new state's first block was never processed, and a
+            // changed hash at that height is a reorg); then every block up to and including the tip (NL-215)
+            var lastBlock = await _bitcoinChainService.GetBlockAsync(_lastProcessedBlockHeight);
+            if (lastBlock is not null)
+                _blocksToProcess[_lastProcessedBlockHeight] = lastBlock;
+
+            await AddMissingBlocksToProcessAsync(currentBlockHeight + 1);
+        }
+
+        if (!IsChainProcessingHalted)
+            await ProcessPendingBlocksAsync();
+        else
+            await RebroadcastPendingAsync(); // A halt must not keep our pending transactions off the chain
+
+        // ZMQ sockets, unless blocks come from the RPC poll only (NL-1094)
+        if (IsPollMode)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation(
+                    "Chain notifications: RPC poll every {Interval} (no ZMQ); mempool {Mempool}",
+                    _bitcoinOptions.GetPollInterval(_bitcoinNetwork),
+                    _bitcoinOptions.IsMempoolWatched ? "polled with gettxspendingprevout" : "not watched");
         }
         else
         {
-            _blockchainState = currentBlockchainState;
-            _lastProcessedBlockHeight = _blockchainState.LastProcessedHeight;
-            _logger.LogInformation("Starting blockchain monitoring at height {Height}, last block hash {LastBlockHash}",
-                                   _lastProcessedBlockHeight, _blockchainState.LastProcessedBlockHash);
+            InitializeZmqSockets();
         }
-
-        // Get the current block height from the wallet
-        var currentBlockHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
-
-        if (currentBlockHeight > _lastProcessedBlockHeight)
-        {
-            // Add the current block to the processing queue
-            var currentBlock = await _bitcoinChainService.GetBlockAsync(_lastProcessedBlockHeight);
-            if (currentBlock is not null)
-                _blocksToProcess[_lastProcessedBlockHeight] = currentBlock;
-
-            // Add missing blocks to the processing queue and process any pending blocks
-            await AddMissingBlocksToProcessAsync(currentBlockHeight);
-            await ProcessPendingBlocksAsync(uow);
-        }
-
-        await uow.SaveChangesAsync();
-
-        // Initialize ZMQ sockets
-        InitializeZmqSockets();
 
         // Start monitoring task
         _monitoringTask = MonitorBlockchainAsync(_cts.Token);
+        if (_txSocket is not null)
+        {
+            var mempoolToken = _cts.Token;
+            _mempoolTask = Task.Factory.StartNew(() => MonitorMempool(mempoolToken), mempoolToken,
+                                                 TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
 
         _logger.LogInformation("Blockchain monitor service started successfully");
     }
@@ -125,11 +366,17 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
         await _cts.CancelAsync();
 
-        if (_monitoringTask is not null)
+        // A later start on this instance loads the wallet again, as a new process does
+        _walletLoaded = false;
+
+        foreach (var task in new[] { _monitoringTask, _mempoolTask })
         {
+            if (task is null)
+                continue;
+
             try
             {
-                await _monitoringTask;
+                await task;
             }
             catch (OperationCanceledException)
             {
@@ -140,22 +387,39 @@ public class BlockchainMonitorService : IBlockchainMonitor
         CleanupZmqSockets();
     }
 
+    /// <inheritdoc />
     public async Task PublishAndWatchTransactionAsync(ChannelId channelId, SignedTransaction signedTransaction,
                                                       uint requiredDepth)
     {
+        ArgumentNullException.ThrowIfNull(signedTransaction);
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation(
                 "Publishing transaction {TxId} for {RequiredDepth} confirmations for channel {channelId}",
                 signedTransaction.TxId, requiredDepth, channelId);
 
-        // Convert the tx
+        // Convert the tx first: nothing is stored for bytes that are not a transaction
         var transaction = Transaction.Load(signedTransaction.RawTxBytes, _network);
 
-        // Start watching the tx
-        await WatchTransactionAsync(channelId, signedTransaction.TxId, requiredDepth);
+        // The watch and the raw transaction are saved together, before the send: a failed send is sent again after
+        // every block (NL-258)
+        var watchedTx = new WatchedTransactionModel(channelId, signedTransaction.TxId, requiredDepth);
+        var broadcast = new BroadcastTransactionModel(signedTransaction, BroadcastPurpose.Unspecified, channelId,
+                                                      _lastProcessedBlockHeight);
+        using (var scope = _serviceProvider.CreateScope())
+        {
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            uow.WatchedTransactionDbRepository.Add(watchedTx);
+            if (await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(signedTransaction.TxId) is null)
+                uow.BroadcastTransactionDbRepository.Add(broadcast);
+            await uow.SaveChangesAsync();
+        }
 
-        // Publish the tx
+        _watchedTransactions[new uint256(signedTransaction.TxId)] = watchedTx;
+        _pendingBroadcasts[new uint256(signedTransaction.TxId)] = broadcast;
+
+        // Publish the tx; a refusal is the caller's to handle, the stored row keeps it for rebroadcast
         await _bitcoinChainService.SendTransactionAsync(transaction);
+        ObserveUnconfirmedWalletTransaction(transaction, broadcast);
     }
 
     public async Task WatchTransactionAsync(ChannelId channelId, TxId txId, uint requiredDepth)
@@ -173,9 +437,129 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
         uow.WatchedTransactionDbRepository.Add(watchedTx);
 
-        _watchedTransactions[nBitcoinTxId] = watchedTx;
-
         await uow.SaveChangesAsync();
+
+        _watchedTransactions[nBitcoinTxId] = watchedTx;
+    }
+
+    public void TrackWatchedTransaction(WatchedTransactionModel watchedTransaction)
+    {
+        ArgumentNullException.ThrowIfNull(watchedTransaction);
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation(
+                "Watching transaction {TxId} for {RequiredDepth} confirmations for channel {channelId}",
+                watchedTransaction.TransactionId, watchedTransaction.RequiredDepth, watchedTransaction.ChannelId);
+
+        _watchedTransactions[new uint256(watchedTransaction.TransactionId)] = watchedTransaction;
+    }
+
+    public async Task PublishTransactionAsync(SignedTransaction signedTransaction)
+    {
+        ArgumentNullException.ThrowIfNull(signedTransaction);
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Publishing transaction {TxId}", signedTransaction.TxId);
+
+        var transaction = Transaction.Load(signedTransaction.RawTxBytes, _network);
+        await _bitcoinChainService.SendTransactionAsync(transaction);
+        ObserveUnconfirmedWalletTransaction(transaction);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> PublishAsync(BroadcastTransactionModel transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        var txId = new uint256(transaction.TransactionId);
+        if (transaction.State == BroadcastState.Pending)
+            _pendingBroadcasts[txId] = transaction;
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Publishing {Purpose} transaction {TxId}", Enum.GetName(transaction.Purpose), txId);
+
+        var accepted = await TrySendAsync(transaction);
+        if (accepted && transaction.State == BroadcastState.Pending)
+            ObserveUnconfirmedWalletTransaction(Transaction.Load(transaction.RawTransaction, _network), transaction);
+        return accepted;
+    }
+
+    /// <inheritdoc />
+    public void TrackPendingBroadcast(BroadcastTransactionModel transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        if (transaction.State == BroadcastState.Pending)
+            _pendingBroadcasts[new uint256(transaction.TransactionId)] = transaction;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> SaveAndPublishAsync(BroadcastTransactionModel transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        // Nothing is stored for bytes that are not a transaction
+        _ = Transaction.Load(transaction.RawTransaction, _network);
+
+        BroadcastTransactionModel stored;
+        using (var scope = _serviceProvider.CreateScope())
+        {
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var existing = await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(transaction.TransactionId);
+            if (existing is null)
+            {
+                uow.BroadcastTransactionDbRepository.Add(transaction);
+                await uow.SaveChangesAsync();
+            }
+
+            stored = existing ?? transaction;
+        }
+
+        return await PublishAsync(stored);
+    }
+
+    /// <inheritdoc />
+    public async Task WatchOutpointAsync(WatchedOutpointModel watchedOutpoint)
+    {
+        ArgumentNullException.ThrowIfNull(watchedOutpoint);
+        using (var scope = _serviceProvider.CreateScope())
+        {
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            if (await uow.WatchedOutpointDbRepository.GetAsync(watchedOutpoint.TransactionId,
+                                                               watchedOutpoint.OutputIndex) is null)
+            {
+                uow.WatchedOutpointDbRepository.Add(watchedOutpoint);
+                await uow.SaveChangesAsync();
+            }
+        }
+
+        TrackWatchedOutpoint(watchedOutpoint);
+    }
+
+    /// <inheritdoc />
+    public void TrackWatchedOutpoint(WatchedOutpointModel watchedOutpoint)
+    {
+        ArgumentNullException.ThrowIfNull(watchedOutpoint);
+        WatchOutpointSpend(watchedOutpoint.ChannelId, watchedOutpoint.TransactionId, watchedOutpoint.OutputIndex);
+    }
+
+    public void WatchOutpointSpend(ChannelId channelId, TxId txId, uint outputIndex)
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Watching outpoint {TxId}:{Index} of channel {ChannelId} for a spend", txId,
+                                   outputIndex, channelId);
+
+        _watchedOutpoints[new OutPoint(new uint256(txId), outputIndex)] = channelId;
+    }
+
+    public void StopWatchingOutpointSpend(TxId txId, uint outputIndex)
+    {
+        _watchedOutpoints.TryRemove(new OutPoint(new uint256(txId), outputIndex), out _);
+    }
+
+    /// <inheritdoc />
+    public void StopWatchingTransaction(TxId txId)
+    {
+        if (_watchedTransactions.TryRemove(new uint256(txId), out _)
+         && _logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Stopped watching transaction {TxId} (its rival of the shared input is "
+                                 + "irrevocable)", txId);
     }
 
     public void WatchBitcoinAddress(WalletAddressModel walletAddress)
@@ -186,74 +570,104 @@ public class BlockchainMonitorService : IBlockchainMonitor
         _watchedAddresses[walletAddress.Address] = walletAddress;
     }
 
-    // public Task WatchForRevocationAsync(TxId commitmentTxId, SignedTransaction penaltyTx)
-    // {
-    //     _logger.LogInformation("Watching for revocation of commitment transaction {CommitmentTxId}", commitmentTxId);
-    //
-    //     var nBitcoinTxId = new uint256(commitmentTxId);
-    //     var revocationWatch = new RevocationWatch(nBitcoinTxId, Transaction.Load(penaltyTx.RawTxBytes, _network));
-    //
-    //     _revocationWatches.TryAdd(nBitcoinTxId, revocationWatch);
-    //     return Task.CompletedTask;
-    // }
+    /// <summary>
+    /// A block announced by ZMQ: queues it (with any block missed before it) and processes the queue.
+    /// </summary>
+    /// <remarks>
+    /// Callers are serialized (NL-310): the queue and the catch-up height are touched by one caller at a time, so a
+    /// block handed in directly never interleaves with one the ZMQ loop delivers. A block above bitcoind's tip is not
+    /// from the node we follow (e.g. a ZMQ endpoint of another chain on the same port) and is dropped: queuing it would
+    /// raise the catch-up height to heights the node does not have.
+    /// </remarks>
+    internal async Task ProcessNewBlockAsync(Block block, uint currentHeight)
+    {
+        var blockHash = block.GetHash();
+        await _newBlockSemaphore.WaitAsync();
+        try
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Processing block at height {blockHeight}: {BlockHash}", currentHeight, blockHash);
+
+            var tipHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+            if (currentHeight > tipHeight)
+            {
+                if (_logger.IsEnabled(LogLevel.Warning))
+                    _logger.LogWarning(
+                        "Dropping block {BlockHash} at height {Height}: above the node's tip {Tip}, so not from the chain we follow",
+                        blockHash, currentHeight, tipHeight);
+                return;
+            }
+
+            // Check for missed blocks first
+            await AddMissingBlocksToProcessAsync(currentHeight);
+
+            // Store the current block for processing, unless the queue is full. Then it is refetched later.
+            if (_blocksToProcess.Count < MaxQueuedBlocks)
+                _blocksToProcess[currentHeight] = block;
+            else if (currentHeight + 1 > _catchUpHeight)
+                _catchUpHeight = currentHeight + 1;
+
+            await ProcessPendingBlocksAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing new block {BlockHash}", blockHash);
+        }
+        finally
+        {
+            _newBlockSemaphore.Release();
+        }
+    }
 
     private async Task MonitorBlockchainAsync(CancellationToken cancellationToken)
     {
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Starting blockchain monitoring loop");
 
+        // Poll mode (NL-1094): the poll is the block source, at its own interval
+        var tipPollInterval = IsPollMode ? _bitcoinOptions.GetPollInterval(_bitcoinNetwork) : _bitcoinOptions.TipPollInterval;
+        var nextTipPoll = _timeProvider.GetUtcNow() + tipPollInterval;
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
+                    // Blocks ZMQ never announced (lost before the subscription was up, or while it reconnects)
+                    if (tipPollInterval > TimeSpan.Zero && _timeProvider.GetUtcNow() >= nextTipPoll)
+                    {
+                        nextTipPoll = _timeProvider.GetUtcNow() + tipPollInterval;
+                        if (IsPollMode)
+                        {
+                            await PollChainAsync();
+                            if (_bitcoinOptions.IsMempoolWatched)
+                                await PollMempoolAsync();
+                        }
+                        else
+                        {
+                            await PollTipAsync();
+                        }
+                    }
+
                     // Check for new blocks
                     if (_blockSocket != null &&
                         _blockSocket.TryReceiveFrameString(TimeSpan.FromMilliseconds(100), out var topic))
                     {
                         if (topic == "rawblock" && _blockSocket.TryReceiveFrameBytes(out var blockHashBytes))
                         {
-                            try
+                            var block = Block.Load(blockHashBytes, _network);
+                            var coinbaseHeight = block.GetCoinbaseHeight();
+                            if (!coinbaseHeight.HasValue)
                             {
-                                // One at a time
-                                await _newBlockSemaphore.WaitAsync(cancellationToken);
-                                var block = Block.Load(blockHashBytes, _network);
-                                var coinbaseHeight = block.GetCoinbaseHeight();
-                                if (!coinbaseHeight.HasValue)
-                                {
-                                    // Get the current height from the wallet
-                                    var currentHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
-
-                                    // Get the block from the wallet
-                                    var blockAtHeight = await _bitcoinChainService.GetBlockAsync(currentHeight);
-                                    if (blockAtHeight is null)
-                                    {
-                                        _logger.LogError("Failed to retrieve block at height {Height}", currentHeight);
-                                        return;
-                                    }
-
-                                    coinbaseHeight = (int)currentHeight;
-                                }
-
-                                await ProcessNewBlock(block, (uint)coinbaseHeight);
+                                // Get the current height from the wallet
+                                var currentHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+                                coinbaseHeight = (int)currentHeight;
                             }
-                            finally
-                            {
-                                _newBlockSemaphore.Release();
-                            }
+
+                            // One at a time: ProcessNewBlockAsync serializes its callers
+                            await ProcessNewBlockAsync(block, (uint)coinbaseHeight);
                         }
                     }
-
-                    // TODO: Check for new transactions
-                    // if (_transactionSocket != null &&
-                    //     _transactionSocket.TryReceiveFrameString(TimeSpan.FromMilliseconds(100), out var txTopic))
-                    // {
-                    //     if (txTopic == "rawtx" && _transactionSocket.TryReceiveFrameBytes(out var rawTxBytes))
-                    //     {
-                    //         await ProcessNewTransaction(rawTxBytes);
-                    //     }
-                    // }
 
                     // Small delay to prevent CPU spinning
                     await Task.Delay(50, cancellationToken);
@@ -276,6 +690,187 @@ public class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
+    /// <summary>
+    /// One tip poll (<see cref="BitcoinOptions.TipPollInterval"/>): when bitcoind's tip is above our last processed
+    /// block and was already above it, at the same processed height, on the previous poll, ZMQ lost the blocks in
+    /// between, so they are fetched over RPC and processed, as a ZMQ block would have them; returns true then.
+    /// </summary>
+    /// <remarks>
+    /// A ZMQ subscriber gets only what bitcoind publishes after the subscription reached it. The start catches up over
+    /// RPC before it subscribes, and NetMQ connects in the background, so a block mined in between (or while the
+    /// connection is down or set up again after a bitcoind restart) is never announced; without the poll the monitor
+    /// waits for the next block (about 10 minutes on mainnet). The first poll that finds the monitor behind only
+    /// notes it, so a block ZMQ is still delivering is not fetched twice; the catch-up runs under the same lock as a
+    /// ZMQ block and checks the tip again inside it. Nothing is polled while processing is halted (the next block or a
+    /// restart retries, as before). An RPC failure is logged and the next poll tries again.
+    /// </remarks>
+    internal async Task<bool> PollTipAsync()
+    {
+        try
+        {
+            if (IsChainProcessingHalted)
+            {
+                _tipPollBehindAt = null;
+                return false;
+            }
+
+            var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+            var processed = _lastProcessedBlockHeight;
+            if (tip <= processed)
+            {
+                _tipPollBehindAt = null;
+                return false;
+            }
+
+            if (_tipPollBehindAt != processed)
+            {
+                // Behind for the first time at this height: ZMQ may still deliver; the next poll decides
+                _tipPollBehindAt = processed;
+                return false;
+            }
+
+            await _newBlockSemaphore.WaitAsync();
+            try
+            {
+                _tipPollBehindAt = null;
+                tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+                if (tip <= _lastProcessedBlockHeight || IsChainProcessingHalted)
+                    return false;
+
+                Interlocked.Increment(ref _tipPollCatchUps);
+                if (_logger.IsEnabled(LogLevel.Warning))
+                    _logger.LogWarning(
+                        "ZMQ announced no block from height {From} to bitcoind's tip {Tip} within {Interval}; catching up over RPC (check Bitcoin:ZmqHost and Bitcoin:ZmqBlockPort if this repeats)",
+                        _lastProcessedBlockHeight + 1, tip, _bitcoinOptions.TipPollInterval);
+
+                await AddMissingBlocksToProcessAsync(tip + 1);
+                await ProcessPendingBlocksAsync();
+                return true;
+            }
+            finally
+            {
+                _newBlockSemaphore.Release();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "The chain tip poll failed; the next poll tries again");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// One poll of <see cref="ChainNotificationMode.Poll"/> (NL-1094): reads bitcoind's tip and, when it is not the block
+    /// we processed at its height, hands it to <see cref="ProcessNewBlockAsync"/> as a ZMQ <c>rawblock</c> would, so
+    /// the same path queues every missed block below it in order, detects a reorg against the header ring (a tip at our
+    /// height with another hash included) and processes one unit of work per block. Returns true when a block was
+    /// handed over.
+    /// </summary>
+    /// <remarks>
+    /// Several blocks mined between two polls are the normal case here, so nothing is logged as a lost notification.
+    /// While processing is halted the queue is retried only when the tip changes, as a halted ZMQ monitor waits for the
+    /// next block. A tip below our last processed block that is still a block we processed (an
+    /// <c>invalidateblock</c> with nothing mined since) is left until the next block, as with ZMQ. An RPC failure is
+    /// logged and the next poll tries again.
+    /// </remarks>
+    internal async Task<bool> PollChainAsync()
+    {
+        try
+        {
+            var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+            var tipHash = await _bitcoinChainService.GetBlockHashAsync(tip);
+            if (TryGetKnownHash(tip, out var known) && known.Equals(new Hash(tipHash.ToBytes())))
+            {
+                _polledTipHash = tipHash;
+                return false;
+            }
+
+            if (IsChainProcessingHalted && tipHash == _polledTipHash)
+                return false;
+
+            var block = await _bitcoinChainService.GetBlockAsync(tipHash);
+            if (block is null)
+                return false;
+
+            _polledTipHash = tipHash;
+            await ProcessNewBlockAsync(block, tip);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "The chain poll failed; the next poll tries again");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The mempool poll of <see cref="ChainNotificationMode.Poll"/> (BOLT 5 plan O8 without ZMQ, NL-1094): asks
+    /// <c>gettxspendingprevout</c> which mempool transactions spend the watched outpoints and the outputs of
+    /// transactions it reported before, fetches each spender not seen yet and hands it to
+    /// <see cref="ProcessMempoolTransaction"/>, the path of a ZMQ <c>rawtx</c>. Returns the number of events raised.
+    /// </summary>
+    /// <remarks>
+    /// A spender that is replaced or mined between two polls may be missed (blocks still see the spend); this only
+    /// lowers latency. A node without the call is reported once by the chain service and the poll then does nothing.
+    /// An RPC failure is logged and the next poll tries again.
+    /// </remarks>
+    internal async Task<int> PollMempoolAsync()
+    {
+        try
+        {
+            var outPoints = _watchedOutpoints.Keys.ToList();
+            lock (_mempoolLock)
+            {
+                foreach (var (parent, outputs) in _polledMempoolParents)
+                    for (var index = 0u; index < outputs; index++)
+                        outPoints.Add(new OutPoint(parent, index));
+            }
+
+            if (outPoints.Count == 0)
+                return 0;
+
+            var spenders = await _bitcoinChainService.GetMempoolSpendersAsync(outPoints);
+            if (spenders is null || spenders.Count == 0)
+                return 0;
+
+            var raised = 0;
+            foreach (var spender in spenders.Values.Distinct())
+            {
+                lock (_mempoolLock)
+                {
+                    if (_seenMempoolTransactions.Contains(spender))
+                        continue;
+                }
+
+                var transaction = await _bitcoinChainService.GetTransactionAsync(spender);
+                if (transaction is null)
+                    continue; // mined or evicted since; a block will tell
+
+                var events = ProcessMempoolTransaction(transaction);
+                if (events == 0)
+                    continue;
+
+                raised += events;
+                lock (_mempoolLock)
+                {
+                    if (_polledMempoolParents.TryAdd(spender, transaction.Outputs.Count))
+                    {
+                        _polledMempoolParentOrder.Enqueue(spender);
+                        while (_polledMempoolParentOrder.Count > MaxRememberedMempoolTransactions)
+                            _polledMempoolParents.Remove(_polledMempoolParentOrder.Dequeue());
+                    }
+                }
+            }
+
+            return raised;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "The mempool poll failed; the next poll tries again");
+            return 0;
+        }
+    }
+
     private void InitializeZmqSockets()
     {
         try
@@ -285,14 +880,18 @@ public class BlockchainMonitorService : IBlockchainMonitor
             _blockSocket.Connect($"tcp://{_bitcoinOptions.ZmqHost}:{_bitcoinOptions.ZmqBlockPort}");
             _blockSocket.Subscribe("rawblock");
 
-            // // Subscribe to new transactions (for mempool monitoring)
-            // _transactionSocket = new SubscriberSocket();
-            // _transactionSocket.Connect($"tcp://{_bitcoinOptions.ZmqHost}:{_bitcoinOptions.ZmqTxPort}");
-            // _transactionSocket.Subscribe("rawtx");
+            // BOLT 5 plan O8: unconfirmed spends of watched outputs (optional; blocks alone are enough)
+            if (_bitcoinOptions.IsMempoolWatched)
+            {
+                _txSocket = new SubscriberSocket();
+                _txSocket.Connect($"tcp://{_bitcoinOptions.ZmqHost}:{_bitcoinOptions.ZmqTxPort}");
+                _txSocket.Subscribe("rawtx");
+            }
 
             if (_logger.IsEnabled(LogLevel.Information))
-                _logger.LogInformation("ZMQ sockets initialized - Block: {BlockPort}, Tx: {TxPort}",
-                                       _bitcoinOptions.ZmqBlockPort, _bitcoinOptions.ZmqTxPort);
+                _logger.LogInformation("ZMQ sockets initialized - Block: {BlockPort}, Tx: {TxPort} (mempool {Mempool})",
+                                       _bitcoinOptions.ZmqBlockPort, _bitcoinOptions.ZmqTxPort,
+                                       _bitcoinOptions.IsMempoolWatched ? "watched" : "not watched");
         }
         catch (Exception ex)
         {
@@ -308,9 +907,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
         {
             _blockSocket?.Dispose();
             _blockSocket = null;
-
-            // _transactionSocket?.Dispose();
-            // _transactionSocket = null;
+            _txSocket?.Dispose();
+            _txSocket = null;
 
             _logger.LogDebug("ZMQ sockets cleaned up");
         }
@@ -320,198 +918,504 @@ public class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
-    private async Task ProcessPendingBlocksAsync(IUnitOfWork uow)
+    /// <summary>
+    /// A transaction announced by ZMQ <c>rawtx</c> (BOLT 5 plan O8): raises
+    /// <see cref="OnWatchedOutpointSpentInMempool"/> once per spent watched outpoint, and once per spent output of a
+    /// transaction reported before (so an HTLC transaction that spends a commitment still in the mempool is seen too).
+    /// </summary>
+    /// <remarks>
+    /// Nothing is saved and no watch is marked spent: an unconfirmed transaction may be replaced, evicted or never
+    /// mined, and only a processed block confirms a spend. A transaction is handled once (bitcoind announces it again
+    /// when a block holding it is connected); txids and reported parents are remembered up to
+    /// <see cref="MaxRememberedMempoolTransactions"/> each, the oldest forgotten first. Returns the number of events
+    /// raised.
+    /// </remarks>
+    internal int ProcessMempoolTransaction(Transaction transaction)
     {
+        ArgumentNullException.ThrowIfNull(transaction);
+        var txId = transaction.GetHash();
+        ObserveUnconfirmedWalletTransaction(transaction);
+        var spends = new List<MempoolSpendEventArgs>();
+        lock (_mempoolLock)
+        {
+            if (!Remember(_seenMempoolTransactions, _seenMempoolOrder, txId))
+                return 0;
+
+            SignedTransaction? signed = null;
+            foreach (var input in transaction.Inputs)
+            {
+                var spendsParent = false;
+                if (!_watchedOutpoints.TryGetValue(input.PrevOut, out var channelId))
+                {
+                    if (!_reportedMempoolParents.TryGetValue(input.PrevOut.Hash, out channelId))
+                        continue;
+
+                    spendsParent = true;
+                }
+
+                signed ??= new SignedTransaction(new TxId(txId.ToBytes()), transaction.ToBytes());
+                spends.Add(new MempoolSpendEventArgs(channelId, signed, new TxId(input.PrevOut.Hash.ToBytes()),
+                                                     input.PrevOut.N, spendsParent));
+            }
+
+            if (spends.Count == 0)
+                return 0;
+
+            if (_reportedMempoolParents.TryAdd(txId, spends[0].ChannelId))
+            {
+                _reportedMempoolOrder.Enqueue(txId);
+                while (_reportedMempoolOrder.Count > MaxRememberedMempoolTransactions)
+                    _reportedMempoolParents.Remove(_reportedMempoolOrder.Dequeue());
+            }
+        }
+
+        foreach (var spend in spends)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation(
+                    "Unconfirmed transaction {TxId} spends {SpentTxId}:{Index} of channel {ChannelId}{Parent}", txId,
+                    new uint256((byte[])spend.SpentTransactionId), spend.SpentOutputIndex, spend.ChannelId,
+                    spend.SpendsUnconfirmedParent ? " (an output of an unconfirmed transaction)" : string.Empty);
+
+            // Each handler on its own: one that throws does not keep the others from the spend
+            if (OnWatchedOutpointSpentInMempool is not { } handlers)
+                continue;
+            foreach (var handler in handlers.GetInvocationList().Cast<EventHandler<MempoolSpendEventArgs>>())
+                Raise(() => handler(this, spend), "mempool spend");
+        }
+
+        return spends.Count;
+    }
+
+    /// <summary>Adds <paramref name="txId"/> to a bounded set; false when it was already there.</summary>
+    private bool Remember(HashSet<uint256> set, Queue<uint256> order, uint256 txId)
+    {
+        if (!set.Add(txId))
+            return false;
+
+        order.Enqueue(txId);
+        while (order.Count > MaxRememberedMempoolTransactions)
+            set.Remove(order.Dequeue());
+        return true;
+    }
+
+    /// <summary>
+    /// The mempool loop (O8): reads every <c>rawtx</c> message (topic, transaction, sequence) as it arrives. A message
+    /// that is not a transaction is logged and skipped; the loop ends when the monitor stops.
+    /// </summary>
+    private void MonitorMempool(CancellationToken cancellationToken)
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Starting mempool monitoring loop");
+
+        var frames = new List<byte[]>(3);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var socket = _txSocket;
+                if (socket is null)
+                    return;
+
+                if (!socket.TryReceiveMultipartBytes(TimeSpan.FromMilliseconds(100), ref frames, 3))
+                    continue;
+
+                if (frames.Count < 2 || Encoding.ASCII.GetString(frames[0]) != "rawtx")
+                    continue;
+
+                ProcessMempoolTransaction(Transaction.Load(frames[1], _network));
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogError(ex, "Error in the mempool monitoring loop");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Processes the queued blocks in order, rewinding first when a block does not extend the chain we processed.
+    /// </summary>
+    /// <remarks>
+    /// Failure policy (NL-097): a block whose processing throws is retried up to
+    /// <see cref="MaxBlockProcessingAttempts"/> times with exponential backoff. If it still fails, this round halts:
+    /// the failing block and every later block stay queued, nothing is dropped, and the height is not advanced. The
+    /// next round (the next ZMQ block, or a restart, which refetches the blocks from bitcoind) starts over from the
+    /// failing block. Blocks are never skipped, because a skipped block could hide a funding confirmation, a deposit
+    /// or a spend of a watched output. The pending broadcasts are sent again after every round, also after a halted
+    /// one: a halt is when a failed channel's commitment most needs to reach the chain.
+    /// </remarks>
+    private async Task ProcessPendingBlocksAsync()
+    {
+        var cancellationToken = _cts?.Token ?? CancellationToken.None;
+
+        await _blockBacklogSemaphore.WaitAsync(cancellationToken);
         try
         {
-            await _blockBacklogSemaphore.WaitAsync();
-
-            while (_blocksToProcess.Count > 0)
-            {
-                var blockKvp = _blocksToProcess.First();
-                if (blockKvp.Key <= _lastProcessedBlockHeight)
-                    _logger.LogWarning("Possible reorg detected: Block {Height} is already processed.", blockKvp.Key);
-
-                ProcessBlock(blockKvp.Value, blockKvp.Key, uow);
-            }
+            await ProcessQueueAsync(cancellationToken);
         }
         finally
         {
             _blockBacklogSemaphore.Release();
         }
+
+        await RebroadcastPendingAsync();
     }
 
-    private async Task AddMissingBlocksToProcessAsync(uint currentHeight)
+    /// <summary>
+    /// Processes the queue until it is empty, or until the round halts (then <see cref="IsChainProcessingHalted"/> is
+    /// set).
+    /// </summary>
+    private async Task ProcessQueueAsync(CancellationToken cancellationToken)
     {
-        var lastProcessedHeight = _lastProcessedBlockHeight + 1;
-        if (currentHeight > lastProcessedHeight)
+        while (true)
         {
-            _logger.LogWarning("Processing missed blocks from height {LastProcessedHeight} to {CurrentHeight}",
-                               lastProcessedHeight, currentHeight);
-
-            for (var height = lastProcessedHeight; height < currentHeight; height++)
+            if (_blocksToProcess.Count == 0)
             {
-                if (_blocksToProcess.ContainsKey(height))
-                    continue;
+                // Refill from bitcoind the blocks that were left out because the queue was full
+                await FillQueueFromChainAsync();
+                if (_blocksToProcess.Count == 0)
+                    break;
+            }
 
-                // Add the missing block to the process queue
-                var blockAtHeight = await _bitcoinChainService.GetBlockAsync(height);
-                if (blockAtHeight is not null)
+            var (height, block) = _blocksToProcess.First();
+            var blockHash = new Hash(block.GetHash().ToBytes());
+
+            if (DoesNotExtendProcessedChain(height, block))
+            {
+                if (await IsProcessedTipActiveAsync())
                 {
-                    _blocksToProcess[height] = blockAtHeight;
+                    // Our last processed block is still bitcoind's block at its height, so this block is not in the
+                    // active chain (a late notification of a block that was reorged out): nothing to rewind
+                    _logger.LogWarning(
+                        "Block {Height} ({Hash}) is not in the active chain, which still holds every block we processed; dropping it",
+                        height, block.GetHash());
+                    _blocksToProcess.Remove(height);
+                    if (height > _lastProcessedBlockHeight
+                     && height <= await _bitcoinChainService.GetCurrentBlockHeightAsync())
+                    {
+                        // The stale block may have replaced the active block at its height in the queue
+                        var active = await _bitcoinChainService.GetBlockAsync(height);
+                        if (active is not null && active.GetHash() != block.GetHash())
+                            _blocksToProcess[height] = active;
+                    }
+
+                    continue;
                 }
-                else
+
+                _logger.LogWarning("Block {Height} ({Hash}) does not extend the processed chain: reorg", height,
+                                   block.GetHash());
+
+                // The fork is searched from our own tip down (not from the incoming block's height), never above
+                // bitcoind's tip
+                var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+                if (!await TryRewindAsync(Math.Min(_lastProcessedBlockHeight, tip)))
                 {
-                    _logger.LogError("Missing block at height {Height}", height);
+                    Halt($"a reorg at height {height} has no fork point in the header ring of {HeaderRingSize} "
+                       + "blocks");
+                    return;
                 }
+
+                continue;
+            }
+
+            if (height < _lastProcessedBlockHeight)
+            {
+                // Already processed (a repeated notification, e.g. after reconsiderblock), or older than the ring
+                if (!TryGetKnownHash(height, out var known) || !known.Equals(blockHash))
+                    _logger.LogWarning("Skipping block {Height} below the last processed block {Last}", height,
+                                       _lastProcessedBlockHeight);
+
+                _blocksToProcess.Remove(height);
+                continue;
+            }
+
+            if (!await TryProcessBlockWithRetriesAsync(block, height, cancellationToken))
+            {
+                Halt($"block {height} failed {MaxBlockProcessingAttempts} times in a row");
+                _logger.LogCritical(
+                    "Chain processing halted at block {Height} after {Attempts} failed attempts; {Pending} blocks remain queued and will be retried when the next block arrives or on restart",
+                    height, MaxBlockProcessingAttempts, _blocksToProcess.Count);
+                return;
             }
         }
+
+        IsChainProcessingHalted = false;
+        ChainProcessingHaltReason = null;
     }
 
-    private async Task ProcessNewBlock(Block block, uint currentHeight)
+    /// <summary>Sets the halt (NL-216): the flag, with a reason for the operator (<c>chainstatus</c>).</summary>
+    private void Halt(string reason)
     {
-        using var scope = _serviceProvider.CreateScope();
-        using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-        var blockHash = block.GetHash();
-
-        try
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-                _logger.LogDebug("Processing block at height {blockHeight}: {BlockHash}", currentHeight, blockHash);
-
-            // Check for missed blocks first
-            await AddMissingBlocksToProcessAsync(currentHeight);
-
-            // Store the current block for processing
-            _blocksToProcess[currentHeight] = block;
-
-            // Process missing blocks
-            await ProcessPendingBlocksAsync(uow);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error processing new block {BlockHash}", blockHash);
-        }
-
-        await uow.SaveChangesAsync();
+        ChainProcessingHaltReason = reason;
+        IsChainProcessingHalted = true;
     }
 
-    // TODO: Check for revocation transactions in mempool
-    // private async Task ProcessNewTransaction(byte[] rawTxBytes)
-    // {
-    //     try
-    //     {
-    //         var transaction = Transaction.Load(rawTxBytes, Network.Main);
-    //     }
-    //     catch (Exception ex)
-    //     {
-    //         _logger.LogError(ex, "Error processing new transaction from mempool");
-    //     }
-    // }
-
-    private void ProcessBlock(Block block, uint height, IUnitOfWork uow)
+    /// <summary>
+    /// True when bitcoind's block at our last processed height is the one we processed there, i.e. every block we
+    /// processed is still in the active chain.
+    /// </summary>
+    private async Task<bool> IsProcessedTipActiveAsync()
     {
-        try
-        {
-            var blockHash = block.GetHash();
+        if (!TryGetKnownHash(_lastProcessedBlockHeight, out var known))
+            return false;
 
-            if (_logger.IsEnabled(LogLevel.Debug))
-                _logger.LogDebug("Processing block {Height} with {TxCount} transactions", height,
-                                 block.Transactions.Count);
+        if (await _bitcoinChainService.GetCurrentBlockHeightAsync() < _lastProcessedBlockHeight)
+            return false;
 
-            // Notify listeners of the new block
-            OnNewBlockDetected?.Invoke(this, new NewBlockEventArgs(height, blockHash.ToBytes()));
-
-            // Check if watched transactions are included in this block
-            CheckBlockForWatchedTransactions(block.Transactions, height, uow);
-
-            // Check for deposits in this block
-            CheckBlockForWalletMovement(block.Transactions, height, uow);
-
-            // Update blockchain state
-            _blockchainState.UpdateState(blockHash.ToBytes(), height);
-            uow.BlockchainStateDbRepository.Update(_blockchainState);
-
-            _blocksToProcess.Remove(height);
-
-            // Update our internal state
-            _lastProcessedBlockHeight = height;
-
-            // Check watched for all transactions' depth
-            CheckWatchedTransactionsDepth(uow);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error processing block at height {Height}", height);
-        }
+        var chainHash = await _bitcoinChainService.GetBlockHashAsync(_lastProcessedBlockHeight);
+        return known.Equals(new Hash(chainHash.ToBytes()));
     }
 
-    private void ConfirmTransaction(uint blockHeight, IUnitOfWork uow, WatchedTransactionModel watchedTransaction)
+    /// <summary>
+    /// True when the block cannot follow what we processed: its hash differs from the one we processed at its height,
+    /// or it is the next block and its parent is not our tip. Without a stored hash to compare, false.
+    /// </summary>
+    private bool DoesNotExtendProcessedChain(uint height, Block block)
     {
-        if (_logger.IsEnabled(LogLevel.Information))
-            _logger.LogInformation(
-                "Transaction {TxId} reached required depth of {depth} confirmations at block {blockHeight}",
-                watchedTransaction.TransactionId, watchedTransaction.RequiredDepth, blockHeight);
+        var blockHash = new Hash(block.GetHash().ToBytes());
+        if (TryGetKnownHash(height, out var known))
+            return !known.Equals(blockHash);
 
-        watchedTransaction.MarkAsCompleted();
-        uow.WatchedTransactionDbRepository.Update(watchedTransaction);
-        OnTransactionConfirmed?.Invoke(
-            this, new TransactionConfirmedEventArgs(watchedTransaction, blockHeight));
+        if (height == _lastProcessedBlockHeight + 1 && TryGetKnownHash(_lastProcessedBlockHeight, out var tip))
+            return !tip.Equals(new Hash(block.Header.HashPrevBlock.ToBytes()));
 
-        _watchedTransactions.TryRemove(new uint256(watchedTransaction.TransactionId), out _);
+        return false;
     }
 
-    private void CheckBlockForWatchedTransactions(List<Transaction> blockTransactions, uint blockHeight,
-                                                  IUnitOfWork uow)
+    /// <summary>The hash we processed at a height: from the header ring, or the state's hash for its own height.</summary>
+    private bool TryGetKnownHash(uint height, out Hash hash)
     {
-        if (_logger.IsEnabled(LogLevel.Debug))
-            _logger.LogDebug(
-                "Checking {watchedTransactionCount} watched transactions for block {height} with {TxCount} transactions",
-                _watchedTransactions.Count, blockHeight, blockTransactions.Count);
-
-        ushort index = 0;
-        foreach (var transaction in blockTransactions)
+        if (_headers.TryGetValue(height, out var header))
         {
-            var txId = transaction.GetHash();
+            hash = header.BlockHash;
+            return true;
+        }
 
-            if (!_watchedTransactions.TryGetValue(txId, out var watchedTransaction))
-                continue;
+        if (height == _blockchainState.LastProcessedHeight && !_blockchainState.LastProcessedBlockHash.Equals(Hash.Empty))
+        {
+            hash = _blockchainState.LastProcessedBlockHash;
+            return true;
+        }
 
-            _logger.LogInformation("Transaction {TxId} found in block at height {Height}", txId, blockHeight);
+        hash = Hash.Empty;
+        return false;
+    }
 
+    private async Task<bool> TryProcessBlockWithRetriesAsync(Block block, uint height,
+                                                             CancellationToken cancellationToken)
+    {
+        using var silentPaymentLease = _silentPaymentScanner is { } scanner
+            ? await scanner.EnterAsync(cancellationToken) : null;
+        var delay = BlockRetryBaseDelay;
+        for (var attempt = 1; attempt <= MaxBlockProcessingAttempts; attempt++)
+        {
+            BlockEffects? effects = null;
+            IReadOnlyList<WalletAddressModel> discoveredAddresses = [];
             try
             {
-                // Update first seen height
-                watchedTransaction.SetHeightAndIndex(blockHeight, index);
-                uow.WatchedTransactionDbRepository.Update(watchedTransaction);
-
-                if (watchedTransaction.RequiredDepth == 0)
-                    ConfirmTransaction(blockHeight, uow, watchedTransaction);
+                var prepared = await PrepareSilentPaymentBlockAsync(block, height, cancellationToken);
+                using var historyLease = _serviceProvider.GetService<Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate>() is { } historyGate
+                    ? await historyGate.EnterAsync(cancellationToken) : null;
+                using var scope = _serviceProvider.CreateScope();
+                using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                effects = await StageBlockAsync(block, height, uow, prepared);
+                var outputScripts = block.Transactions.SelectMany(transaction => transaction.Outputs)
+                    .Select(output => output.ScriptPubKey).ToHashSet();
+                var usedNamedAddresses = uow.WalletAddressesDbRepository.GetAllAddresses()
+                    .Where(address => address.AccountIndex != 0 && outputScripts.Contains(
+                        BitcoinAddress.Create(address.Address, _network).ScriptPubKey)).ToArray();
+                using var accountLease = usedNamedAddresses.Length > 0
+                    ? await WalletAccountService.EnterDiscoveryAsync(cancellationToken) : null;
+                if (usedNamedAddresses.Length > 0 && scope.ServiceProvider.GetService<WalletAccountService>() is { } accounts)
+                    discoveredAddresses = await accounts.StageOwnedDiscoveryAsync(uow, usedNamedAddresses, cancellationToken);
+                await uow.SaveChangesAsync();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error checking confirmations for transaction {TxId}", txId);
+                effects = null;
+                _logger.LogError(ex, "Error processing block at height {Height} (attempt {Attempt} of {MaxAttempts})",
+                                 height, attempt, MaxBlockProcessingAttempts);
             }
-            finally
+
+            if (effects is not null)
             {
-                index++;
+                Raise(() => OnWalletTransactionsProcessing?.Invoke(this, EventArgs.Empty), "wallet transactions processing");
+                ApplyBlock(effects);
+                foreach (var address in discoveredAddresses) WatchBitcoinAddress(address);
+                RaiseBlockEvents(effects, block);
+                return true;
+            }
+
+            if (attempt < MaxBlockProcessingAttempts && delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, cancellationToken);
+                delay *= 2;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Stages everything one block changes in <paramref name="uow"/> without touching memory, and returns what to
+    /// apply and raise once the unit of work is saved.
+    /// </summary>
+    private async Task<BlockEffects> StageBlockAsync(Block block, uint height, IUnitOfWork uow,
+                                                    PreparedSilentPaymentBlock? silentPayments = null)
+    {
+        var blockHash = new Hash(block.GetHash().ToBytes());
+        var effects = new BlockEffects(height, blockHash,
+                                       new BlockHeaderModel(height, blockHash,
+                                                            new Hash(block.Header.HashPrevBlock.ToBytes())));
+        var transactions = block.Transactions;
+        if (silentPayments is not null)
+            foreach (var output in silentPayments.Matches.Where(output => !output.Ignored))
+                effects.SilentPaymentOutputs.Add(new OutPoint(new uint256((byte[])output.TransactionId), output.Index));
+        await StageSilentPaymentInputOwnershipAsync(silentPayments, uow, effects, block);
+        Dictionary<uint256, uint256>? replacedMembers = null;
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Processing block {Height} with {TxCount} transactions", height, transactions.Count);
+
+        // Transactions we watch or broadcast. The index is the position within the block (all txs, coinbase
+        // included), as BOLT 7 requires for short_channel_id.
+        for (var index = 0; index < transactions.Count; index++)
+        {
+            var txId = transactions[index].GetHash();
+
+            if (_watchedTransactions.TryGetValue(txId, out var watched) && watched.FirstSeenAtHeight is null
+                                                                         && !effects.Watches.ContainsKey(txId))
+            {
+                _logger.LogInformation("Transaction {TxId} found in block at height {Height}", txId, height);
+
+                var seen = new WatchedTransactionModel(watched.ChannelId, watched.TransactionId,
+                                                       watched.RequiredDepth);
+                seen.SetHeightAndIndex(height, (uint)index);
+                uow.WatchedTransactionDbRepository.Update(seen);
+                effects.Watches[txId] = seen;
+
+                // A channel's funding transaction: from now on its funding output is watched (both roles)
+                var fundingWatch =
+                    await uow.WatchedOutpointDbRepository.AddFundingOutpointIfMissingAsync(seen.ChannelId,
+                        seen.TransactionId);
+                if (fundingWatch is not null)
+                    effects.NewOutpoints.Add(fundingWatch);
+            }
+
+            if (_pendingBroadcasts.ContainsKey(txId))
+            {
+                // The stored row as it was before this block (the accounting feed records a confirmation once, NL-602).
+                // NL-606: the block decides, not the row's state: a row another component marked Replaced or
+                // Abandoned after this memory copy was taken confirmed all the same
+                var stored = await TryGetBroadcastForAccountingAsync(uow, new TxId(txId.ToBytes()));
+                await uow.BroadcastTransactionDbRepository.MarkConfirmedAsync(new TxId(txId.ToBytes()), height,
+                                                                               blockHash);
+                effects.ConfirmedBroadcasts.Add(txId);
+                if (stored is not null && stored.State != BroadcastState.Confirmed)
+                    await CollectBroadcastConfirmedAsync(uow, stored, transactions[index], effects);
+
+                // A transaction a pending RBF replacement replaced, still in memory: that replacement is now void
+                replacedMembers ??= await GetReplacedChainMembersAsync(uow);
+                if (replacedMembers.TryGetValue(txId, out var voided) && voided != txId)
+                    await StageReplacementVoidedAsync(uow, voided, txId, effects);
+            }
+            else
+            {
+                replacedMembers ??= await GetReplacedChainMembersAsync(uow);
+                if (replacedMembers.TryGetValue(txId, out var head))
+                    await StageReplacedMemberConfirmedAsync(uow, txId, head, transactions[index], height, blockHash,
+                                                            effects);
+            }
+        }
+
+        await StageSilentPaymentReceiptsAsync(silentPayments, uow, effects, block);
+        StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
+        await StageSilentPaymentSpendsAndStateAsync(silentPayments, height, uow, effects, block);
+        await StageWalletHistoryAsync(transactions, block.Header.BlockTime, uow, effects);
+        await StageAccountingAsync(uow, effects);
+        await StageSilentPaymentSettlementsAsync(silentPayments, uow, effects, block);
+        if (silentPayments is not null)
+            await WalletRecoveryAccounting.StageWalletHistoryAsync(uow, block, height, CancellationToken.None);
+        await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
+        StageWatchedTransactionDepths(height, uow, effects);
+
+        // Blockchain state (a replay of the last processed block keeps its height)
+        effects.State = _blockchainState with { };
+        if (height >= effects.State.LastProcessedHeight)
+            effects.State.UpdateState(blockHash, height);
+        uow.BlockchainStateDbRepository.Update(effects.State);
+
+        // Header ring
+        await uow.BlockHeaderDbRepository.AddOrReplaceAsync(effects.Header);
+        if (height >= HeaderRingSize)
+            await uow.BlockHeaderDbRepository.DeleteBelowAsync(height - (uint)HeaderRingSize + 1);
+
+        return effects;
+    }
+
+    /// <summary>Stages the spends of every watched outpoint the block's transactions spend.</summary>
+    private async Task StageWatchedSpendsAsync(List<Transaction> transactions, uint height, Hash blockHash,
+                                               IUnitOfWork uow, BlockEffects effects)
+    {
+        if (_watchedOutpoints.IsEmpty && effects.NewOutpoints.Count == 0)
+            return;
+
+        for (var index = 0; index < transactions.Count; index++)
+        {
+            var transaction = transactions[index];
+            foreach (var input in transaction.Inputs)
+            {
+                if (!_watchedOutpoints.TryGetValue(input.PrevOut, out var channelId))
+                {
+                    var added = effects.NewOutpoints.FirstOrDefault(o => o.OutputIndex == input.PrevOut.N
+                                                                      && new uint256(o.TransactionId)
+                                                                     == input.PrevOut.Hash);
+                    if (added is null)
+                        continue;
+
+                    channelId = added.ChannelId;
+                }
+
+                var txId = transaction.GetHash();
+                _logger.LogInformation(
+                    "Watched outpoint {Outpoint} of channel {ChannelId} spent by {TxId} at height {Height}",
+                    input.PrevOut, channelId, txId, height);
+
+                var spentTxId = new TxId(input.PrevOut.Hash.ToBytes());
+                var spendingTxId = new TxId(txId.ToBytes());
+                await uow.WatchedOutpointDbRepository.MarkSpentAsync(spentTxId, input.PrevOut.N, spendingTxId,
+                                                                     height, blockHash);
+                effects.Spends.Add(new OutpointSpentEventArgs(channelId,
+                                                              new SignedTransaction(spendingTxId,
+                                                                                    transaction.ToBytes()),
+                                                              height, (uint)index, spentTxId, input.PrevOut.N,
+                                                              blockHash));
             }
         }
     }
 
-    private void CheckBlockForWalletMovement(List<Transaction> transactions, uint blockHeight, IUnitOfWork uow)
+    private void StageWalletMovements(List<Transaction> transactions, uint blockHeight, DateTimeOffset blockTime, IUnitOfWork uow,
+                                      BlockEffects effects)
     {
-        if (_watchedAddresses.IsEmpty)
+        if (_watchedAddresses.IsEmpty && _silentPaymentScanner is null)
             return;
 
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Checking {AddressCount} watched addresses for deposits/spends in block {Height}",
                              _watchedAddresses.Count, blockHeight);
 
+        var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>();
         foreach (var transaction in transactions)
         {
             var txId = transaction.GetHash();
+            WalletTransactionSource? source = null;
+            // The wallet's change of this transaction as the feed records it (deposits minus spends, NL-1186 review: a
+            // collaborative transaction books its net flow against the clearing account the movements post to)
+            long recordedWalletDeltaMsat = 0;
+            var recordedMovement = false;
+            if (DescribeWalletTransaction(transaction, blockHeight, new uint256((byte[])effects.BlockHash).ToString(),
+                                          effects.StagedDeposits, timestamp: blockTime) is { } observed)
+                effects.WalletTransactions.Add(observed);
 
             // Check each output for deposits
             for (var i = 0; i < transaction.Outputs.Count; i++)
@@ -529,44 +1433,909 @@ public class BlockchainMonitorService : IBlockchainMonitor
                         "Deposit detected: {amount} to address {destinationAddress} in tx {txId} at block {height}",
                         output.Value, destinationAddress, txId, blockHeight);
 
-                // Save Utxo to the database
+                // A block can be processed again (the last processed block is replayed on start, and a failed block is
+                // retried), so a deposit we already track must not be added twice (NL-097).
+                utxoMemoryRepository ??= _serviceProvider.GetRequiredService<IUtxoMemoryRepository>();
+                if (utxoMemoryRepository.TryGetUtxo(new TxId(txId.ToBytes()), (uint)i, out var existing)
+                    && existing.BlockHeight != 0)
+                {
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                        _logger.LogDebug("Utxo {TxId}:{Index} is already known, skipping", txId, i);
+
+                    continue;
+                }
+
+                // Save Utxo to the database (memory follows the save, UnitOfWork)
                 var utxo = new UtxoModel(txId.ToBytes(), (uint)i, LightningMoney.Satoshis(output.Value.Satoshi),
                                          blockHeight, watchedAddress);
                 uow.AddUtxo(utxo);
+                effects.StagedDeposits[new OutPoint(txId, i)] = utxo;
 
-                if (!_watchedAddresses.TryRemove(destinationAddress.ToString(), out _))
-                    _logger.LogError("Unable to remove watched address {DestinationAddress} from the list",
-                                     destinationAddress);
+                // NL-602/NL-603: the deposit in the accounting feed (memory guard above: once per output)
+                source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
+                CollectWalletReceived(utxo, watchedAddress, source, effects);
+                recordedWalletDeltaMsat += checked((long)utxo.Amount.MilliSatoshi);
+                recordedMovement = true;
 
-                OnWalletMovementDetected
-                  ?.Invoke(this, new WalletMovementEventArgs(destinationAddress.ToString(),
-                                                             LightningMoney.Satoshis(output.Value.Satoshi),
-                                                             txId.ToBytes(),
-                                                             blockHeight));
+                // The address stays watched (as after a restart, which reloads every wallet address): the wallet hands
+                // an address out again once its deposits are spent, and two channels closing at once can get the
+                // same shutdown address, so a later deposit to it must be found too
+                effects.Movements.Add(new WalletMovementEventArgs(destinationAddress.ToString(),
+                                                                  LightningMoney.Satoshis(output.Value.Satoshi),
+                                                                  txId.ToBytes(), blockHeight, (uint)i));
             }
 
             // Check each input for spent utxos
             foreach (var input in transaction.Inputs)
-                uow.TrySpendUtxo(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N);
+            {
+                var spentTxId = new TxId(input.PrevOut.Hash.ToBytes());
+
+                // What the spend removes (TrySpendUtxo is a no-op for an output we do not hold): the wallet output in
+                // memory, or one this block deposited
+                UtxoModel? spent = null;
+                if (effects.StagedDeposits.TryGetValue(input.PrevOut, out var deposited))
+                    spent = deposited;
+                else if (utxoMemoryRepository?.TryGetUtxo(spentTxId, input.PrevOut.N, out var known) == true)
+                    spent = known;
+
+                uow.TrySpendUtxo(spentTxId, input.PrevOut.N);
+                if (spent is null)
+                    continue;
+
+                source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
+                CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects,
+                    spent.SilentPayment is not null ? blockTime : null);
+                recordedWalletDeltaMsat -= checked((long)spent.Amount.MilliSatoshi);
+                recordedMovement = true;
+            }
+
+            if (_silentPaymentScanner is null && recordedMovement && source is { Purpose: BroadcastPurpose.WalletCollaborative })
+                CollectWalletCollaborativeFlow(transaction, source, recordedWalletDeltaMsat, effects);
         }
     }
 
-    private void CheckWatchedTransactionsDepth(IUnitOfWork uow)
+    /// <summary>
+    /// Stages the block's wallet transactions in the wallet's durable history (NL-1187), in the block's own save: the
+    /// raw transaction, the block and the wallet's outputs and inputs as <see cref="DescribeWalletTransaction"/> found
+    /// them (the same description <c>SubscribeTransactions</c> publishes). A stored transaction a reorg unconfirmed is
+    /// confirmed again by any block that holds it, whatever the description finds (a spend without a wallet output whose
+    /// inputs the rollback could not restore, because bitcoind's mempool still spends them, is described as nothing),
+    /// and is removed once a block confirms a conflicting spend of one of its inputs.
+    /// </summary>
+    private async Task StageWalletHistoryAsync(List<Transaction> transactions, DateTimeOffset blockTime,
+                                               IUnitOfWork uow, BlockEffects effects)
     {
-        foreach (var (txId, watchedTransaction) in _watchedTransactions)
+        if (uow.WalletTransactionDbRepository is not { } history)
+            return;
+
+        var staged = new HashSet<TxId>();
+        foreach (var observed in effects.WalletTransactions)
+        {
+            var inputs = new List<WalletTransactionInput>(observed.OurInputs.Count);
+            for (var i = 0; i < observed.OurInputs.Count && i < observed.OurInputAmounts.Count; i++)
+                inputs.Add(new WalletTransactionInput(observed.OurInputs[i], observed.OurInputAmounts[i]));
+
+            var txId = new TxId(uint256.Parse(observed.TxHash).ToBytes());
+            staged.Add(txId);
+            await history.StageConfirmedAsync(WalletTransactionHistory.Describe(
+                Transaction.Load(Convert.FromHexString(observed.RawTransactionHex), _network), effects.Height,
+                effects.BlockHash, observed.Timestamp, observed.OurOutputs.ToList(), inputs));
+        }
+
+        var unconfirmed = await history.GetUnconfirmedAsync(CancellationToken.None);
+        if (unconfirmed.Count == 0)
+            return;
+
+        var inBlock = new Dictionary<TxId, Transaction>(transactions.Count);
+        var spentInBlock = new Dictionary<OutPoint, uint256>();
+        foreach (var transaction in transactions)
+        {
+            var hash = transaction.GetHash();
+            inBlock[new TxId(hash.ToBytes())] = transaction;
+            if (transaction.IsCoinBase)
+                continue;
+
+            foreach (var input in transaction.Inputs)
+                spentInBlock.TryAdd(input.PrevOut, hash);
+        }
+
+        foreach (var record in unconfirmed)
+        {
+            if (staged.Contains(record.TxId))
+                continue;
+
+            if (inBlock.TryGetValue(record.TxId, out var confirmed))
+            {
+                // Its stored ownership is kept (the record carries none to add)
+                await history.StageConfirmedAsync(WalletTransactionHistory.Describe(
+                    confirmed, effects.Height, effects.BlockHash, blockTime, record.OurOutputs, record.OurInputs));
+                continue;
+            }
+
+            Transaction stored;
+            try
+            {
+                stored = Transaction.Load(record.RawTransaction, _network);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            if (!stored.IsCoinBase && stored.Inputs.Any(i => spentInBlock.ContainsKey(i.PrevOut)))
+                await history.StageRemoveAsync(record.TxId);
+        }
+    }
+
+    /// <summary>Stages the completion of every watched transaction that reaches its depth at this height.</summary>
+    private void StageWatchedTransactionDepths(uint height, IUnitOfWork uow, BlockEffects effects)
+    {
+        foreach (var (txId, memoryWatch) in _watchedTransactions)
+        {
+            var watch = effects.Watches.GetValueOrDefault(txId) ?? memoryWatch;
+            if (watch.IsCompleted || watch.FirstSeenAtHeight is not { } firstSeen || firstSeen > height)
+                continue;
+
+            // The FirstSeenAtHeight represents 1 confirmation, so we have to add 1
+            var confirmations = height - firstSeen + 1;
+            if (confirmations < watch.RequiredDepth)
+                continue;
+
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation(
+                    "Transaction {TxId} reached required depth of {depth} confirmations at block {blockHeight}",
+                    watch.TransactionId, watch.RequiredDepth, height);
+
+            var completed = CopyWatch(watch);
+            completed.MarkAsCompleted();
+            uow.WatchedTransactionDbRepository.Update(completed);
+            effects.Watches[txId] = completed;
+            effects.Confirmed.Add(completed);
+        }
+    }
+
+    /// <summary>Applies a saved block to memory.</summary>
+    private void ApplyBlock(BlockEffects effects)
+    {
+        foreach (var (txId, watch) in effects.Watches)
+        {
+            if (watch.IsCompleted)
+                _watchedTransactions.TryRemove(txId, out _);
+            else
+                _watchedTransactions[txId] = watch;
+        }
+
+        foreach (var outpoint in effects.NewOutpoints)
+            TrackWatchedOutpoint(outpoint);
+
+        foreach (var txId in effects.ConfirmedBroadcasts)
+        {
+            _pendingBroadcasts.TryRemove(txId, out _);
+            ForgetRefusals(txId);
+        }
+
+        _headers[effects.Height] = effects.Header;
+        while (_headers.Count > HeaderRingSize)
+            _headers.Remove(_headers.Keys.First());
+
+        _blockchainState = effects.State!;
+        _blocksToProcess.Remove(effects.Height);
+        if (effects.Height > _lastProcessedBlockHeight || _lastProcessedBlockHeight == effects.State!.LastProcessedHeight)
+            _lastProcessedBlockHeight = effects.State!.LastProcessedHeight;
+    }
+
+    /// <summary>
+    /// Raises a saved block's events: the block, its spent outpoints, confirmations, wallet movements, outpoint spends.
+    /// </summary>
+    private void RaiseBlockEvents(BlockEffects effects, Block block)
+    {
+        Raise(() => OnNewBlockDetected?.Invoke(this, new NewBlockEventArgs(effects.Height, effects.BlockHash)),
+              "new block");
+
+        // The spent outpoints are listed only when someone listens (the graph pruner, BOLT 7 G2-T5)
+        if (OnBlockInputs is { } blockInputs)
+        {
+            var spent = new List<(TxId, uint)>();
+            foreach (var transaction in block.Transactions)
+            {
+                if (transaction.IsCoinBase)
+                    continue;
+
+                foreach (var input in transaction.Inputs)
+                    spent.Add((new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N));
+            }
+
+            Raise(() => blockInputs(this, new BlockInputsEventArgs(effects.Height, effects.BlockHash, spent)),
+                  "block inputs");
+        }
+
+        foreach (var confirmed in effects.Confirmed)
+            Raise(() => OnTransactionConfirmed?.Invoke(this, new TransactionConfirmedEventArgs(confirmed,
+                                                          effects.Height)), "transaction confirmation");
+
+        foreach (var observed in effects.WalletTransactions)
+            RaiseWalletTransaction(observed);
+
+        Raise(() => OnWalletTransactionsProcessed?.Invoke(this, new NewBlockEventArgs(effects.Height, effects.BlockHash)), "wallet transactions processed");
+
+        foreach (var movement in effects.Movements)
+            Raise(() => OnWalletMovementDetected?.Invoke(this, movement), "wallet movement");
+
+        foreach (var spend in effects.Spends)
+            Raise(() => OnWatchedOutpointSpent?.Invoke(this, spend), "outpoint spend");
+    }
+
+    private void Raise(Action raise, string what)
+    {
+        try
+        {
+            raise();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "A {What} handler failed", what);
+        }
+    }
+
+    /// <summary>
+    /// Rewinds to the highest block at or below <paramref name="searchFrom"/> that is still in the active chain: rolls
+    /// back what the disconnected blocks changed in one save, reloads memory, raises
+    /// <see cref="OnBlockDisconnected"/> and queues the active chain from the fork point up to its tip. False when no
+    /// fork point is found within the header ring or the rollback fails.
+    /// </summary>
+    private async Task<bool> TryRewindAsync(uint searchFrom)
+    {
+        using var silentPaymentLease = _silentPaymentScanner is { } scanner
+            ? await scanner.EnterAsync() : null;
+        using var historyLease = _serviceProvider.GetService<Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate>() is { } historyGate
+            ? await historyGate.EnterAsync() : null;
+        try
+        {
+            uint? fork = null;
+            for (var height = (long)searchFrom; height >= 0; height--)
+            {
+                if (!TryGetKnownHash((uint)height, out var known))
+                    break;
+
+                var chainHash = await _bitcoinChainService.GetBlockHashAsync((uint)height);
+                if (known.Equals(new Hash(chainHash.ToBytes())))
+                {
+                    fork = (uint)height;
+                    break;
+                }
+            }
+
+            if (fork is not { } forkHeight || !TryGetKnownHash(forkHeight, out var forkHash))
+            {
+                _logger.LogCritical(
+                    "Reorg below block {Height} is deeper than the {Ring} blocks we keep; chain processing halted",
+                    searchFrom, HeaderRingSize);
+                return false;
+            }
+
+            var disconnected = _headers.Values.Where(h => h.Height > forkHeight).OrderByDescending(h => h.Height)
+                                       .ToList();
+            if (_lastProcessedBlockHeight > forkHeight && disconnected.All(h => h.Height != _lastProcessedBlockHeight))
+                disconnected.Insert(0, new BlockHeaderModel(_lastProcessedBlockHeight,
+                                                            _blockchainState.LastProcessedBlockHash, Hash.Empty));
+
+            var disconnectedWalletTransactions = await DescribeDisconnectedWalletTransactionsAsync(disconnected);
+            var rewoundState = new BlockchainState(forkHeight, forkHash, DateTime.UtcNow) { Id = _blockchainState.Id };
+
+            // NL-293: wallet outputs spent in the disconnected blocks that are unspent in the active chain again (a
+            // failed lookup restores nothing: the rewind itself must not fail over it)
+            List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address, uint SpentHeight)>
+                restoredUtxos;
+            try
+            {
+                restoredUtxos = await FindWalletOutputsUnspentAgainAsync(disconnected);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Could not look up the wallet outputs spent in the disconnected blocks; they are "
+                                   + "not restored");
+                restoredUtxos = [];
+            }
+
+            IReadOnlyList<WatchedTransactionModel> completedInDisconnected;
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                completedInDisconnected =
+                    await uow.WatchedTransactionDbRepository.GetCompletedFirstSeenAboveAsync(forkHeight);
+                var resetWatches = await uow.WatchedTransactionDbRepository.ResetPendingFirstSeenAboveAsync(forkHeight);
+
+                // NL-292: a watch that completed in a disconnected block is pending again, so its confirmation (the
+                // funding depth and the short channel id) is raised again from its position on the new branch
+                foreach (var completed in completedInDisconnected)
+                    uow.WatchedTransactionDbRepository.Update(new WatchedTransactionModel(completed.ChannelId,
+                        completed.TransactionId, completed.RequiredDepth));
+
+                var clearedSpends = await uow.WatchedOutpointDbRepository.ClearSpendsAboveAsync(forkHeight);
+                var unconfirmed = await uow.BroadcastTransactionDbRepository.UnconfirmAboveAsync(forkHeight);
+                // NL-1187: the wallet's history follows the rewind in the same save
+                if (uow.WalletTransactionDbRepository is { } walletHistory)
+                {
+                    await walletHistory.UnconfirmAboveAsync(forkHeight);
+                    var job = await walletHistory.GetRescanStateAsync(CancellationToken.None);
+                    if (job?.CursorHeight is { } cursor && cursor > forkHeight)
+                        await walletHistory.StageRescanStateAsync(job with
+                        {
+                            CursorHeight = forkHeight >= job.AvailableFromHeight ? forkHeight : job.AvailableFromHeight == 0 ? null : job.AvailableFromHeight - 1,
+                            CursorHash = null,
+                            // Completed jobs repair their history; an explicitly cancelled partial job stays stopped.
+                            IsActive = job.IsActive || cursor == job.TargetHeight,
+                            Error = null
+                        }, CancellationToken.None);
+                }
+                var (removedDeposits, restoredSpends) = await StageWalletRollbackAsync(uow, forkHeight, restoredUtxos);
+                await StageReorgReversalsAsync(uow, forkHeight, removedDeposits, restoredSpends);
+                await uow.BlockHeaderDbRepository.DeleteAboveAsync(forkHeight);
+                uow.BlockchainStateDbRepository.Update(rewoundState);
+                await uow.SaveChangesAsync();
+
+                _logger.LogWarning(
+                    "Reorg: rewound from block {From} to fork point {Fork} ({Count} blocks disconnected); reset {Watches} watched transactions ({Completed} of them completed), {Spends} outpoint spends and {Broadcasts} broadcast confirmations; removed {Deposits} wallet deposits and restored {Restored} wallet outputs",
+                    _lastProcessedBlockHeight, forkHeight, disconnected.Count, resetWatches + completedInDisconnected.Count,
+                    completedInDisconnected.Count, clearedSpends, unconfirmed, removedDeposits.Count,
+                    restoredSpends.Count);
+            }
+
+            foreach (var watch in completedInDisconnected)
+                _logger.LogWarning(
+                    "Transaction {TxId} of channel {ChannelId} had reached its depth in block {Height}, which was disconnected; it is watched again from the new branch",
+                    watch.TransactionId, watch.ChannelId, watch.FirstSeenAtHeight);
+
+            Raise(() => OnWalletTransactionsProcessing?.Invoke(this, EventArgs.Empty), "wallet transactions processing");
+            foreach (var header in disconnected)
+                _headers.Remove(header.Height);
+            _blockchainState = rewoundState;
+            _lastProcessedBlockHeight = forkHeight;
+
+            // The rewind is committed. Publish before any subsequent reload or chain RPC can fail.
+            foreach (var observed in disconnectedWalletTransactions)
+                RaiseWalletTransaction(observed);
+
+            Raise(() => OnWalletTransactionsProcessed?.Invoke(this, new NewBlockEventArgs(forkHeight, forkHash)), "wallet transactions processed");
+
+            // Memory follows the saved rows
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                _watchedTransactions.Clear();
+                await LoadPendingWatchedTransactionsAsync(uow);
+                foreach (var broadcast in await uow.BroadcastTransactionDbRepository.GetPendingAsync())
+                    _pendingBroadcasts[new uint256(broadcast.TransactionId)] = broadcast;
+
+                // A row the rollback made pending again may be looked up again (NL-779)
+                _confirmationLookups.Clear();
+            }
+
+            _blocksToProcess.Clear();
+            var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+            // The new branch may be shorter than the old one: never fetch above its tip
+            _catchUpHeight = tip + 1;
+            await FillQueueFromChainAsync();
+
+            foreach (var header in disconnected)
+                Raise(() => OnBlockDisconnected?.Invoke(this, new BlockDisconnectedEventArgs(header.Height,
+                                                            header.BlockHash, forkHeight)), "block disconnected");
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "Rewinding the chain below block {Height} failed; chain processing halted",
+                                searchFrom);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The wallet outputs that inputs of the disconnected blocks spent and that are unspent in the active chain again
+    /// (NL-293). A spent wallet row is deleted, so the output is read back from bitcoind (<c>gettxout</c> with the
+    /// mempool). An output whose spend is back in the mempool (the usual case) is not restored: coin selection would
+    /// otherwise double-spend our own pending transaction (a funding transaction replaced by full-RBF); it is left to
+    /// that spend confirming again. Candidates: P2WPKH inputs whose key is a wallet address, and every taproot key-path
+    /// input (its witness names no key); bitcoind confirms the script.
+    /// </summary>
+    private async Task<List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address, uint SpentHeight)>>
+        FindWalletOutputsUnspentAgainAsync(IReadOnlyList<BlockHeaderModel> disconnected)
+    {
+        var found = new List<(OutPoint, TxOut, uint, WalletAddressModel, uint)>();
+        if (_watchedAddresses.IsEmpty)
+            return found;
+
+        foreach (var header in disconnected)
+        {
+            if (header.BlockHash.Equals(Hash.Empty))
+                continue;
+
+            var block = await _bitcoinChainService.GetBlockAsync(new uint256((byte[])header.BlockHash));
+            if (block is null)
+            {
+                _logger.LogWarning("Disconnected block {Height} ({Hash}) can't be read; wallet outputs it spent are "
+                                 + "not restored", header.Height, header.BlockHash);
+                continue;
+            }
+
+            foreach (var transaction in block.Transactions.Where(t => !t.IsCoinBase))
+            {
+                foreach (var input in transaction.Inputs)
+                {
+                    if (!MayBeWalletInput(input))
+                        continue;
+
+                    var unspent = await _bitcoinChainService.GetUnspentOutputAsync(input.PrevOut);
+                    if (unspent is not { } output
+                     || output.Output.ScriptPubKey.GetDestinationAddress(_network) is not { } address
+                     || !_watchedAddresses.TryGetValue(address.ToString(), out var walletAddress))
+                        continue;
+
+                    found.Add((input.PrevOut, output.Output, output.Height, walletAddress, header.Height));
+                }
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>True for an input that may spend one of our wallet outputs (see
+    /// <see cref="FindWalletOutputsUnspentAgainAsync"/>).</summary>
+    private bool MayBeWalletInput(TxIn input)
+    {
+        var witness = input.WitScript.Pushes.ToArray();
+        if (witness is [_, { Length: 33 } pubKey])
         {
             try
             {
-                // The FirstSeenAtHeight represents 1 confirmation, so we have to add 1
-                var confirmations = _lastProcessedBlockHeight - watchedTransaction.FirstSeenAtHeight + 1;
-                if (confirmations >= watchedTransaction.RequiredDepth)
-                    ConfirmTransaction(_lastProcessedBlockHeight, uow, watchedTransaction);
+                var address = new PubKey(pubKey).WitHash.GetAddress(_network).ToString();
+                return _watchedAddresses.ContainsKey(address);
             }
-            catch (Exception ex)
+            catch (FormatException)
             {
-                _logger.LogError(ex, "Error checking confirmations for transaction {TxId}", txId);
+                return false;
             }
         }
+
+        // Taproot key path: one 64- or 65-byte signature
+        return witness is [{ Length: 64 or 65 }];
+    }
+
+    /// <summary>
+    /// Stages the wallet rollback of a reorg (NL-293): deposits confirmed above the fork are removed (they come back when
+    /// their transaction is mined on the new branch), outputs a disconnected block spent are added back.
+    /// </summary>
+    private async Task<(List<UtxoModel> Removed, List<(UtxoModel Utxo, uint SpentHeight)> Restored)>
+        StageWalletRollbackAsync(
+            IUnitOfWork uow, uint forkHeight,
+            IReadOnlyList<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address, uint SpentHeight)>
+                restored)
+    {
+        var removed = new List<UtxoModel>();
+        var unspent = await uow.UtxoDbRepository.GetUnspentAsync() ?? [];
+        foreach (var deposit in unspent.Where(u => u.BlockHeight > forkHeight))
+        {
+            if (deposit.LockedToChannelId is { } channelId && _logger.IsEnabled(LogLevel.Warning))
+                _logger.LogWarning("Wallet output {TxId}:{Index} locked to channel {ChannelId} was confirmed in a "
+                                 + "disconnected block; it is removed until its transaction confirms again",
+                                   deposit.TxId, deposit.Index, channelId);
+            uow.TrySpendUtxo(deposit.TxId, deposit.Index);
+            removed.Add(deposit);
+        }
+
+        var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>();
+        var restoredUtxos = new List<(UtxoModel, uint)>();
+        foreach (var (outPoint, output, height, address, spentHeight) in restored)
+        {
+            var txId = new TxId(outPoint.Hash.ToBytes());
+            if (utxoMemoryRepository?.TryGetUtxo(txId, outPoint.N, out _) == true)
+                continue;
+
+            if (_logger.IsEnabled(LogLevel.Warning))
+                _logger.LogWarning("Wallet output {OutPoint} ({Amount}) was spent in a disconnected block; it is "
+                                 + "spendable again", outPoint, output.Value);
+            var utxo = new UtxoModel(txId, outPoint.N, LightningMoney.Satoshis(output.Value.Satoshi), height, address);
+            uow.AddUtxo(utxo);
+            restoredUtxos.Add((utxo, spentHeight));
+        }
+
+        await StageSilentPaymentRollbackAsync(uow, forkHeight, removed, restoredUtxos);
+        return (removed, restoredUtxos);
+    }
+
+    /// <summary>
+    /// Sends every pending broadcast again (after every processing round and at startup), after dropping those whose
+    /// stored row is no longer pending (replaced by an RBF bump, abandoned, NL-294).
+    /// </summary>
+    private async Task RebroadcastPendingAsync()
+    {
+        await DropSettledBroadcastsAsync();
+        foreach (var broadcast in _pendingBroadcasts.Values.ToList())
+            await TrySendAsync(broadcast, settleConfirmed: true);
+    }
+
+    /// <summary>
+    /// The earlier members of every pending RBF replacement's chain (NL-606): each row a pending broadcast replaced,
+    /// followed back through <see cref="BroadcastTransactionModel.ReplacesTransactionId"/>, mapped to the pending head;
+    /// splice and funding attempts are left out (siblings kept Pending until the lock, NL-736).
+    /// A chain is read once per head and kept while the head is pending; a failed read is logged and retried at the next
+    /// block.
+    /// </summary>
+    private async Task<Dictionary<uint256, uint256>> GetReplacedChainMembersAsync(IUnitOfWork uow)
+    {
+        var members = new Dictionary<uint256, uint256>();
+        foreach (var headId in _replacementChains.Keys)
+            if (!_pendingBroadcasts.ContainsKey(headId))
+                _replacementChains.TryRemove(headId, out _);
+
+        foreach (var (headId, head) in _pendingBroadcasts)
+        {
+            // A splice RBF (or funding) attempt names the attempt it bumps but keeps it Pending on purpose (wave SPR):
+            // every attempt is sent until the splice lock abandons the losers, so a confirmed sibling never voids it
+            // (NL-736: voided, a reorg of the sibling's block left the splice without an attempt to send)
+            if (head.ReplacesTransactionId is null
+             || head.Purpose is BroadcastPurpose.Splice or BroadcastPurpose.Funding)
+                continue;
+
+            if (!_replacementChains.TryGetValue(headId, out var chain))
+            {
+                try
+                {
+                    var read = new List<uint256>();
+                    var replaces = head.ReplacesTransactionId;
+                    for (var steps = 0; replaces is { } earlier && steps < MaxReplacementChainLength; steps++)
+                    {
+                        var member = new uint256(earlier);
+                        if (member == headId || read.Contains(member))
+                            break;
+
+                        read.Add(member);
+                        replaces = (await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(earlier))
+                           ?.ReplacesTransactionId;
+                    }
+
+                    chain = read;
+                    _replacementChains[headId] = chain;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Cannot read the replaced transactions of {TxId}", headId);
+                    continue;
+                }
+            }
+
+            foreach (var member in chain)
+                members.TryAdd(member, headId);
+        }
+
+        return members;
+    }
+
+    /// <summary>
+    /// A transaction our pending RBF replacement <paramref name="headId"/> replaced confirmed instead of it (NL-606): its
+    /// row is marked <see cref="BroadcastState.Confirmed"/> (the block decides, whatever the row's state), the pending
+    /// head <see cref="BroadcastState.Replaced"/> (it can never confirm now) and forgotten after the save, and the
+    /// confirmation is recorded in the accounting feed like any confirmed broadcast's.
+    /// </summary>
+    private async Task StageReplacedMemberConfirmedAsync(IUnitOfWork uow, uint256 txId, uint256 headId,
+                                                         Transaction transaction, uint height, Hash blockHash,
+                                                         BlockEffects effects)
+    {
+        var memberTxId = new TxId(txId.ToBytes());
+        var stored = await TryGetBroadcastForAccountingAsync(uow, memberTxId);
+        if (stored is null || stored.State == BroadcastState.Confirmed)
+            return;
+
+        await uow.BroadcastTransactionDbRepository.MarkConfirmedAsync(memberTxId, height, blockHash);
+        effects.ConfirmedReplacedMembers[txId] = stored;
+        await CollectBroadcastConfirmedAsync(uow, stored, transaction, effects);
+        await StageReplacementVoidedAsync(uow, headId, txId, effects);
+    }
+
+    /// <summary>
+    /// The pending RBF replacement <paramref name="headId"/> can never confirm: <paramref name="confirmedId"/>, a
+    /// transaction it replaced, confirmed (NL-606). Its row is marked <see cref="BroadcastState.Replaced"/> and it is
+    /// forgotten after the block's save.
+    /// </summary>
+    private async Task StageReplacementVoidedAsync(IUnitOfWork uow, uint256 headId, uint256 confirmedId,
+                                                   BlockEffects effects)
+    {
+        await uow.BroadcastTransactionDbRepository.MarkReplacedAsync(new TxId(headId.ToBytes()));
+        effects.ConfirmedBroadcasts.Add(headId);
+
+        _logger.LogInformation("Transaction {TxId} confirmed instead of its RBF replacement {HeadId}, which is no "
+                             + "longer broadcast", confirmedId, headId);
+    }
+
+    /// <summary>
+    /// Forgets the in-memory pending broadcasts whose stored row another component moved out of
+    /// <see cref="BroadcastState.Pending"/> (the sweep scheduler's <see cref="BroadcastState.Replaced"/>, the watcher's
+    /// or scheduler's <see cref="BroadcastState.Abandoned"/>): they are never sent again. A transaction without a row is
+    /// kept. A failed read keeps them all (they are sent once more).
+    /// </summary>
+    private async Task DropSettledBroadcastsAsync()
+    {
+        if (_pendingBroadcasts.IsEmpty)
+            return;
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            foreach (var txId in _pendingBroadcasts.Keys.ToList())
+            {
+                var stored = await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(
+                                 new TxId(txId.ToBytes()));
+                if (stored is null || stored.State == BroadcastState.Pending)
+                    continue;
+
+                _pendingBroadcasts.TryRemove(txId, out _);
+                ForgetRefusals(txId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                    _logger.LogInformation("{Purpose} transaction {TxId} is {State}; it is no longer rebroadcast",
+                                           Enum.GetName(stored.Purpose), txId, Enum.GetName(stored.State));
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not check the stored state of the pending broadcasts");
+        }
+    }
+
+    /// <summary>
+    /// Sends a stored broadcast. True when the node accepted it or already has it; false when it was refused. A refusal
+    /// is logged at Warning the first time and then every <see cref="RefusalWarningInterval"/> refusals in a row (at
+    /// Debug in between), so a transaction the node keeps refusing stays visible without a line per block. With
+    /// <paramref name="settleConfirmed"/> (the rebroadcast round, never a caller's publish: a block's event handler may
+    /// publish while the block's round holds the queue), a refusal that may mean the transaction is already confirmed
+    /// is checked first (NL-779, <see cref="TrySettleConfirmedAsync"/>); a confirmed one is marked so and counts as
+    /// accepted, not as refused.
+    /// </summary>
+    private async Task<bool> TrySendAsync(BroadcastTransactionModel broadcast, bool settleConfirmed = false)
+    {
+        var txId = new uint256(broadcast.TransactionId);
+        try
+        {
+            await _bitcoinChainService.SendTransactionAsync(Transaction.Load(broadcast.RawTransaction, _network));
+            ForgetRefusals(txId);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (settleConfirmed && BroadcastRefusalRules.MayBeConfirmed(ex) && await TrySettleConfirmedAsync(broadcast))
+                return true;
+
+            if (IsAlreadyKnown(ex))
+            {
+                ForgetRefusals(txId);
+                return true;
+            }
+
+            var refusals = _refusals.AddOrUpdate(txId, 1, (_, count) => count + 1);
+            var level = refusals == 1 || refusals % RefusalWarningInterval == 0 ? LogLevel.Warning : LogLevel.Debug;
+            if (_logger.IsEnabled(level))
+                _logger.Log(level, ex,
+                            "Broadcast of {Purpose} transaction {TxId} was refused ({Refusals} time(s) in a row); it is sent again after the next block",
+                            Enum.GetName(broadcast.Purpose), txId, refusals);
+
+            if (!BroadcastRefusalRules.IsPermanent(ex))
+            {
+                _permanentRefusals.TryRemove(txId, out _);
+                return false;
+            }
+
+            var permanent = _permanentRefusals.AddOrUpdate(txId, 1, (_, count) => count + 1);
+            if (permanent >= AbandonAfterPermanentRefusals)
+                await HandleRefusedForGoodAsync(broadcast, ex, permanent);
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// A pending broadcast was refused <see cref="AbandonAfterPermanentRefusals"/> times in a row for a permanent
+    /// reason (NL-294). A funding or wallet send is abandoned (its row is marked
+    /// <see cref="BroadcastState.Abandoned"/> and saved, it is no longer sent, and a funding's wallet UTXO locks are
+    /// released, NL-259), unless it was refused for missing inputs while every input is still confirmed and unspent
+    /// (then bitcoind's answer does not add up, and it is kept). Any other transaction is kept and reported at Error
+    /// once (see <see cref="BroadcastRefusalRules"/>).
+    /// </summary>
+    private async Task HandleRefusedForGoodAsync(BroadcastTransactionModel broadcast, Exception refusal,
+                                                 int permanentRefusals)
+    {
+        var txId = new uint256(broadcast.TransactionId);
+        if (!BroadcastRefusalRules.MayAbandon(broadcast.Purpose))
+        {
+            if (permanentRefusals == AbandonAfterPermanentRefusals)
+                _logger.LogError(refusal,
+                                 "{Purpose} transaction {TxId} of channel {ChannelId} was refused {Refusals} times in a "
+                               + "row for a permanent reason; it spends a channel output, so it is not abandoned and is "
+                               + "sent again after every block until the on-chain resolution gives it up",
+                                 Enum.GetName(broadcast.Purpose), txId, broadcast.ChannelId, permanentRefusals);
+            return;
+        }
+
+        try
+        {
+            if (BroadcastRefusalRules.IsMissingInputs(refusal) && !await HasGoneInputAsync(broadcast))
+            {
+                if (permanentRefusals == AbandonAfterPermanentRefusals)
+                    _logger.LogError(refusal,
+                                     "{Purpose} transaction {TxId} is refused for missing inputs, but every input is "
+                                   + "still confirmed and unspent; it is kept and sent again after every block",
+                                     Enum.GetName(broadcast.Purpose), txId);
+                return;
+            }
+
+            ChannelModel? forgotten = null;
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                await uow.BroadcastTransactionDbRepository.MarkAbandonedAsync(broadcast.TransactionId);
+
+                // NL-461: a funder channel waiting for this funding's confirmation can never get it; it is forgotten
+                // (Stale) in the abandonment's save, like an interrupted funding, instead of being listed and resumed
+                // at every start
+                if (BroadcastRefusalRules.IsFunding(broadcast.Purpose) && broadcast.ChannelId is { } fundingChannelId)
+                    forgotten = await StageAbandonedFundingChannelStaleAsync(uow, fundingChannelId);
+
+                await uow.SaveChangesAsync();
+            }
+
+            if (forgotten is not null)
+                ForgetChannelInMemory(forgotten);
+
+            broadcast.MarkAbandoned();
+            _pendingBroadcasts.TryRemove(txId, out _);
+            ForgetRefusals(txId);
+
+            var released = 0;
+            if (BroadcastRefusalRules.IsFunding(broadcast.Purpose) && broadcast.ChannelId is { } channelId
+                                                                   && _serviceProvider.GetService<IUtxoMemoryRepository>()
+                                                                          is { } utxos)
+                released = utxos.ReturnUtxosNotSpentOnChannel(channelId).Count;
+
+            _logger.LogError(refusal,
+                             "{Purpose} transaction {TxId} of channel {ChannelId} was refused {Refusals} times in a row "
+                           + "for a permanent reason and is abandoned: it is no longer sent ({Released} wallet "
+                           + "output(s) locked to the channel released{Forgotten})",
+                             Enum.GetName(broadcast.Purpose), txId, broadcast.ChannelId, permanentRefusals, released,
+                             forgotten is null ? string.Empty : "; the channel is forgotten");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not abandon {Purpose} transaction {TxId}; it is sent again after the next block",
+                               Enum.GetName(broadcast.Purpose), txId);
+        }
+    }
+
+    /// <summary>
+    /// Stages the <see cref="ChannelState.Stale"/> transition of a funder channel whose funding broadcast was just
+    /// abandoned (NL-461), in the caller's abandonment save. Only a channel still waiting for that funding confirms
+    /// moves: it can never get there, and anything else has moved on on its own.
+    /// </summary>
+    /// <returns>The staged channel model, or null when there is nothing to forget.</returns>
+    private async Task<ChannelModel?> StageAbandonedFundingChannelStaleAsync(IUnitOfWork uow, ChannelId channelId)
+    {
+        var channel = await uow.ChannelDbRepository.GetByIdAsync(channelId);
+        if (channel is not { State: ChannelState.V1FundingSigned })
+            return null;
+
+        channel.UpdateState(ChannelState.Stale);
+        await uow.ChannelDbRepository.UpdateAsync(channel);
+        return channel;
+    }
+
+    /// <summary>
+    /// Moves the in-memory channel of an abandoned funding to <see cref="ChannelState.Stale"/> under the channel's
+    /// lock, after the abandonment save (the manager's copy must not stay <see cref="ChannelState.V1FundingSigned"/>).
+    /// Skipped without the channel layer (unit tests) or when the channel is not registered.
+    /// </summary>
+    private void ForgetChannelInMemory(ChannelModel channel)
+    {
+        var locks = _serviceProvider.GetService<IChannelLockProvider>();
+        var memory = _serviceProvider.GetService<IChannelMemoryRepository>();
+        if (locks is null || memory is null || !memory.TryGetChannel(channel.ChannelId, out var inMemory))
+            return;
+
+        try
+        {
+            using var channelLock = locks.Acquire(channel.ChannelId);
+            if (inMemory.State is not ChannelState.V1FundingSigned)
+                return;
+
+            inMemory.UpdateState(ChannelState.Stale);
+            memory.UpdateChannel(inMemory);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not mark channel {ChannelId} Stale in memory after its funding was "
+                                 + "abandoned; it is Stale in the database and forgotten at the next start",
+                               channel.ChannelId);
+        }
+    }
+
+    /// <summary>
+    /// True when an input of the transaction is not a confirmed unspent output any more (spent on chain, or reorged
+    /// away); our fundings and wallet sends only spend confirmed wallet outputs.
+    /// </summary>
+    private async Task<bool> HasGoneInputAsync(BroadcastTransactionModel broadcast)
+    {
+        var transaction = Transaction.Load(broadcast.RawTransaction, _network);
+        foreach (var input in transaction.Inputs)
+        {
+            if (await _bitcoinChainService.GetConfirmedUnspentOutputAsync(input.PrevOut) is null)
+                return true;
+        }
+
+        return false;
+    }
+
+    private void ForgetRefusals(uint256 txId)
+    {
+        _refusals.TryRemove(txId, out _);
+        _permanentRefusals.TryRemove(txId, out _);
+    }
+
+    private static bool IsAlreadyKnown(Exception sendError)
+    {
+        if (sendError is RPCException { RPCCode: RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN })
+            return true;
+
+        var message = sendError.Message;
+        return s_alreadyKnownRejections.Any(r => message.Contains(r, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <param name="upToExclusive">Queue the missing blocks below this height.</param>
+    private async Task AddMissingBlocksToProcessAsync(uint upToExclusive)
+    {
+        if (upToExclusive > _catchUpHeight)
+            _catchUpHeight = upToExclusive;
+
+        // Routine after downtime or a burst of blocks: Information, not a warning
+        if (upToExclusive > _lastProcessedBlockHeight + 1 && _logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Processing missed blocks from height {LastProcessedHeight} to {CurrentHeight}",
+                                   _lastProcessedBlockHeight + 1, upToExclusive - 1);
+
+        await FillQueueFromChainAsync();
+    }
+
+    /// <summary>
+    /// Fetches the blocks after the last processed one and below <see cref="_catchUpHeight"/> that are not queued yet,
+    /// stopping once the queue holds <see cref="MaxQueuedBlocks"/> blocks.
+    /// </summary>
+    private async Task FillQueueFromChainAsync()
+    {
+        for (var height = _lastProcessedBlockHeight + 1;
+             height < _catchUpHeight && _blocksToProcess.Count < MaxQueuedBlocks;
+             height++)
+        {
+            if (_blocksToProcess.ContainsKey(height))
+                continue;
+
+            // Add the missing block to the process queue
+            var blockAtHeight = await _bitcoinChainService.GetBlockAsync(height);
+            if (blockAtHeight is not null)
+            {
+                _blocksToProcess[height] = blockAtHeight;
+            }
+            else
+            {
+                _logger.LogError("Missing block at height {Height}", height);
+            }
+        }
+    }
+
+    private static WatchedTransactionModel CopyWatch(WatchedTransactionModel watch)
+    {
+        var copy = new WatchedTransactionModel(watch.ChannelId, watch.TransactionId, watch.RequiredDepth);
+        if (watch is { FirstSeenAtHeight: { } height, TransactionIndex: { } index })
+            copy.SetHeightAndIndex(height, index);
+        if (watch.IsCompleted)
+            copy.MarkAsCompleted();
+
+        return copy;
     }
 
     private async Task LoadPendingWatchedTransactionsAsync(IUnitOfWork uow)
@@ -591,17 +2360,117 @@ public class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
-    private async Task LoadUtxoSetAsync(IUnitOfWork uow)
+    /// <returns>True when reservations whose inputs are all spent were deleted (staged; the caller saves).</returns>
+    private async Task<bool> LoadUtxoSetAsync(IUnitOfWork uow)
     {
         _logger.LogInformation("Loading Utxo set");
 
-        var utxoSet = (await uow.UtxoDbRepository.GetUnspentAsync()).ToList();
+        // The signer derives each input's key from the UTXO's wallet address, so load it too (NL-302)
+        var utxoSet = (await uow.UtxoDbRepository.GetUnspentAsync(includeWalletAddress: true)).ToList();
         if (utxoSet.Count > 0)
+            GetUtxoMemoryRepository().Load(utxoSet);
+
+        // The fee input reservations (BOLT 5 plan O7-T1), before anything can select or lock wallet outputs
+        var reserved = await uow.FeeInputReservationDbRepository.GetReservedOutpointsAsync();
+
+        // A reservation none of whose inputs is still in the wallet was spent in a processed block (its caller never
+        // confirmed or released it: a crash, or another spend won): its rows are deleted in the startup save. One with
+        // an input still in the wallet is kept, as the spend may still confirm.
+        var unspent = utxoSet.Select(u => (u.TxId, u.Index)).ToHashSet();
+        var ended = reserved.GroupBy(r => r.ReservationId)
+                            .Where(g => g.All(r => !unspent.Contains((r.TxId, r.Index))))
+                            .Select(g => g.Key)
+                            .ToHashSet();
+        foreach (var reservationId in ended)
+            await uow.FeeInputReservationDbRepository.DeleteAsync(reservationId);
+        if (ended.Count > 0)
         {
-            var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>() ??
-                                       throw new InvalidOperationException(
-                                           $"Error getting required service {nameof(IUtxoMemoryRepository)}");
-            utxoMemoryRepository.Load(utxoSet);
+            _logger.LogInformation("Ending {Count} fee input reservation(s) whose inputs are all spent", ended.Count);
+            reserved = reserved.Where(r => !ended.Contains(r.ReservationId)).ToList();
         }
+
+        if (reserved.Count > 0)
+        {
+            GetUtxoMemoryRepository().LoadFeeReservations(reserved);
+            _logger.LogInformation("Restored {Count} reserved fee input(s)", reserved.Count);
+        }
+
+        return ended.Count > 0;
+
+        IUtxoMemoryRepository GetUtxoMemoryRepository() =>
+            _serviceProvider.GetService<IUtxoMemoryRepository>()
+         ?? throw new InvalidOperationException($"Error getting required service {nameof(IUtxoMemoryRepository)}");
+    }
+
+    /// <summary>
+    /// Gives a funder channel that waits for its funding confirmation its wallet outputs back (NL-462): the locks were
+    /// taken when the funding was created, live in memory only and were lost with the process, so they are rebuilt from
+    /// the pending funding broadcast's inputs. Until the funding confirms (or its abandonment releases them, NL-294)
+    /// nothing else may select or lock these outputs.
+    /// </summary>
+    private async Task RestoreChannelUtxoLocksAsync(IUnitOfWork uow,
+                                                    IReadOnlyList<BroadcastTransactionModel> pendingBroadcasts)
+    {
+        var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>();
+        if (utxoMemoryRepository is null)
+            return;
+
+        foreach (var broadcast in pendingBroadcasts)
+        {
+            if (!BroadcastRefusalRules.IsFunding(broadcast.Purpose) || broadcast.ChannelId is not { } channelId)
+                continue;
+
+            var channel = await uow.ChannelDbRepository.GetByIdAsync(channelId);
+            if (channel is not { State: ChannelState.V1FundingSigned })
+                continue;
+
+            Transaction fundingTransaction;
+            try
+            {
+                fundingTransaction = Transaction.Load(broadcast.RawTransaction, _network);
+            }
+            catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException)
+            {
+                _logger.LogWarning(e, "The funding transaction {TxId} of channel {ChannelId} does not parse; its "
+                                   + "inputs are not locked again", broadcast.TransactionId, channelId);
+                continue;
+            }
+
+            var outpoints = fundingTransaction.Inputs
+                                             .Select(i => (new TxId(i.PrevOut.Hash.ToBytes()), i.PrevOut.N))
+                                             .ToList();
+            var locked = utxoMemoryRepository.RestoreLocksForChannel(channelId, outpoints);
+            if (locked > 0 && _logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation("Locked {Count} wallet output(s) of channel {ChannelId} to its pending funding "
+                                     + "{TxId} again", locked, channelId, broadcast.TransactionId);
+        }
+    }
+
+    /// <summary>What one block changes, staged before the save and applied (and raised) after it.</summary>
+    private sealed class BlockEffects(uint height, Hash blockHash, BlockHeaderModel header)
+    {
+        public uint Height { get; } = height;
+        public Hash BlockHash { get; } = blockHash;
+        public BlockHeaderModel Header { get; } = header;
+        public BlockchainState? State { get; set; }
+        public Dictionary<uint256, WatchedTransactionModel> Watches { get; } = [];
+        public List<WatchedTransactionModel> Confirmed { get; } = [];
+        public List<WatchedOutpointModel> NewOutpoints { get; } = [];
+        public List<uint256> ConfirmedBroadcasts { get; } = [];
+
+        /// <summary>The stored rows of the replaced RBF chain members this block holds (NL-606), by txid: a wallet
+        /// movement of one of them comes from our broadcast.</summary>
+        public Dictionary<uint256, BroadcastTransactionModel> ConfirmedReplacedMembers { get; } = [];
+        public List<WalletMovementEventArgs> Movements { get; } = [];
+        public List<WalletTransactionEventArgs> WalletTransactions { get; } = [];
+        public HashSet<OutPoint> SilentPaymentOutputs { get; } = [];
+        public HashSet<OutPoint> SilentPaymentInputs { get; } = [];
+        public List<OutpointSpentEventArgs> Spends { get; } = [];
+
+        /// <summary>The wallet outputs this block deposited (a later transaction of the block may spend one).</summary>
+        public Dictionary<OutPoint, UtxoModel> StagedDeposits { get; } = [];
+
+        /// <summary>The accounting events this block records, keyed when staged (NL-602).</summary>
+        public List<AccountingCandidate> Accounting { get; } = [];
     }
 }

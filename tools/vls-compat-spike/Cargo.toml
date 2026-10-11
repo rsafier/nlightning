@@ -1,0 +1,16 @@
+[package]
+name = "nlightning-vls-compat-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# run.sh stages this crate beside the pinned VLS checkout in its cache directory.
+[dependencies]
+vls-core = { path = "../source/vls-core", default-features = false, features = ["std"] }
+
+[[bin]]
+name = "nlightning-vls-compat-spike"
+path = "main.rs"
+
+[profile.dev]
+debug = 0

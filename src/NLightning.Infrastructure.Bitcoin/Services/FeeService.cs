@@ -1,45 +1,187 @@
+using System.Collections.Concurrent;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NBitcoin.RPC;
 
 namespace NLightning.Infrastructure.Bitcoin.Services;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Money;
+using Domain.Node.Options;
+using Infrastructure.Transport.Http;
+using Networks;
 using Options;
 
+/// <summary>
+/// The node's fee estimate in sat/kw, from the source <see cref="FeeEstimationOptions.Source"/> selects: a
+/// mempool.space-style HTTP API (default), bitcoind's <c>estimatesmartfee</c> or a fixed rate. Every rate goes through
+/// <see cref="FeeRateConverter"/> (NL-288: sat/vB x 250, not x 1000) and is at least 253 sat/kw. Without any estimate
+/// the rate is <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/>, never 0.
+/// </summary>
+/// <remarks>
+/// <para>Per confirmation target (<see cref="GetFeeRatePerKwAsync(uint, CancellationToken)"/>, BOLT 5 plan O6-T1,
+/// NL-296): <see cref="FeeEstimationOptions.SourceBitcoind"/> asks <c>estimatesmartfee</c> for that target (cached per
+/// target like the node-wide rate); <see cref="FeeEstimationOptions.SourceHttp"/> picks the mempool.space bucket of the
+/// last response that fits the target (<see cref="GetHttpBucket"/>); <see cref="FeeEstimationOptions.SourceFixed"/> is
+/// the fixed rate. Without a per-target estimate the node-wide rate is answered.</para>
+/// <para>The last good estimate (node-wide rate and HTTP buckets) is saved to <see cref="FeeEstimationOptions.CacheFile"/>
+/// after each successful fetch, by a background writer (never on the caller's path), and read back when the service is
+/// built (NL-706): at <see cref="StartAsync"/> a saved estimate younger than
+/// <see cref="FeeEstimationOptions.CacheExpiration"/> is used without waiting for a fetch, and one younger than
+/// <see cref="FeeEstimationOptions.CacheMaxAge"/> replaces <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/> while
+/// the first fetch fails. An older, corrupt or other-source file is ignored and logged.</para>
+/// <para>One fetch at a time (NL-755): the node-wide estimate and each bitcoind target have at most one fetch in
+/// flight, which every caller that needs it shares; it runs on the service's lifetime token, so a caller that gives up
+/// never cancels it for the others. A caller that finds an estimate older than
+/// <see cref="FeeEstimationOptions.CacheExpiration"/> gets it at once and the refresh runs behind it
+/// (stale-while-revalidate); only a caller without any estimate waits for the fetch. After a failed fetch, callers start
+/// no new one for <see cref="FailedFetchBackoff"/> (at most <see cref="FeeEstimationOptions.CacheExpiration"/>): they get
+/// the kept estimate, or <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/> while there is none. The background
+/// refresh loop and <see cref="RefreshFeeRateAsync"/> ignore that backoff but still share the fetch in flight.</para>
+/// Register it as one singleton (<see cref="FeeServiceCollectionExtensions.AddFeeServices"/>): the host starts that
+/// instance, and every consumer must read its cache.
+/// </remarks>
 public class FeeService : IFeeService
 {
-    private const string FeeCacheFileName = "fee_cache.bin";
-    private static readonly TimeSpan s_defaultCacheExpiration = TimeSpan.FromMinutes(5);
+    /// <summary>The longest HTTP answer read (64 KiB, NL-678): a mempool.space fee answer is about 100 bytes.</summary>
+    public const int MaxResponseBytes = HttpResponseLimits.SmallResponseMaxBytes;
+
+    private static readonly string[] s_httpBuckets = ["fastestFee", "halfHourFee", "hourFee", "economyFee"];
+
+    /// <summary>
+    /// How long callers start no new fetch after one failed (NL-755), unless
+    /// <see cref="FeeEstimationOptions.CacheExpiration"/> is shorter.
+    /// </summary>
+    internal static readonly TimeSpan FailedFetchBackoff = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long <see cref="StartAsync"/> waits for the cache file read before going on without it.</summary>
+    private static readonly TimeSpan s_cacheLoadWait = TimeSpan.FromSeconds(2);
+
+    /// <summary>How long <see cref="StopAsync"/> waits for the last cache write.</summary>
+    private static readonly TimeSpan s_cacheSaveWait = TimeSpan.FromSeconds(5);
+
+    /// <summary>The highest rate taken from the cache file: a corruption guard, not a fee policy.</summary>
+    internal const long MaxCachedFeeRatePerKw = int.MaxValue;
+
+    /// <summary>A saved estimate this far in the future (clock change) is still taken, as fetched now.</summary>
+    private static readonly TimeSpan s_clockSkewTolerance = TimeSpan.FromMinutes(5);
 
     private DateTime _lastFetchTime = DateTime.MinValue;
-    private readonly LightningMoney _cachedFeeRate = LightningMoney.Zero;
+    private long _cachedFeeRatePerKw;
     private Task? _feeTask;
     private CancellationTokenSource? _cts;
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<FeeService> _logger;
     private readonly TimeSpan _cacheTimeExpiration;
-    private readonly string _cacheFilePath;
+    private readonly string? _cacheFilePath;
+    private readonly TimeSpan _cacheMaxAge;
+    private readonly string _cacheSourceKey;
+    private readonly Lock _stateLock = new();
+    private readonly Lock _saveLock = new();
+    private readonly Task _cacheLoadTask = Task.CompletedTask;
+    private bool _fetchedOnce;
+    private FeeRateCacheEntry? _pendingSave;
+    private Task _saveTask = Task.CompletedTask;
     private readonly FeeEstimationOptions _feeEstimationOptions;
+    private readonly Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? _bitcoindEstimator;
+    private readonly ConcurrentDictionary<uint, (long FeeRatePerKw, DateTime FetchedAt)> _targetCache = new();
+    private volatile IReadOnlyDictionary<string, long> _httpBuckets = new Dictionary<string, long>();
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _failedFetchBackoff;
 
-    public FeeService(IOptions<FeeEstimationOptions> feeOptions, HttpClient httpClient, ILogger<FeeService> logger)
+    // The fetches in flight and the last failures (NL-755), under _refreshLock
+    private readonly Lock _refreshLock = new();
+    private Task? _refresh;
+    private DateTime? _lastFailedFetchTime;
+    private readonly Dictionary<uint, Task<long?>> _targetRefreshes = new();
+    private readonly Dictionary<uint, DateTime> _targetFailedFetchTimes = new();
+
+    /// <remarks>
+    /// <paramref name="bitcoinOptions"/> and <paramref name="nodeOptions"/> are only used by
+    /// <see cref="FeeEstimationOptions.SourceBitcoind"/>, which talks to bitcoind with its own RPC client, created on the
+    /// first estimate.
+    /// </remarks>
+    public FeeService(IOptions<FeeEstimationOptions> feeOptions, HttpClient httpClient, ILogger<FeeService> logger,
+                      IOptions<BitcoinOptions>? bitcoinOptions = null, IOptions<NodeOptions>? nodeOptions = null)
+        : this(feeOptions.Value, httpClient, logger, CreateBitcoindEstimator(bitcoinOptions, nodeOptions))
     {
-        _feeEstimationOptions = feeOptions.Value;
+    }
+
+    /// <param name="feeOptions">The fee source settings; invalid settings throw.</param>
+    /// <param name="httpClient">The client for <see cref="FeeEstimationOptions.SourceHttp"/>.</param>
+    /// <param name="logger">The logger.</param>
+    /// <param name="bitcoindEstimator">For <see cref="FeeEstimationOptions.SourceBitcoind"/>: bitcoind's
+    /// <c>estimatesmartfee</c> in sat/vB for a confirmation target and mode, or null when it has no estimate.</param>
+    /// <param name="timeProvider">The clock (tests); the system clock when null.</param>
+    /// <exception cref="InvalidOperationException">The options are invalid.</exception>
+    internal FeeService(FeeEstimationOptions feeOptions, HttpClient httpClient, ILogger<FeeService> logger,
+                        Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? bitcoindEstimator,
+                        TimeProvider? timeProvider = null)
+    {
+        _feeEstimationOptions = feeOptions;
         _httpClient = httpClient;
         _logger = logger;
+        _bitcoindEstimator = bitcoindEstimator;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+
+        var errors = _feeEstimationOptions.GetValidationErrors();
+        if (errors.Count > 0)
+            throw new InvalidOperationException("Invalid FeeEstimation configuration: " + string.Join(" ", errors));
+
+        if (!string.IsNullOrWhiteSpace(_feeEstimationOptions.RateMultiplier) && _logger.IsEnabled(LogLevel.Warning))
+            _logger.LogWarning("FeeEstimation:RateMultiplier ({RateMultiplier}) is ignored: the HTTP value is read in "
+                             + "FeeEstimation:RateUnit ({RateUnit}) and converted to sat/kw (NL-288)",
+                               _feeEstimationOptions.RateMultiplier, _feeEstimationOptions.RateUnit);
 
         _cacheFilePath = ParseFilePath(_feeEstimationOptions);
-        _cacheTimeExpiration = ParseCacheTime(_feeEstimationOptions.CacheExpiration);
+        // Both durations were validated above (NL-756); CacheMaxAge only when there is a cache file
+        _cacheTimeExpiration = FeeEstimationOptions.TryParseDuration(_feeEstimationOptions.CacheExpiration,
+                                                                     out var expiration)
+                                   ? expiration
+                                   : FeeEstimationOptions.DefaultCacheExpiration;
+        _cacheMaxAge = FeeEstimationOptions.TryParseDuration(_feeEstimationOptions.CacheMaxAge, out var maxAge)
+                           ? maxAge
+                           : TimeSpan.FromHours(1);
+        _failedFetchBackoff = _cacheTimeExpiration < FailedFetchBackoff ? _cacheTimeExpiration : FailedFetchBackoff;
+        _cacheSourceKey = ComputeSourceKey(_feeEstimationOptions);
 
-        // Try to load from the file initially
-        _ = LoadFromFileAsync();
+        // Read the saved estimate off the constructing thread; StartAsync waits for it, bounded (NL-706)
+        if (_cacheFilePath is not null)
+            _cacheLoadTask = Task.Run(LoadFromFile);
+    }
+
+    /// <summary>The cache file in use, as a full path, or null when there is none (off, or a fixed rate).</summary>
+    internal string? CacheFilePath => _cacheFilePath;
+
+    /// <summary>Completes when the cache file was read at construction (tests).</summary>
+    internal Task CacheLoaded => _cacheLoadTask;
+
+    /// <summary>Completes when every cache write scheduled so far is done (tests).</summary>
+    internal Task FlushCacheAsync()
+    {
+        lock (_saveLock)
+            return _saveTask;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // The saved estimate, if the file could be read in time: a slow disk never holds the start (NL-706)
+        try
+        {
+            await _cacheLoadTask.WaitAsync(s_cacheLoadWait, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Reading the fee rate cache file {CacheFile} takes more than {Wait}; starting without it",
+                               _cacheFilePath, s_cacheLoadWait);
+        }
 
         // Start the background task
         _feeTask = RunPeriodicRefreshAsync(_cts.Token);
@@ -71,101 +213,409 @@ public class FeeService : IFeeService
                 // Expected during cancellation
             }
         }
+
+        // The fetch in flight ends with the lifetime token; bounded, as one started before StartAsync does not see it
+        Task? refresh;
+        lock (_refreshLock)
+            refresh = _refresh;
+        if (refresh is not null)
+        {
+            try
+            {
+                await refresh.WaitAsync(s_cacheSaveWait);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("The fee rate fetch in flight takes more than {Wait} to stop; stopping without it",
+                                   s_cacheSaveWait);
+            }
+        }
+
+        // The last estimate reaches the file before the process ends, bounded so a stuck disk never holds the stop
+        try
+        {
+            await FlushCacheAsync().WaitAsync(s_cacheSaveWait);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Writing the fee rate cache file {CacheFile} takes more than {Wait}; stopping without it",
+                               _cacheFilePath, s_cacheSaveWait);
+        }
     }
 
+    /// <remarks>
+    /// A fresh estimate is answered at once. An expired one is answered at once too, while one shared refresh runs
+    /// behind it (none during the backoff after a failed fetch, NL-755). Without any estimate the caller waits for the
+    /// shared fetch, unless one failed within the backoff, and then gets the estimate or
+    /// <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/>; a cancelled wait answers the same, the fetch goes on.
+    /// </remarks>
     public async Task<LightningMoney> GetFeeRatePerKwAsync(CancellationToken cancellationToken = default)
     {
         if (IsCacheValid())
         {
-            return _cachedFeeRate;
+            return GetCachedFeeRatePerKw();
         }
 
-        using var linkedCts = CancellationTokenSource
-           .CreateLinkedTokenSource(cancellationToken, _cts?.Token ?? CancellationToken.None);
+        var refresh = GetOrStartRefresh(respectBackoff: true);
+        if (Interlocked.Read(ref _cachedFeeRatePerKw) > 0 || refresh is null)
+            return GetCachedFeeRatePerKw();
 
-        await RefreshFeeRateAsync(linkedCts.Token);
-        return _cachedFeeRate;
+        await WaitForRefreshAsync(refresh, cancellationToken);
+        return GetCachedFeeRatePerKw();
     }
 
+    /// <inheritdoc />
+    public async Task<LightningMoney> GetFeeRatePerKwAsync(uint confirmationTarget,
+                                                           CancellationToken cancellationToken = default)
+    {
+        var target = Math.Clamp(confirmationTarget, 1u, MaxConfirmationTarget);
+        if (_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceBitcoind) && _bitcoindEstimator is not null)
+        {
+            // Like the node-wide rate (NL-755): fresh or expired, a kept target estimate is answered at once, one shared
+            // fetch per target refreshes it, and only a caller without one waits for that fetch
+            var hasCached = _targetCache.TryGetValue(target, out var cached);
+            if (hasCached && UtcNow - cached.FetchedAt <= _cacheTimeExpiration)
+                return LightningMoney.Satoshis(cached.FeeRatePerKw);
+
+            var refresh = GetOrStartTargetRefresh(target);
+            if (hasCached)
+                return LightningMoney.Satoshis(cached.FeeRatePerKw);
+
+            if (refresh is not null && await refresh.WaitAsync(cancellationToken) is { } perKw)
+                return LightningMoney.Satoshis(perKw);
+
+            return await GetFeeRatePerKwAsync(cancellationToken);
+        }
+
+        var nodeWide = await GetFeeRatePerKwAsync(cancellationToken);
+        if (!_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceHttp))
+            return nodeWide;
+
+        var buckets = _httpBuckets;
+        return GetHttpBucket(target) is { } bucket && buckets.TryGetValue(bucket, out var bucketRate)
+                   ? LightningMoney.Satoshis(bucketRate)
+                   : nodeWide;
+    }
+
+    /// <summary>
+    /// The mempool.space bucket for a confirmation target: <c>fastestFee</c> (next block) for 1, <c>halfHourFee</c> up to
+    /// 3, <c>hourFee</c> up to 6 and below <see cref="MaxConfirmationTarget"/> (a slow sweep still wants to confirm
+    /// within hours, not days), <c>economyFee</c> from <see cref="MaxConfirmationTarget"/> on.
+    /// </summary>
+    internal static string? GetHttpBucket(uint confirmationTarget) => confirmationTarget switch
+    {
+        0 => null,
+        1 => "fastestFee",
+        <= 3 => "halfHourFee",
+        < MaxConfirmationTarget => "hourFee",
+        _ => "economyFee"
+    };
+
+    /// <summary>The largest confirmation target asked for (a day of blocks).</summary>
+    internal const uint MaxConfirmationTarget = 144;
+
+    /// <summary>
+    /// The cached rate (sat/kw in <see cref="LightningMoney.Satoshi"/>), as a new value, so a caller can't change the
+    /// cache.
+    /// </summary>
+    /// <remarks>
+    /// Until the first successful estimate (not started yet, or a source without an estimate, such as bitcoind's
+    /// <c>estimatesmartfee</c> on a young signet) this is <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/>, never
+    /// 0: a rate of 0 would put <c>feerate_per_kw=0</c> in open_channel and make every dust fee 0.
+    /// </remarks>
     public LightningMoney GetCachedFeeRatePerKw()
     {
-        return _cachedFeeRate;
+        var cached = Interlocked.Read(ref _cachedFeeRatePerKw);
+        return LightningMoney.Satoshis(cached > 0 ? cached : _feeEstimationOptions.FallbackFeeRatePerKw);
     }
 
+    /// <remarks>
+    /// Joins the fetch in flight or starts one, whatever the backoff after a failed fetch (NL-755). Cancelling
+    /// <paramref name="cancellationToken"/> ends this wait only: the shared fetch goes on for the other callers.
+    /// </remarks>
     public async Task RefreshFeeRateAsync(CancellationToken cancellationToken)
+    {
+        // A caller that already gave up starts nothing
+        if (cancellationToken.IsCancellationRequested)
+            return;
+
+        await WaitForRefreshAsync(GetOrStartRefresh(respectBackoff: false)!, cancellationToken);
+    }
+
+    /// <summary>The wall clock, from the time provider.</summary>
+    private DateTime UtcNow => _timeProvider.GetUtcNow().UtcDateTime;
+
+    /// <summary>
+    /// The node-wide fetch in flight, or a new one on the service's lifetime token (never a caller's), or null when
+    /// <paramref name="respectBackoff"/> and a fetch failed less than the backoff ago.
+    /// </summary>
+    private Task? GetOrStartRefresh(bool respectBackoff)
+    {
+        lock (_refreshLock)
+        {
+            if (_refresh is { } running)
+                return running;
+
+            if (respectBackoff && _lastFailedFetchTime is { } failedAt && UtcNow - failedAt < _failedFetchBackoff)
+                return null;
+
+            // Task.Run: the fetch never starts on the caller's thread under the lock, and its end (which takes the
+            // lock) can only run once _refresh is set
+            var token = _cts?.Token ?? CancellationToken.None;
+            _refresh = Task.Run(() => RunRefreshAsync(token), CancellationToken.None);
+            return _refresh;
+        }
+    }
+
+    /// <summary>Waits for a shared fetch; a cancelled wait just ends (the fetch goes on).</summary>
+    private static async Task WaitForRefreshAsync(Task refresh, CancellationToken cancellationToken)
     {
         try
         {
-            var feeRate = await FetchFeeRateFromApiAsync(cancellationToken);
-            _cachedFeeRate.Satoshi = feeRate;
-            _lastFetchTime = DateTime.UtcNow;
-            await SaveToFileAsync();
+            await refresh.WaitAsync(cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Ignore cancellation
+            // The caller gave up; the shared fetch is not ours to cancel
+        }
+    }
+
+    /// <summary>One shared node-wide fetch: stores the estimate or logs the failure; never throws.</summary>
+    private async Task RunRefreshAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var feeRate = await FetchFeeRatePerKwAsync(cancellationToken);
+            var fetchedAt = UtcNow;
+            lock (_stateLock)
+            {
+                Interlocked.Exchange(ref _cachedFeeRatePerKw, feeRate);
+                _lastFetchTime = fetchedAt;
+                _fetchedOnce = true;
+            }
+
+            lock (_refreshLock)
+                _lastFailedFetchTime = null;
+
+            ScheduleSave(feeRate, fetchedAt);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The service is stopping: nothing to report
         }
         catch (Exception e)
         {
-            _logger.LogError(e, "Error fetching fee rate from API");
+            lock (_refreshLock)
+                _lastFailedFetchTime = UtcNow;
+
+            // An HttpClient timeout is an OperationCanceledException although our token is not cancelled: log it too
+            var reason = e is OperationCanceledException ? "timed out" : "failed";
+            if (Interlocked.Read(ref _cachedFeeRatePerKw) > 0)
+            {
+                _logger.LogError(e, "Fetching the fee rate from {Source} {Reason}; keeping the last estimate",
+                                 _feeEstimationOptions.Source, reason);
+            }
+            else if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning(e, "Fetching the fee rate from {Source} {Reason} and there is no estimate yet; "
+                                    + "using FeeEstimation:FallbackFeeRatePerKw ({FallbackFeeRatePerKw} sat/kw)",
+                                   _feeEstimationOptions.Source, reason, _feeEstimationOptions.FallbackFeeRatePerKw);
+            }
+        }
+        finally
+        {
+            lock (_refreshLock)
+                _refresh = null;
         }
     }
+
+    /// <summary>
+    /// The fetch in flight for <paramref name="target"/>, or a new one on the service's lifetime token, or null during
+    /// the backoff after that target's last failed fetch (NL-755).
+    /// </summary>
+    private Task<long?>? GetOrStartTargetRefresh(uint target)
+    {
+        lock (_refreshLock)
+        {
+            if (_targetRefreshes.TryGetValue(target, out var running))
+                return running;
+
+            if (_targetFailedFetchTimes.TryGetValue(target, out var failedAt) && UtcNow - failedAt < _failedFetchBackoff)
+                return null;
+
+            var token = _cts?.Token ?? CancellationToken.None;
+            var refresh = Task.Run(() => RunTargetRefreshAsync(target, token), CancellationToken.None);
+            _targetRefreshes[target] = refresh;
+            return refresh;
+        }
+    }
+
+    /// <summary>
+    /// One shared <c>estimatesmartfee</c> for a target: the rate in sat/kw, kept per target, or null (no estimate, a
+    /// failure; logged); never throws.
+    /// </summary>
+    private async Task<long?> RunTargetRefreshAsync(uint target, CancellationToken cancellationToken)
+    {
+        long? result = null;
+        try
+        {
+            var satPerVByte = await _bitcoindEstimator!((int)target, GetEstimateMode(), cancellationToken);
+            if (satPerVByte is { } rate)
+            {
+                var perKw = FeeRateConverter.SatPerVByteToSatPerKw(rate);
+                _targetCache[target] = (perKw, UtcNow);
+                result = perKw;
+            }
+            else if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("bitcoind has no fee estimate for {Target} blocks; using the node-wide rate", target);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The service is stopping: nothing to report
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Fetching the fee rate for {Target} blocks from bitcoind failed; using the kept or "
+                                + "node-wide rate", target);
+        }
+        finally
+        {
+            lock (_refreshLock)
+            {
+                _targetRefreshes.Remove(target);
+                if (result is null)
+                    _targetFailedFetchTimes[target] = UtcNow;
+                else
+                    _targetFailedFetchTimes.Remove(target);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<long> FetchFeeRatePerKwAsync(CancellationToken cancellationToken)
+    {
+        if (_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceFixed))
+            return Math.Max(FeeRateConverter.FeeratePerKwFloor, _feeEstimationOptions.FixedFeeRatePerKw);
+
+        if (_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceBitcoind))
+            return await FetchFeeRateFromBitcoindAsync(cancellationToken);
+
+        return await FetchFeeRateFromApiAsync(cancellationToken);
+    }
+
+    private async Task<long> FetchFeeRateFromBitcoindAsync(CancellationToken cancellationToken)
+    {
+        if (_bitcoindEstimator is null)
+            throw new InvalidOperationException(
+                "FeeEstimation:Source is Bitcoind, but the Bitcoin RPC settings or the node's network are missing.");
+
+        var satPerVByte =
+            await _bitcoindEstimator(_feeEstimationOptions.ConfirmationTarget, GetEstimateMode(), cancellationToken)
+         ?? throw new InvalidOperationException(
+                $"bitcoind has no fee estimate for {_feeEstimationOptions.ConfirmationTarget} blocks yet.");
+
+        return FeeRateConverter.SatPerVByteToSatPerKw(satPerVByte);
+    }
+
+    private EstimateSmartFeeMode GetEstimateMode() =>
+        _feeEstimationOptions.EstimateMode.Equals("ECONOMICAL", StringComparison.OrdinalIgnoreCase)
+            ? EstimateSmartFeeMode.Economical
+            : EstimateSmartFeeMode.Conservative;
 
     private async Task<long> FetchFeeRateFromApiAsync(CancellationToken cancellationToken)
     {
         HttpResponseMessage response;
 
+        // HttpClient.Timeout stops at the headers with ResponseHeadersRead, so one deadline covers the request and the
+        // bounded body read: a server or Tor circuit that sends the headers and then stalls the body times out like a
+        // request would (NL-732), instead of holding the start, the refresh loop and every caller that waits on it
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan)
+            deadline.CancelAfter(_httpClient.Timeout);
+
         try
         {
+            // ResponseHeadersRead: the body is read bounded below (NL-678), never buffered whole by the client
             if (_feeEstimationOptions.Method.Equals("GET", StringComparison.CurrentCultureIgnoreCase))
             {
-                response = await _httpClient.GetAsync(_feeEstimationOptions.Url, cancellationToken);
+                response = await _httpClient.GetAsync(_feeEstimationOptions.Url,
+                                                      HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             }
             else // POST
             {
-                var content = new StringContent(
+                using var request = new HttpRequestMessage(HttpMethod.Post, _feeEstimationOptions.Url);
+                request.Content = new StringContent(
                     _feeEstimationOptions.Body,
                     System.Text.Encoding.UTF8,
                     _feeEstimationOptions.ContentType);
 
-                response = await _httpClient.PostAsync(_feeEstimationOptions.Url, content, cancellationToken);
+                response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+                                                       deadline.Token);
             }
         }
-        catch (Exception e)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             throw new InvalidOperationException("Error fetching from API", e);
         }
 
-        response.EnsureSuccessStatusCode();
-        var jsonResponseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        byte[] body;
+        using (response)
+        {
+            response.EnsureSuccessStatusCode();
+            body = await HttpResponseLimits.ReadBoundedAsync(response.Content, MaxResponseBytes, deadline.Token);
+        }
 
         // Parse the JSON response
-        using var document =
-            await JsonDocument.ParseAsync(jsonResponseStream, cancellationToken: cancellationToken);
+        using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
 
         // Extract the preferred fee rate from the JSON response
-        if (!root.TryGetProperty(_feeEstimationOptions.PreferredFeeRate, out var feeRateElement))
+        if (!root.TryGetProperty(_feeEstimationOptions.PreferredFeeRate, out var feeRateElement)
+         || !feeRateElement.TryGetDecimal(out var feeRate))
         {
             throw new InvalidOperationException(
                 $"Could not extract {_feeEstimationOptions.PreferredFeeRate} from API response.");
         }
 
-        // Parse the fee rate value
-        if (!feeRateElement.TryGetDecimal(out var feeRate))
+        // The other buckets of the same response, for the per-target estimates (NL-296)
+        var buckets = new Dictionary<string, long>();
+        foreach (var bucket in s_httpBuckets)
         {
-            throw new InvalidOperationException(
-                $"Could not extract {_feeEstimationOptions.PreferredFeeRate} from API response.");
+            if (root.TryGetProperty(bucket, out var element) && element.TryGetDecimal(out var bucketRate))
+                buckets[bucket] = FeeRateConverter.ToSatPerKw(bucketRate, _feeEstimationOptions.RateUnit);
         }
 
-        // Apply the multiplier to convert to sat/kw
-        if (decimal.TryParse(_feeEstimationOptions.RateMultiplier, out var multiplier))
-        {
-            return (long)(feeRate * multiplier);
-        }
+        // Under the state lock: the cache file read must not put older buckets over these (NL-763)
+        lock (_stateLock)
+            _httpBuckets = buckets;
 
-        throw new InvalidOperationException(
-            $"Could not extract {_feeEstimationOptions.PreferredFeeRate} from API response.");
+        // From the API's unit (sat/vB for mempool.space) to sat/kw (NL-288)
+        return FeeRateConverter.ToSatPerKw(feeRate, _feeEstimationOptions.RateUnit);
+    }
+
+    private static Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? CreateBitcoindEstimator(
+        IOptions<BitcoinOptions>? bitcoinOptions, IOptions<NodeOptions>? nodeOptions)
+    {
+        if (bitcoinOptions is null || nodeOptions is null)
+            return null;
+
+        RPCClient? rpcClient = null;
+        return async (confirmationTarget, mode, cancellationToken) =>
+        {
+            // Created on first use, so a node that estimates another way never reads these settings here
+            rpcClient ??= new RPCClient(
+                new RPCCredentialString
+                {
+                    UserPassword =
+                        new NetworkCredential(bitcoinOptions.Value.RpcUser, bitcoinOptions.Value.RpcPassword)
+                }, bitcoinOptions.Value.RpcEndpoint, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork());
+
+            var response = await rpcClient.TryEstimateSmartFeeAsync(confirmationTarget, mode, cancellationToken);
+            return response?.FeeRate.SatoshiPerByte;
+        };
     }
 
     private async Task RunPeriodicRefreshAsync(CancellationToken cancellationToken)
@@ -180,7 +630,7 @@ public class FeeService : IFeeService
                     await RefreshFeeRateAsync(cancellationToken);
 
                     // Wait for the cache time or until cancellation
-                    await Task.Delay(_cacheTimeExpiration, cancellationToken);
+                    await Task.Delay(_cacheTimeExpiration, _timeProvider, cancellationToken);
                 }
             }
         }
@@ -194,108 +644,173 @@ public class FeeService : IFeeService
         }
     }
 
-    private Task SaveToFileAsync()
+    /// <summary>
+    /// Queues the estimate for the cache file. One write runs at a time, in order, and a write takes the newest queued
+    /// estimate, so a burst of refreshes costs one or two writes; the caller never waits on the disk (NL-706).
+    /// </summary>
+    private void ScheduleSave(long feeRatePerKw, DateTime fetchedAt)
     {
-        _logger.LogDebug("Saving fee rate to file {filePath}", _cacheFilePath);
+        if (_cacheFilePath is null)
+            return;
 
-        return Task.CompletedTask;
-        // try
-        // {
-        //     var cacheData = new FeeRateCacheData
-        //     {
-        //         FeeRate = _cachedFeeRate,
-        //         LastFetchTime = _lastFetchTime
-        //     };
-        //
-        //     await using var fileStream = File.OpenWrite(_cacheFilePath);
-        //     await MessagePackSerializer.SerializeAsync(fileStream, cacheData, cancellationToken: CancellationToken.None);
-        // }
-        // catch (Exception e)
-        // {
-        //     _logger.LogError(e, "Error saving fee rate to file");
-        // }
+        var entry = new FeeRateCacheEntry
+        {
+            Source = _feeEstimationOptions.Source.Trim(),
+            SourceKey = _cacheSourceKey,
+            FetchedAt = new DateTimeOffset(fetchedAt, TimeSpan.Zero),
+            FeeRatePerKw = feeRatePerKw,
+            Buckets = _feeEstimationOptions.IsSource(FeeEstimationOptions.SourceHttp)
+                          ? new Dictionary<string, long>(_httpBuckets)
+                          : null
+        };
+
+        lock (_saveLock)
+        {
+            var writeQueued = _pendingSave is not null;
+            _pendingSave = entry;
+            if (!writeQueued)
+                _saveTask = _saveTask.ContinueWith(_ => WritePending(), CancellationToken.None,
+                                                   TaskContinuationOptions.None, TaskScheduler.Default);
+        }
     }
 
-    private Task LoadFromFileAsync()
+    private void WritePending()
     {
-        _logger.LogDebug("Loading fee rate from file {filePath}", _cacheFilePath);
+        FeeRateCacheEntry? entry;
+        lock (_saveLock)
+        {
+            entry = _pendingSave;
+            _pendingSave = null;
+        }
 
-        return Task.CompletedTask;
-        // try
-        // {
-        //     if (!File.Exists(_cacheFilePath))
-        //     {
-        //         _logger.LogDebug("Fee rate cache file does not exist. Skipping load.");
-        //         return;
-        //     }
-        //
-        //     await using var fileStream = File.OpenRead(_cacheFilePath);
-        //     var cacheData =
-        //         await MessagePackSerializer.DeserializeAsync<FeeRateCacheData?>(fileStream,
-        //             cancellationToken: cancellationToken);
-        //
-        //     if (cacheData == null)
-        //     {
-        //         _logger.LogDebug("Fee rate cache file is empty. Skipping load.");
-        //         return;
-        //     }
-        //
-        //     _cachedFeeRate = cacheData.FeeRate;
-        //     _lastFetchTime = cacheData.LastFetchTime;
-        // }
-        // catch (OperationCanceledException)
-        // {
-        //     // Ignore cancellation
-        // }
-        // catch (Exception e)
-        // {
-        //     _logger.LogError(e, "Error loading fee rate from file");
-        // }
+        if (entry is null || _cacheFilePath is null)
+            return;
+
+        try
+        {
+            FeeRateCacheFile.Write(_cacheFilePath, entry);
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Saved the fee rate {FeeRatePerKw} sat/kw to {CacheFile}", entry.FeeRatePerKw,
+                                 _cacheFilePath);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Saving the fee rate to {CacheFile} failed; the next estimate tries again",
+                               _cacheFilePath);
+        }
+    }
+
+    /// <summary>
+    /// Reads the saved estimate and takes it unless a fetch already answered: stale (older than
+    /// <see cref="FeeEstimationOptions.CacheMaxAge"/>), corrupt, other-source and unreadable files are logged and ignored.
+    /// </summary>
+    private void LoadFromFile()
+    {
+        if (_cacheFilePath is null)
+            return;
+
+        try
+        {
+            var entry = FeeRateCacheFile.TryRead(_cacheFilePath, out var problem);
+            if (entry is null)
+            {
+                if (problem is not null)
+                    _logger.LogWarning("Ignoring the fee rate cache file {CacheFile}: {Problem}", _cacheFilePath,
+                                       problem);
+                else if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("No fee rate cache file at {CacheFile} yet", _cacheFilePath);
+                return;
+            }
+
+            if (GetEntryProblem(entry, UtcNow) is { } entryProblem)
+            {
+                _logger.LogWarning("Ignoring the fee rate cache file {CacheFile}: {Problem}", _cacheFilePath,
+                                   entryProblem);
+                return;
+            }
+
+            var now = UtcNow;
+            var fetchedAt = entry.FetchedAt.UtcDateTime > now ? now : entry.FetchedAt.UtcDateTime;
+            lock (_stateLock)
+            {
+                if (_fetchedOnce)
+                    return; // a fetch was quicker than the file: it is newer
+
+                Interlocked.Exchange(ref _cachedFeeRatePerKw, entry.FeeRatePerKw);
+                _lastFetchTime = fetchedAt;
+                // A fetch stores its buckets before it marks _fetchedOnce: buckets already there are newer (NL-763)
+                if (entry.Buckets is not null && _feeEstimationOptions.IsSource(FeeEstimationOptions.SourceHttp)
+                                              && _httpBuckets.Count == 0)
+                    _httpBuckets = new Dictionary<string, long>(entry.Buckets);
+            }
+
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation("Loaded the fee rate {FeeRatePerKw} sat/kw fetched at {FetchedAt:u} from "
+                                     + "{CacheFile}", entry.FeeRatePerKw, fetchedAt, _cacheFilePath);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Reading the fee rate cache file {CacheFile} failed; starting without it",
+                               _cacheFilePath);
+        }
+    }
+
+    /// <summary>Why a saved entry can't be used now, or null when it can.</summary>
+    private string? GetEntryProblem(FeeRateCacheEntry entry, DateTime now)
+    {
+        if (!string.Equals(entry.Source, _feeEstimationOptions.Source.Trim(), StringComparison.OrdinalIgnoreCase)
+         || !string.Equals(entry.SourceKey, _cacheSourceKey, StringComparison.Ordinal))
+            return $"it was saved for another fee source ({entry.Source}) or other source settings";
+
+        if (entry.FeeRatePerKw < FeeRateConverter.FeeratePerKwFloor)
+            return $"its rate {entry.FeeRatePerKw} sat/kw is below {FeeRateConverter.FeeratePerKwFloor} sat/kw";
+
+        if (entry.Buckets?.Any(b => b.Value < FeeRateConverter.FeeratePerKwFloor) == true)
+            return $"a bucket rate is below {FeeRateConverter.FeeratePerKwFloor} sat/kw";
+
+        // Only a damaged file holds such a value (it would overflow the msat amounts built from it)
+        if (entry.FeeRatePerKw > MaxCachedFeeRatePerKw
+         || entry.Buckets?.Any(b => b.Value > MaxCachedFeeRatePerKw) == true)
+            return $"a rate is above {MaxCachedFeeRatePerKw} sat/kw";
+
+        var fetchedAt = entry.FetchedAt.UtcDateTime;
+        if (fetchedAt > now + s_clockSkewTolerance)
+            return $"it was fetched at {fetchedAt:u}, in the future";
+
+        var age = now - fetchedAt;
+        if (age > _cacheMaxAge)
+            return $"it was fetched at {fetchedAt:u}, more than FeeEstimation:CacheMaxAge ({_cacheMaxAge}) ago";
+
+        return null;
+    }
+
+    /// <summary>The settings that shape an estimate, hashed (a POST body may carry an API key).</summary>
+    internal static string ComputeSourceKey(FeeEstimationOptions options)
+    {
+        var settings = options.IsSource(FeeEstimationOptions.SourceBitcoind)
+                           ? $"{options.ConfirmationTarget}\n{options.EstimateMode.ToUpperInvariant()}"
+                           : $"{options.Url}\n{options.Method.ToUpperInvariant()}\n{options.Body}\n"
+                           + $"{options.PreferredFeeRate}\n{options.RateUnit}";
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(settings)));
     }
 
     private bool IsCacheValid()
     {
-        return !_cachedFeeRate.IsZero && DateTime.UtcNow.Subtract(_lastFetchTime).CompareTo(_cacheTimeExpiration) <= 0;
+        return Interlocked.Read(ref _cachedFeeRatePerKw) > 0 && UtcNow - _lastFetchTime <= _cacheTimeExpiration;
     }
 
-    private static TimeSpan ParseCacheTime(string cacheTime)
-    {
-        try
-        {
-            // Parse formats like "5m", "1hour", "30s"
-            var valueStr = new string(cacheTime.Where(char.IsDigit).ToArray());
-            var unit = new string(cacheTime.Where(char.IsLetter).ToArray()).ToLowerInvariant();
-
-            if (!int.TryParse(valueStr, out var value))
-                return s_defaultCacheExpiration;
-
-            return unit switch
-            {
-                "s" or "second" or "seconds" => TimeSpan.FromSeconds(value),
-                "m" or "minute" or "minutes" => TimeSpan.FromMinutes(value),
-                "h" or "hour" or "hours" => TimeSpan.FromHours(value),
-                "d" or "day" or "days" => TimeSpan.FromDays(value),
-                _ => TimeSpan.FromMinutes(5)
-            };
-        }
-        catch
-        {
-            return s_defaultCacheExpiration; // Default on error
-        }
-    }
-
-    private static string ParseFilePath(FeeEstimationOptions feeEstimationOptions)
+    /// <summary>
+    /// The cache file as a full path (a relative one from the working directory; the daemon has already anchored the
+    /// file's relative path to the configuration directory, NL-306), or null when the cache is off: no
+    /// <see cref="FeeEstimationOptions.CacheFile"/>, or <see cref="FeeEstimationOptions.SourceFixed"/>, which has
+    /// nothing to remember.
+    /// </summary>
+    private static string? ParseFilePath(FeeEstimationOptions feeEstimationOptions)
     {
         var filePath = feeEstimationOptions.CacheFile;
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, FeeCacheFileName);
-        }
+        if (string.IsNullOrWhiteSpace(filePath) || feeEstimationOptions.IsSource(FeeEstimationOptions.SourceFixed))
+            return null;
 
-        // Check if the file path is absolute or relative
-        return Path.IsPathRooted(filePath)
-                   ? filePath
-                   : Path.Combine(Directory.GetCurrentDirectory(),
-                                  filePath); // If it's relative, combine it with the current directory
+        return Path.GetFullPath(filePath.Trim());
     }
 }

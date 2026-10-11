@@ -6,3 +6,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("NLightning.Infrastructure.Bitcoin.Tests")]
 [assembly: InternalsVisibleTo("NLightning.Integration.Tests")]
 [assembly: InternalsVisibleTo("NLightning.Tests.Utils")]
+[assembly: InternalsVisibleTo("NLightning.SphinxBenchmark")]

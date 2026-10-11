@@ -13,22 +13,54 @@ public class WalletAddressesDbRepository(NLightningDbContext context)
 {
     public async Task<WalletAddressModel?> GetUnusedAddressAsync(AddressType type, bool isChange)
     {
-        var walletAddressEntity = await DbSet.AsNoTracking()
-                                             .Include(x => x.Utxos)
-                                             .Where(x => x.AddressType.Equals(type)
-                                                      && x.IsChange.Equals(isChange))
-                                             .Where(x => x.Utxos != null
-                                                      && x.Utxos.Count().Equals(0))
-                                             .OrderBy(x => x.Index)
-                                             .FirstOrDefaultAsync();
+        // NL-280: never go back below an address that was handed out (reserved) or received funds. Spending deletes the
+        // UTXO row, so an address handed out before reservations existed and since spent is skipped as long as a later
+        // address was used.
+        var highestUsedEntity = await DbSet.AsNoTracking()
+                                           .Where(x => x.AccountIndex == 0 && x.AddressType.Equals(type)
+                                                    && x.IsChange.Equals(isChange)
+                                                    && (x.IsReserved || (x.Utxos != null && x.Utxos.Any())))
+                                           .OrderByDescending(x => x.Index)
+                                           .FirstOrDefaultAsync();
+        var query = DbSet.AsNoTracking()
+                         .Include(x => x.Utxos)
+                         .Where(x => x.AccountIndex == 0 && x.AddressType.Equals(type)
+                                  && x.IsChange.Equals(isChange)
+                                  && !x.IsReserved)
+                         .Where(x => x.Utxos != null
+                                  && x.Utxos.Count().Equals(0));
+        if (highestUsedEntity is not null)
+        {
+            var highestUsed = highestUsedEntity.Index;
+            query = query.Where(x => x.Index > highestUsed);
+        }
+
+        var walletAddressEntity = await query.OrderBy(x => x.Index).FirstOrDefaultAsync();
 
         return walletAddressEntity is null ? null : MapEntityToModel(walletAddressEntity);
+    }
+
+    public async Task ReserveAsync(WalletAddressModel address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        // Recovery derives and reserves proven historical addresses in one atomic save; Added rows are
+        // invisible to a database query until that save. Local excludes Deleted entities.
+        var entity = DbSet.Local.FirstOrDefault(x => x.Index == address.Index
+                                                  && x.IsChange == address.IsChange
+                                                  && x.AddressType == address.AddressType)
+                  ?? await DbSet.FirstOrDefaultAsync(x => x.Index == address.Index
+                                                       && x.IsChange == address.IsChange
+                                                       && x.AddressType == address.AddressType)
+                  ?? throw new InvalidOperationException($"Wallet address {address.Address} is not stored");
+        if (!StringComparer.Ordinal.Equals(entity.Address, address.Address))
+            throw new InvalidOperationException("Wallet address reservation does not match the stored derivation.");
+        entity.IsReserved = true;
     }
 
     public async Task<uint> GetLastUsedAddressIndex(AddressType addressType, bool isChange)
     {
         var walletAddressEntity = await DbSet.AsNoTracking()
-                                             .Where(x => x.AddressType.Equals(addressType)
+                                             .Where(x => x.AccountIndex == 0 && x.AddressType.Equals(addressType)
                                                       && x.IsChange.Equals(isChange))
                                              .OrderByDescending(x => x.Index)
                                              .FirstOrDefaultAsync();
@@ -60,12 +92,22 @@ public class WalletAddressesDbRepository(NLightningDbContext context)
             Index = model.Index,
             IsChange = model.IsChange,
             AddressType = model.AddressType,
-            Address = model.Address
+            Address = model.Address,
+            IsReserved = model.IsReserved,
+            AccountIndex = model.AccountIndex,
+            DerivationIndex = model.DerivationIndex,
+            AccountName = model.AccountName
         };
     }
 
     internal static WalletAddressModel MapEntityToModel(WalletAddressEntity entity)
     {
-        return new WalletAddressModel(entity.AddressType, entity.Index, entity.IsChange, entity.Address);
+        return new WalletAddressModel(entity.AddressType, entity.Index, entity.IsChange, entity.Address)
+        {
+            IsReserved = entity.IsReserved,
+            AccountIndex = entity.AccountIndex,
+            DerivationIndex = entity.DerivationIndex,
+            AccountName = entity.AccountName
+        };
     }
 }

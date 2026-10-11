@@ -6,13 +6,11 @@ using Domain.Money;
 
 public class FundingOutput : BaseOutput
 {
-    public override ScriptType ScriptType => ScriptType.P2WSH;
-
     public PubKey LocalPubKey { get; }
     public PubKey RemotePubKey { get; }
 
     public FundingOutput(LightningMoney amount, PubKey localPubKey, PubKey remotePubKey)
-        : base(amount, CreateMultisigScript(localPubKey, remotePubKey))
+        : base(amount, CreateMultisigScript(localPubKey, remotePubKey), ScriptType.P2WSH)
     {
         ArgumentNullException.ThrowIfNull(localPubKey);
         ArgumentNullException.ThrowIfNull(remotePubKey);

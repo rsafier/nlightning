@@ -5,20 +5,18 @@ using Domain.Money;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class TxInitRbfMessageTests
 {
-    private readonly TxInitRbfMessageTypeSerializer _txInitRbfMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<TxInitRbfMessage> _txInitRbfMessageTypeSerializer;
 
     public TxInitRbfMessageTests()
     {
         _txInitRbfMessageTypeSerializer =
-            new TxInitRbfMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                               SerializerHelper.TlvConverterFactory,
-                                               SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.WireRegistry.Get<TxInitRbfMessage>()!;
     }
 
     #region Deserialize

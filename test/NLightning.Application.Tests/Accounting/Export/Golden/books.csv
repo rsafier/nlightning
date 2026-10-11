@@ -1,0 +1,15 @@
+ledger_seq,occurred_at,event_key,kind,account,amount_msat,description
+1,2026-01-01T09:30:00.123Z,wallet:aa:0:in,WalletReceived,assets:onchain:wallet,1000000000,WalletReceived
+1,2026-01-01T09:30:00.123Z,wallet:aa:0:in,WalletReceived,equity:transfers:in,-1000000000,WalletReceived
+2,2026-01-02T09:30:00.123Z,chan:01:funded,ChannelFunded,assets:lightning:channels,500000000,ChannelFunded
+2,2026-01-02T09:30:00.123Z,chan:01:funded,ChannelFunded,expenses:onchain:fees:funding,1234567,ChannelFunded
+2,2026-01-02T09:30:00.123Z,chan:01:funded,ChannelFunded,assets:onchain:clearing,-501234567,ChannelFunded
+3,2026-01-02T09:30:00.123Z,wallet:aa:0:spent,WalletOutputSpent,assets:onchain:wallet,-501234567,WalletOutputSpent
+3,2026-01-02T09:30:00.123Z,wallet:aa:0:spent,WalletOutputSpent,assets:onchain:clearing,501234567,WalletOutputSpent
+4,2026-01-03T09:30:00.123Z,inv:01:settled,InvoiceSettled,assets:lightning:channels,12345678,"InvoiceSettled: coffee; ""large"", \ été"
+4,2026-01-03T09:30:00.123Z,inv:01:settled,InvoiceSettled,income:lightning:received,-12345678,"InvoiceSettled: coffee; ""large"", \ été"
+5,2026-01-04T09:30:00.123Z,fwd:01:0:settled,ForwardSettled,assets:lightning:channels,1001,ForwardSettled
+5,2026-01-04T09:30:00.123Z,fwd:01:0:settled,ForwardSettled,income:lightning:routing,-1001,ForwardSettled
+6,2026-01-05T09:30:00.123Z,pay:02:succeeded,PaymentSucceeded,assets:lightning:channels,-5000051,"PaymentSucceeded: =HYPERLINK(""x"")"
+6,2026-01-05T09:30:00.123Z,pay:02:succeeded,PaymentSucceeded,expenses:lightning:sent,5000000,"PaymentSucceeded: =HYPERLINK(""x"")"
+6,2026-01-05T09:30:00.123Z,pay:02:succeeded,PaymentSucceeded,expenses:lightning:routing-fees,51,"PaymentSucceeded: =HYPERLINK(""x"")"

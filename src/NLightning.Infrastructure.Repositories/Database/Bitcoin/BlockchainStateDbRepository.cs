@@ -41,7 +41,11 @@ public class BlockchainStateDbRepository(NLightningDbContext context)
 
     private static BlockchainState MapEntityToDomain(BlockchainStateEntity entity)
     {
-        return new BlockchainState(entity.LastProcessedHeight, entity.LastProcessedBlockHash, entity.LastProcessedAt)
+        // Written as DateTime.UtcNow; the providers read it back without a kind (NL-885)
+        var lastProcessedAt = entity.LastProcessedAt.Kind == DateTimeKind.Unspecified
+                                  ? DateTime.SpecifyKind(entity.LastProcessedAt, DateTimeKind.Utc)
+                                  : entity.LastProcessedAt.ToUniversalTime();
+        return new BlockchainState(entity.LastProcessedHeight, entity.LastProcessedBlockHash, lastProcessedAt)
         {
             Id = entity.Id
         };

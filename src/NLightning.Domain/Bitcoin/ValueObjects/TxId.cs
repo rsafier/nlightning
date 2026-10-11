@@ -7,13 +7,14 @@ public readonly struct TxId : IEquatable<TxId>
 {
     private readonly byte[] _value;
 
-    public bool IsZero => _value.SequenceEqual(Zero._value);
-    public bool IsOne => _value.SequenceEqual(One._value);
+    public bool IsZero => _value is not null && _value.SequenceEqual(Zero._value);
+    public bool IsOne => _value is not null && _value.SequenceEqual(One._value);
 
     public TxId(byte[] hash)
     {
-        if (hash.Length < CryptoConstants.Sha256HashLen)
-            throw new ArgumentException("TxId cannot be empty.", nameof(hash));
+        ArgumentNullException.ThrowIfNull(hash);
+        if (hash.Length != CryptoConstants.Sha256HashLen)
+            throw new ArgumentException($"TxId must be {CryptoConstants.Sha256HashLen} bytes.", nameof(hash));
 
         _value = hash;
     }
@@ -67,8 +68,18 @@ public readonly struct TxId : IEquatable<TxId>
         return _value.GetByteArrayHashCode();
     }
 
+    /// <summary>
+    /// The txid as bitcoind, LND, CLN and block explorers show it: the hex of the reversed (display order) bytes, so a
+    /// txid copied from a log or an exception message can be looked up as it is (NL-519). The value itself stays in
+    /// internal (serialized) order; <see cref="ToInternalHex"/> prints that.
+    /// </summary>
     public override string ToString()
     {
-        return Convert.ToHexString(_value).ToLowerInvariant();
+        var reversed = (byte[])_value.Clone();
+        Array.Reverse(reversed);
+        return Convert.ToHexStringLower(reversed);
     }
+
+    /// <summary>The hex of the internal (serialized) byte order, for deterministic sort keys.</summary>
+    public string ToInternalHex() => Convert.ToHexStringLower(_value);
 }

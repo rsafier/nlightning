@@ -9,6 +9,8 @@ public enum MessageTypes : ushort
 
     Warning = 1,
     Stfu = 2,
+    PeerStorage = 7,
+    PeerStorageRetrieval = 9,
     Init = 16,
     Error = 17,
     Ping = 18,
@@ -25,8 +27,26 @@ public enum MessageTypes : ushort
     ChannelReady = 36,
     Shutdown = 38,
     ClosingSigned = 39,
+    ClosingComplete = 40,
+    ClosingSig = 41,
     OpenChannel2 = 64,
     AcceptChannel2 = 65,
+
+    #endregion
+
+    #region Splicing
+
+    /// <summary>BOLT 2 <c>splice_locked</c> (SP-LK-01).</summary>
+    SpliceLocked = 77,
+
+    /// <summary>BOLT 2 <c>splice_init</c> (SP-W-01).</summary>
+    SpliceInit = 80,
+
+    /// <summary>BOLT 2 <c>splice_ack</c> (SP-W-02).</summary>
+    SpliceAck = 81,
+
+    /// <summary>BOLT 2 "Batching channel messages" <c>start_batch</c> (SP-OP-03/04).</summary>
+    StartBatch = 127,
 
     #endregion
 
@@ -59,10 +79,25 @@ public enum MessageTypes : ushort
 
     #region Routing
 
-    AnnouncementSignatures = 259,
     ChannelAnnouncement = 256,
     NodeAnnouncement = 257,
-    ChannelUpdate = 258
+    ChannelUpdate = 258,
+    AnnouncementSignatures = 259,
+    AnnouncementSignatures2 = 260,
+    QueryShortChannelIds = 261,
+    ReplyShortChannelIdsEnd = 262,
+    QueryChannelRange = 263,
+    ReplyChannelRange = 264,
+    GossipTimestampFilter = 265,
+    ChannelAnnouncement2 = 267,
+    NodeAnnouncement2 = 269,
+    ChannelUpdate2 = 271,
+
+    #endregion
+
+    #region Onion Messages
+
+    OnionMessage = 513
 
     #endregion
 }

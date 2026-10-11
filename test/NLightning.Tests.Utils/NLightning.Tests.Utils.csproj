@@ -1,8 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>AnyCPU</Platforms>
@@ -29,11 +27,6 @@
   <PropertyGroup Condition="$(Configuration.Contains('Release'))">
     <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
   </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Docker.DotNet" Version="3.125.15"/>
-    <PackageReference Include="LNUnit" Version="3.0.4"/>
-  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>

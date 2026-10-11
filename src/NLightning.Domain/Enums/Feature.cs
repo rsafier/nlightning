@@ -137,6 +137,14 @@ public enum Feature
     OptionOnionMessages = 39,
 
     /// <summary>
+    /// 40 is for the compulsory bit, 41 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Zero-fee commitment and HTLC transactions (not supported; known so dependencies can be validated).
+    /// </remarks>
+    ZeroFeeCommitments = 41,
+
+    /// <summary>
     /// 42 is for the compulsory bit, 43 is for the optional bit.
     /// </summary>
     /// <remarks>
@@ -177,10 +185,75 @@ public enum Feature
     OptionZeroconf = 51,
 
     /// <summary>
+    /// 56 is for the compulsory bit, 57 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Trampoline routing (BOLT 4 "Trampoline Payments", BOLTs PR 836): the node relays payments to the next trampoline
+    /// node named in a <c>trampoline_onion_packet</c> and finds the route itself. Contexts I, N and 9 (and the BOLT 12
+    /// invoice features). Not supported yet (NL-875; experimental, see <c>FeatureOptions.ExperimentalFeatures</c>).
+    /// </remarks>
+    OptionTrampolineRouting = 57,
+
+    /// <summary>
     /// 60 is for the compulsory bit, 61 is for the optional bit.
     /// </summary>
     /// <remarks>
     /// This feature is optional and is used to indicate that the node supports simple close.
     /// </remarks>
-    OptionSimpleClose = 61
+    OptionSimpleClose = 61,
+
+    /// <summary>
+    /// 62 is for the compulsory bit, 63 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Channel splicing (not supported; known so dependencies can be validated).
+    /// </remarks>
+    OptionSplice = 63,
+
+    /// <summary>
+    /// 66 is for the compulsory bit, 67 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Only accepts onion messages from peers with a channel (not supported; known so dependencies can be validated).
+    /// </remarks>
+    OptionOnionMessagesOnlyChannels = 67,
+
+    /// <summary>
+    /// 70 is for the compulsory bit, 71 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Taproot gossip (<c>option_gossip_v2</c>, BOLTs PR #1059, draft): the node understands the v2 gossip messages
+    /// (<c>channel_announcement_2</c>, <c>channel_update_2</c>, <c>node_announcement_2</c>,
+    /// <c>announcement_signatures_2</c>) and, with <see cref="OptionSimpleTaproot"/>, opens and announces public simple
+    /// taproot channels with them. Contexts I and N. Experimental (NL-878; see <c>FeatureOptions.ExperimentalFeatures</c>).
+    /// </remarks>
+    OptionGossipV2 = 71,
+
+    /// <summary>
+    /// 72 is for the compulsory bit, 73 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// <c>option_gossip_v2_p2wsh</c> (BOLTs PR #1059): the node can announce P2WSH channels with the v2 messages.
+    /// Depends on <see cref="OptionGossipV2"/>. Not supported (known so dependencies can be validated); we never set it.
+    /// </remarks>
+    OptionGossipV2P2wsh = 73,
+
+    /// <summary>
+    /// 74 is for the compulsory bit, 75 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// <c>option_gossip_announce_private</c> (BOLTs PR #1059): the node can announce a channel that started out
+    /// unannounced. Not supported (known so its context can be filtered); we never set it.
+    /// </remarks>
+    OptionGossipAnnouncePrivate = 75,
+
+    /// <summary>
+    /// 80 is for the compulsory bit, 81 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Simple taproot channels (<c>option_simple_taproot</c>, BOLTs PR #995 final bits; contexts I and N, and a channel
+    /// type bit). The staging bits 180/181 are never advertised and not listed here (a peer's 181 is an unknown odd bit).
+    /// Not supported yet (NL-877; experimental, see <c>FeatureOptions.ExperimentalFeatures</c>).
+    /// </remarks>
+    OptionSimpleTaproot = 81
 }

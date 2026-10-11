@@ -13,7 +13,7 @@ Our project leverages GitHub for hosting code, issue tracking, feature requests,
 To maintain codebase integrity and facilitate review processes, all code changes must be made through pull requests
 following the GitHub Flow. We encourage your pull requests under the following guidelines:
 
-1. Fork the repository and create your branch from master.
+1. Fork the repository and create your branch from `main`.
 2. For added code, ensure corresponding tests are added and pass.
 3. Update documentation to reflect any changes to APIs.
 4. Verify that the test suite passes.
@@ -22,7 +22,7 @@ following the GitHub Flow. We encourage your pull requests under the following g
 
 ## Branching Strategy for Pull Requests
 
-Please initiate pull requests from branches other than master. This approach facilitates working on multiple issues
+Please initiate pull requests from branches other than `main`. This approach facilitates working on multiple issues
 simultaneously without conflict. We recommend naming branches with a prefix that indicates the type of contribution,
 such as feature/, bugfix/, followed by a short description of the contribution.
 
@@ -42,6 +42,11 @@ maintainers.
 
 Before submitting a pull request, you MUST execute `dotnet format` to ensure code style consistency. If you fail to run
 this command, the CI pipeline will fail, and your pull request will not be merged.
+
+CI builds, formats and tests with SDK 11 (so every project is built and tested for both net10.0 and net11.0), while
+the Wasm jobs use SDK 10. SDK 11's analyzers ask for a few more style fixes than SDK 10's (for example IDE0031,
+`handler?.Event += h`), so if you only have SDK 10, CI may still report formatting issues; the fixes are valid C# 14
+and build on both SDKs. Code must build for both frameworks: when an API differs, use `#if NET11_0_OR_GREATER`.
 
 ### Setting up pre-commit hook
 

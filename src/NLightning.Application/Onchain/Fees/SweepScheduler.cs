@@ -1,0 +1,540 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using NBitcoin;
+using NBitcoin.Crypto;
+
+namespace NLightning.Application.Onchain.Fees;
+
+using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Closing;
+using Domain.Crypto.ValueObjects;
+using Domain.Money;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Fees;
+using Domain.Onchain.Models;
+using Domain.Onchain.Taproot;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
+using Domain.Protocol.Models;
+using Domain.Signing.Recovery;
+
+/// <summary>
+/// Bumps our unconfirmed sweeps, claims and penalties by RBF (BOLT 5 plan §3.7, O6-T1; NL-317): every round, each
+/// <see cref="BroadcastState.Pending"/> transaction of purpose <see cref="BroadcastPurpose.Sweep"/>,
+/// <see cref="BroadcastPurpose.HtlcClaim"/> or <see cref="BroadcastPurpose.Penalty"/> that
+/// <see cref="SweepFeePolicy.ShouldBump"/> says has waited long enough is re-signed with a higher absolute fee
+/// (<see cref="SweepFeePolicy.DecideReplacement"/>: the BIP 125 minimum or the estimate for its deadline's target,
+/// whichever is higher, within the caps) and the same inputs, sequences, lock time and destination.
+/// </summary>
+/// <remarks>
+/// <para>The replacement is persisted before it is broadcast (D4): its row (<c>ReplacesTxId</c> = the old one), the
+/// old row <see cref="BroadcastState.Replaced"/> and every output row that named the old transaction pointing to the new
+/// one go into the executor's one save; the executor publishes afterwards. The deadline of a transaction is the
+/// earliest <see cref="OutputResolutionModel.DeadlineHeight"/> of the outputs it spends.</para>
+/// <para>Re-signing: every input spends one of the channel's output rows (by outpoint); the key comes from the row's
+/// descriptor (<see cref="OutputDescriptorKind.DelayedToLocal"/> → delayed key at our point,
+/// <see cref="OutputDescriptorKind.PaymentToRemote"/> → payment basepoint, the peer's HTLC outputs → HTLC key at its
+/// point, the revoked outputs → revocation key with the peer's secret of the revoked commitment from our shachain),
+/// the amount and witness script from its <see cref="OutputDescriptorData"/>. Only the signature (witness item 0) of
+/// each input changes; every other witness item is kept. An input whose row or data is missing leaves the transaction as
+/// it is (logged once).</para>
+/// <para>Retirement (NL-294): a pending transaction whose input was spent on chain by another transaction can never
+/// confirm and is abandoned; a pending one that no output row names any more and that a later row replaces (a penalty
+/// batch split into singles, O5-T3) is marked replaced. Neither is rebroadcast after that.</para>
+/// <para>Pre-signed HTLC-timeout/success transactions and our commitment carry a fee fixed at signing and are not
+/// bumped here (the scheduler deliberately skips <see cref="BroadcastPurpose.HtlcTransaction"/>). Without anchors such
+/// an HTLC transaction pays its fee from the HTLC output and cannot be replaced. With anchors (wave O7) the bumping
+/// belongs to the resolvers instead: <c>LocalCommitResolver.MaintainAnchorHtlcTransactionAsync</c> RBF-replaces our
+/// wallet-funded anchors HTLC transactions on the <see cref="SweepFeePolicy.ShouldBump"/> schedule, and the anchors
+/// commitment is fee-bumped through its CPFP child (<c>AnchorCpfpService</c> builds and RBF-bumps the child).</para>
+/// </remarks>
+public sealed class SweepScheduler : ISweepScheduler
+{
+    private static readonly BroadcastPurpose[] s_bumpable =
+        [BroadcastPurpose.Sweep, BroadcastPurpose.HtlcClaim, BroadcastPurpose.Penalty];
+
+    private readonly IRemoteSigningWorkflowCoordinator? _signingWorkflows;
+    private readonly IFeeService _feeService;
+    private readonly ILightningSigner _lightningSigner;
+    private readonly ILogger<SweepScheduler> _logger;
+    private readonly SweepFeePolicy _policy;
+    private readonly ISecretStorageServiceFactory? _secretStorageServiceFactory;
+    private readonly OperatorFeeBumps? _operatorFeeBumps;
+    private readonly HashSet<TxId> _loggedOnce = [];
+
+    public SweepScheduler(IFeeService feeService, ILightningSigner lightningSigner, ILogger<SweepScheduler> logger,
+                          SweepFeePolicy? policy = null,
+                          ISecretStorageServiceFactory? secretStorageServiceFactory = null,
+                          OperatorFeeBumps? operatorFeeBumps = null,
+                          IRemoteSigningWorkflowCoordinator? signingWorkflows = null)
+    {
+        _signingWorkflows = signingWorkflows;
+        _feeService = feeService;
+        _lightningSigner = lightningSigner;
+        _logger = logger;
+        _policy = policy ?? new SweepFeePolicy();
+        _secretStorageServiceFactory = secretStorageServiceFactory;
+        _operatorFeeBumps = operatorFeeBumps;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<OutputResolverAction>> PlanAsync(ChannelCloseModel close,
+                                                                     IReadOnlyList<OutputResolutionModel> outputs,
+                                                                     uint height, IUnitOfWork unitOfWork,
+                                                                     CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(close);
+        ArgumentNullException.ThrowIfNull(outputs);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+
+        var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(close.ChannelId);
+        if (_signingWorkflows is INativeSweepSigningRecovery nativeRecovery)
+        {
+            var pending = await _signingWorkflows.GetPendingAsync(close.ChannelId);
+            if (pending.Count != 0)
+            {
+                if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.OnchainInitialSweep)
+                    return []; // Initial sweeps are resumed and committed by their resolver's round.
+                if (pending.Count != 1 || pending[0].Kind != SigningWorkflowKind.OnchainSweep
+                 || pending[0].State != SigningWorkflowState.Pending || pending[0].PublicationIntent is null)
+                    throw new InvalidOperationException("Pending signing workflow blocks a new sweep replacement.");
+                var saved = pending[0];
+                var intent = JsonSerializer.Deserialize<SweepPublicationIntent>(saved.PublicationIntent!)
+                    ?? throw new InvalidOperationException("Sweep recovery lost its publication intent.");
+                var original = broadcasts.SingleOrDefault(b => b.TransactionId == new TxId(intent.ReplacesTransactionId));
+                if (original is null
+                 || !original.RawTransaction.AsSpan().SequenceEqual(intent.OriginalTransaction))
+                    throw new InvalidOperationException("Sweep recovery no longer matches its original broadcast.");
+                var obsolete = original.State != BroadcastState.Pending;
+                var template = Transaction.Load(intent.ReplacementTemplate, Network.Main);
+                foreach (var input in template.Inputs)
+                {
+                    var spent = outputs.SingleOrDefault(o => o.TransactionId == new TxId(input.PrevOut.Hash.ToBytes())
+                                                          && o.OutputIndex == input.PrevOut.N)
+                        ?? throw new InvalidOperationException("Sweep recovery lost its original output row.");
+                    obsolete |= spent.State is OutputResolutionState.Resolved or OutputResolutionState.Irrevocable;
+                    if (!obsolete && spent.ResolvingTransactionId != original.TransactionId)
+                        throw new InvalidOperationException("Sweep recovery input no longer names its original broadcast.");
+                }
+                if (obsolete)
+                {
+                    var descriptor = new SigningWorkflowDescriptor(close.ChannelId, SigningWorkflowKind.OnchainSweep,
+                        0, 0, saved.SnapshotFingerprint)
+                    { PublicationIntent = saved.PublicationIntent };
+                    return [new StageWriteAction("retire obsolete sweep signing intent", (uow, _) =>
+                        nativeRecovery.StageRetireSweepAsync(descriptor, uow))];
+                }
+                if (!outputs.Any(o => o.ResolvingTransactionId == original.TransactionId))
+                    throw new InvalidOperationException("Sweep recovery lost its original resolution decision.");
+                var recovered = await SignNativeSweepAsync(close, intent, saved.PublicationIntent!, unitOfWork);
+                return ReplacementActions(recovered, outputs, original.TransactionId);
+            }
+        }
+        var rows = outputs.ToDictionary(o => (o.TransactionId, o.OutputIndex));
+
+        // An operator's request ends with its output's resolution (NL-1186)
+        if (_operatorFeeBumps is not null)
+            foreach (var row in outputs.Where(o => o.State is OutputResolutionState.Resolved
+                                                           or OutputResolutionState.Irrevocable))
+                _operatorFeeBumps.ClearOutput(row.TransactionId, row.OutputIndex);
+        var actions = new List<OutputResolverAction>();
+        Secret? revocationSecret = null;
+
+        foreach (var broadcast in broadcasts)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (broadcast.State != BroadcastState.Pending || !s_bumpable.Contains(broadcast.Purpose))
+                continue;
+
+            var txId = broadcast.TransactionId;
+            Transaction tx;
+            try
+            {
+                tx = Transaction.Load(broadcast.RawTransaction, Network.Main);
+            }
+            catch (FormatException e)
+            {
+                LogOnce(txId, e, "Stored broadcast {TxId} of channel {ChannelId} does not parse; not bumping it",
+                        Display(txId), close.ChannelId);
+                continue;
+            }
+
+            var spent = tx.Inputs.Select(i => rows.GetValueOrDefault((new TxId(i.PrevOut.Hash.ToBytes()),
+                                                                       i.PrevOut.N)))
+                          .ToList();
+
+            // An input spent on chain by another transaction: this one can never confirm
+            if (spent.Any(r => r is { State: OutputResolutionState.Resolved or OutputResolutionState.Irrevocable }))
+            {
+                _logger.LogInformation("{Purpose} {TxId} of channel {ChannelId} lost an input to another transaction "
+                                     + "on chain; it is no longer rebroadcast", broadcast.Purpose, Display(txId),
+                                       close.ChannelId);
+                actions.Add(new StageWriteAction($"abandon {Display(txId)}",
+                                                 (uow, _) => uow.BroadcastTransactionDbRepository
+                                                                .MarkAbandonedAsync(txId)));
+                continue;
+            }
+
+            var naming = outputs.Where(o => o.ResolvingTransactionId == txId).ToList();
+            if (naming.Count == 0)
+            {
+                // Superseded by a later row (a penalty batch split into singles): retire it
+                if (broadcasts.Any(b => b.ReplacesTransactionId == txId))
+                    actions.Add(new StageWriteAction($"replaced {Display(txId)}",
+                                                     (uow, _) => uow.BroadcastTransactionDbRepository
+                                                                    .MarkReplacedAsync(txId)));
+                continue;
+            }
+
+            var ownDeadline = spent.Where(r => r?.DeadlineHeight is not null).Select(r => r!.DeadlineHeight).Min();
+            var deadline = ownDeadline;
+
+            // The operator's request (walletrpc BumpFee, NL-1186): a fresh one replaces at once; its deadline never
+            // loosens the output's own
+            var (bump, fresh) = FindOperatorBump(spent);
+            if (bump?.DeadlineHeight is { } operatorDeadline)
+                deadline = deadline is { } own ? Math.Min(own, operatorDeadline) : operatorDeadline;
+            if (!fresh && !_policy.ShouldBump(broadcast.FirstBroadcastHeight, height, deadline))
+                continue;
+
+            if (spent.Any(r => r is null) || tx.Outputs.Count != 1)
+            {
+                LogOnce(txId, null, "{Purpose} {TxId} of channel {ChannelId} spends an output without a row, or has "
+                                  + "more than one output; it is not bumped", broadcast.Purpose, Display(txId),
+                        close.ChannelId);
+                continue;
+            }
+
+            if (spent.Any(r => IsRevoked(r!.Descriptor)) && revocationSecret is null)
+            {
+                revocationSecret = await LoadRevocationSecretAsync(close, unitOfWork);
+                if (revocationSecret is null)
+                {
+                    LogOnce(txId, null, "The peer's secret of revoked commitment {Number} of channel {ChannelId} is "
+                                      + "unknown; penalty {TxId} is not bumped", close.CommitmentNumber,
+                            close.ChannelId, Display(txId));
+                    continue;
+                }
+            }
+
+            var replacement = await BuildReplacementAsync(close, broadcast, tx, spent!, deadline,
+                                                           ownDeadline is not null, height, revocationSecret, bump,
+                                                           unitOfWork, cancellationToken);
+            if (replacement is null)
+                continue;
+
+            if (fresh)
+                foreach (var row in spent)
+                    _operatorFeeBumps!.MarkOutputApplied(row!.TransactionId, row.OutputIndex);
+
+            actions.Add(new BroadcastAction(replacement));
+            foreach (var row in naming)
+                actions.Add(new UpsertOutputAction(row with { ResolvingTransactionId = replacement.TransactionId }));
+            actions.Add(new StageWriteAction($"replaced {Display(txId)}",
+                                             (uow, _) => uow.BroadcastTransactionDbRepository
+                                                            .MarkReplacedAsync(txId)));
+            if (_signingWorkflows is INativeSweepSigningRecovery)
+                break; // One captured lifecycle per channel is committed by this round.
+        }
+
+        return actions;
+    }
+
+    private async Task<BroadcastTransactionModel?> BuildReplacementAsync(ChannelCloseModel close,
+                                                                        BroadcastTransactionModel broadcast,
+                                                                        Transaction tx,
+                                                                        IReadOnlyList<OutputResolutionModel> spent,
+                                                                        uint? deadline, bool hasOwnDeadline,
+                                                                        uint height,
+                                                                        Secret? revocationSecret,
+                                                                        OperatorFeeBumpRequest? bump,
+                                                                        IUnitOfWork unitOfWork,
+                                                                        CancellationToken cancellationToken)
+    {
+        var txId = broadcast.TransactionId;
+        var inputs = new List<(OutputDescriptorData Data, SweepKeyKind Kind)>();
+        foreach (var row in spent)
+        {
+            if (OutputDescriptorData.TryDecode(row) is not { } data || GetKeyKind(row.Descriptor) is not { } kind
+             || kind is SweepKeyKind.DelayedPayment or SweepKeyKind.HtlcRemotePoint
+             && data.PerCommitmentPoint is null)
+            {
+                LogOnce(txId, null, "Output {Vout} of {OutputTxId} ({Kind}) spent by {TxId} of channel {ChannelId} "
+                                  + "has no usable descriptor; not bumping it", row.OutputIndex,
+                        Display(row.TransactionId), row.Descriptor, Display(txId), close.ChannelId);
+                return null;
+            }
+
+            inputs.Add((data, kind));
+        }
+
+        var total = inputs.Aggregate(0UL, (sum, i) => sum + i.Data.AmountSat);
+        var outputSat = (ulong)tx.Outputs[0].Value.Satoshi;
+        if (outputSat >= total)
+        {
+            LogOnce(txId, null, "{TxId} of channel {ChannelId} pays out more than its inputs' recorded value; not "
+                              + "bumping it", Display(txId), close.ChannelId);
+            return null;
+        }
+
+        var oldFee = total - outputSat;
+
+        // The replacement has the same shape; a signature may be one byte longer
+        var weight = (long)tx.GetVirtualSize() * 4 + tx.Inputs.Count * 4;
+        var target = bump?.ConfTarget is { } confTarget and > 0
+                         ? confTarget
+                         : _policy.GetConfirmationTarget(height, deadline);
+        var estimate = await FeeEstimates.GetForTargetAsync(_feeService, target, _logger, cancellationToken);
+        if (bump?.StartingFeeratePerKw is { } starting && starting > estimate)
+            estimate = starting;
+        var destination = tx.Outputs[0].ScriptPubKey.ToBytes();
+        var dust = ShutdownScriptValidator.GetDustThresholdSat(destination);
+        var isPenalty = broadcast.Purpose == BroadcastPurpose.Penalty;
+        // An operator's budget never lowers the cap that protects an output a competitor can take at its deadline (an
+        // HTLC claim, a penalty: near the deadline a penalty may pay up to PenaltyMaxFeePerMille), as the anchor CPFP's
+        // ApplyBudget does; without a deadline the budget replaces the cap
+        var decision = bump?.BudgetSat is { } budget and > 0
+                           ? _policy.DecideReplacementWithBudget(
+                               total, oldFee, weight, estimate,
+                               hasOwnDeadline
+                                   ? Math.Max(budget, _policy.GetMaxFee(total, isPenalty, height, deadline))
+                                   : budget, dust)
+                           : _policy.DecideReplacement(total, oldFee, weight, estimate, isPenalty, height, deadline,
+                                                       dust);
+        if (decision is null)
+        {
+            LogOnce(txId, null, "{Purpose} {TxId} of channel {ChannelId} is unconfirmed, but no replacement can pay "
+                              + "more than its {FeeSat} sat fee within the cap; it is kept", broadcast.Purpose,
+                    Display(txId), close.ChannelId, oldFee);
+            return null;
+        }
+
+        var replacement = tx.Clone();
+        replacement.Outputs[0].Value = Money.Satoshis(total - decision.FeeSat);
+        foreach (var input in replacement.Inputs)
+            input.WitScript = WitScript.Empty;
+        var unsignedBytes = replacement.ToBytes();
+
+        // Simple taproot script-path inputs (NL-877 T4): BIP 341 commits to every spent output, all recorded on the rows
+        IReadOnlyList<Domain.Bitcoin.Wallet.Models.SpentOutput>? taprootSpentOutputs =
+            inputs.Any(i => i.Data.TaprootControlBlock is not null)
+                ? replacement.Inputs
+                             .Select((input, i) => new Domain.Bitcoin.Wallet.Models.SpentOutput(
+                                         new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N,
+                                         LightningMoney.Satoshis(inputs[i].Data.AmountSat),
+                                         new BitcoinScript(inputs[i].Data.ScriptPubKey)))
+                             .ToList()
+                : null;
+
+        var contexts = new List<SweepSigningContext>();
+        try
+        {
+            for (var i = 0; i < replacement.Inputs.Count; i++)
+            {
+                var (data, kind) = inputs[i];
+                var oldWitness = tx.Inputs[i].WitScript.Pushes.ToArray();
+                if (oldWitness.Length == 0)
+                    return null;
+
+                // <64-byte BIP 340 sig> [<preimage>] <leaf> <control_block>, or the signature alone on the key path
+                // (a revocation penalty, NL-966: the recorded leaf and control block give the merkle root): only the
+                // signature changes
+                if (data.TaprootControlBlock is { } controlBlock)
+                {
+                    var keyPath = kind == SweepKeyKind.Revocation && oldWitness.Length == 1;
+                    var taprootContext = new SweepSigningContext(unsignedBytes, i, data.WitnessScript, data.AmountSat,
+                                                                 kind,
+                                                                 kind == SweepKeyKind.Revocation
+                                                                     ? null
+                                                                     : data.PerCommitmentPoint,
+                                                                 kind == SweepKeyKind.Revocation
+                                                                     ? revocationSecret
+                                                                     : null, taprootSpentOutputs,
+                                                                 keyPath && data.WitnessScript is { } leaf
+                                                                     ? TapscriptMerkleRoot.Compute(leaf, controlBlock)
+                                                                     : null);
+                    contexts.Add(taprootContext);
+                    if (_signingWorkflows is INativeSweepSigningRecovery)
+                    {
+                        replacement.Inputs[i].WitScript = new WitScript(oldWitness);
+                        continue;
+                    }
+                    oldWitness[0] = _lightningSigner.SignSweepInput(close.ChannelId, taprootContext);
+                    replacement.Inputs[i].WitScript = new WitScript(oldWitness);
+                    continue;
+                }
+
+                var witnessScript = data.WitnessScript
+                                 ?? (kind != SweepKeyKind.Payment && oldWitness.Length >= 3 ? oldWitness[^1] : null);
+                var context = new SweepSigningContext(unsignedBytes, i, witnessScript, data.AmountSat, kind,
+                                                      kind == SweepKeyKind.Revocation ? null : data.PerCommitmentPoint,
+                                                      kind == SweepKeyKind.Revocation ? revocationSecret : null);
+                contexts.Add(context);
+                if (_signingWorkflows is INativeSweepSigningRecovery)
+                {
+                    replacement.Inputs[i].WitScript = new WitScript(oldWitness);
+                    continue;
+                }
+                var compact = _lightningSigner.SignSweepInput(close.ChannelId, context);
+                if (!ECDSASignature.TryParseFromCompact(compact, out var ecdsa))
+                    return null;
+
+                oldWitness[0] = new TransactionSignature(ecdsa, SigHash.All).ToBytes();
+                replacement.Inputs[i].WitScript = new WitScript(oldWitness);
+            }
+        }
+        catch (Exception e) when (e is Domain.Exceptions.SignerException or ArgumentException
+                                      or InvalidOperationException)
+        {
+            LogOnce(txId, e, "Cannot re-sign {Purpose} {TxId} of channel {ChannelId}; it is kept", broadcast.Purpose,
+                    Display(txId), close.ChannelId);
+            return null;
+        }
+
+        if (_signingWorkflows is INativeSweepSigningRecovery native)
+        {
+            var intent = new SweepPublicationIntent((byte[])txId, broadcast.RawTransaction, replacement.ToBytes(),
+                native.EncodeSweepContexts(contexts), broadcast.Purpose, height, decision.FeeratePerKw, decision.FeeSat,
+                contexts.Select(c => c.TaprootSpentOutputs is not null).ToArray());
+            var encoded = JsonSerializer.SerializeToUtf8Bytes(intent);
+            return await SignNativeSweepAsync(close, intent, encoded, unitOfWork);
+        }
+
+        var newTxId = new TxId(replacement.GetHash().ToBytes());
+        _logger.LogWarning("{Purpose} {TxId} of channel {ChannelId} is unconfirmed since height {Since} (deadline "
+                         + "{Deadline}); replacing it with {NewTxId}: fee {OldFee} -> {NewFee} sat ({Rate} sat/kw, "
+                         + "target {Target} blocks)", broadcast.Purpose, Display(txId), close.ChannelId,
+                           broadcast.FirstBroadcastHeight, deadline, Display(newTxId), oldFee, decision.FeeSat,
+                           decision.FeeratePerKw, target);
+        return new BroadcastTransactionModel(new SignedTransaction(newTxId, replacement.ToBytes()), broadcast.Purpose,
+                                             close.ChannelId, height, decision.FeeratePerKw, txId,
+                                             fee: LightningMoney.Satoshis(decision.FeeSat));
+    }
+
+    private sealed record SweepPublicationIntent(byte[] ReplacesTransactionId, byte[] OriginalTransaction,
+        byte[] ReplacementTemplate, byte[] Contexts, BroadcastPurpose Purpose, uint Height, uint FeeratePerKw,
+        ulong FeeSat, bool[] TaprootInputs);
+
+    private async Task<BroadcastTransactionModel> SignNativeSweepAsync(ChannelCloseModel close,
+        SweepPublicationIntent intent, byte[] encoded, IUnitOfWork unitOfWork)
+    {
+        using var workflow = await _signingWorkflows!.BeginAsync(new SigningWorkflowDescriptor(close.ChannelId,
+            SigningWorkflowKind.OnchainSweep, 0, 0, SHA256.HashData(encoded))
+        { PublicationIntent = encoded });
+        workflow.Activate();
+        var signatures = ((INativeSweepSigningRecovery)_signingWorkflows).SignSweepInputs(workflow, _lightningSigner);
+        var replacement = Transaction.Load(intent.ReplacementTemplate, Network.Main);
+        if (signatures.Count != replacement.Inputs.Count || intent.TaprootInputs.Length != signatures.Count)
+            throw new InvalidOperationException("Recovered sweep receipt count does not match its inputs.");
+        for (var i = 0; i < signatures.Count; i++)
+        {
+            var witness = replacement.Inputs[i].WitScript.Pushes.ToArray();
+            if (witness.Length == 0)
+                throw new InvalidOperationException("Recovered sweep lost its witness template.");
+            if (intent.TaprootInputs[i])
+                witness[0] = signatures[i];
+            else
+            {
+                if (!ECDSASignature.TryParseFromCompact(signatures[i], out var signature))
+                    throw new InvalidOperationException("Recovered sweep signature is invalid.");
+                witness[0] = new TransactionSignature(signature, SigHash.All).ToBytes();
+            }
+            replacement.Inputs[i].WitScript = new WitScript(witness);
+        }
+        var result = new BroadcastTransactionModel(new SignedTransaction(new TxId(replacement.GetHash().ToBytes()),
+            replacement.ToBytes()), intent.Purpose, close.ChannelId, intent.Height, intent.FeeratePerKw,
+            new TxId(intent.ReplacesTransactionId), fee: LightningMoney.Satoshis(intent.FeeSat));
+        await workflow.StageConsumeAsync(unitOfWork);
+        return result;
+    }
+
+    private static IReadOnlyList<OutputResolverAction> ReplacementActions(BroadcastTransactionModel replacement,
+        IReadOnlyList<OutputResolutionModel> outputs, TxId original)
+    {
+        var actions = new List<OutputResolverAction> { new BroadcastAction(replacement) };
+        actions.AddRange(outputs.Where(o => o.ResolvingTransactionId == original)
+            .Select(o => new UpsertOutputAction(o with { ResolvingTransactionId = replacement.TransactionId })));
+        actions.Add(new StageWriteAction($"replaced {Display(original)}",
+            (uow, _) => uow.BroadcastTransactionDbRepository.MarkReplacedAsync(original)));
+        return actions;
+    }
+
+    private async Task<Secret?> LoadRevocationSecretAsync(ChannelCloseModel close, IUnitOfWork unitOfWork)
+    {
+        if (_secretStorageServiceFactory is null || close.CommitmentNumber is not { } number)
+            return null;
+
+        var entries = await unitOfWork.RemoteShachainDbRepository.GetByChannelIdAsync(close.ChannelId);
+        using var shachain = _secretStorageServiceFactory.CreatePerCommitmentStorage();
+        try
+        {
+            shachain.Load(entries);
+            return shachain.DeriveOldSecret(PerCommitmentIndex.From(number));
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The operator's request on one of the spent outputs (NL-1186), and whether no round applied it yet.
+    /// </summary>
+    private (OperatorFeeBumpRequest? Request, bool Fresh) FindOperatorBump(
+        IReadOnlyList<OutputResolutionModel?> spent)
+    {
+        if (_operatorFeeBumps is null)
+            return (null, false);
+
+        OperatorFeeBumpRequest? found = null;
+        var fresh = false;
+        foreach (var row in spent)
+        {
+            if (row is null || _operatorFeeBumps.GetOutput(row.TransactionId, row.OutputIndex, out var rowFresh) is not
+                { } request)
+                continue;
+
+            found ??= request;
+            fresh |= rowFresh;
+        }
+
+        return (found, fresh);
+    }
+
+    /// <summary>
+    /// Whether the scheduler can re-sign the sweep, claim or penalty of an output of <paramref name="descriptor"/>
+    /// (an operator's <c>BumpFee</c> applies to those, NL-1186; HTLC transactions and anchors are bumped elsewhere).
+    /// </summary>
+    public static bool CanBump(OutputDescriptorKind descriptor) => GetKeyKind(descriptor) is not null;
+
+    private static SweepKeyKind? GetKeyKind(OutputDescriptorKind descriptor) => descriptor switch
+    {
+        OutputDescriptorKind.DelayedToLocal => SweepKeyKind.DelayedPayment,
+        OutputDescriptorKind.PaymentToRemote => SweepKeyKind.Payment,
+        OutputDescriptorKind.RemoteReceivedHtlc or OutputDescriptorKind.RemoteOfferedHtlc =>
+            SweepKeyKind.HtlcRemotePoint,
+        OutputDescriptorKind.RevokedToLocal or OutputDescriptorKind.RevokedHtlc
+                                            or OutputDescriptorKind.RevokedSecondLevel => SweepKeyKind.Revocation,
+        _ => null
+    };
+
+    private static bool IsRevoked(OutputDescriptorKind descriptor) =>
+        descriptor is OutputDescriptorKind.RevokedToLocal or OutputDescriptorKind.RevokedHtlc
+                                                          or OutputDescriptorKind.RevokedSecondLevel;
+
+    private void LogOnce(TxId txId, Exception? exception, string message, params object?[] args)
+    {
+        lock (_loggedOnce)
+        {
+            if (!_loggedOnce.Add(txId))
+                return;
+        }
+
+#pragma warning disable CA2254 // The templates are constants of this class
+        _logger.LogWarning(exception, message, args);
+#pragma warning restore CA2254
+    }
+
+    private static string Display(TxId txId) => new uint256(txId).ToString();
+}

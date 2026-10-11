@@ -12,14 +12,14 @@ public interface IChannelConfigDbRepository
     /// </summary>
     /// <param name="channelId">Channel ID</param>
     /// <param name="config">Channel configuration</param>
-    void Add(ChannelId channelId, ChannelConfig config);
+    void Add(ChannelId channelId, ChannelParams config);
 
     /// <summary>
     /// Updates an existing channel configuration
     /// </summary>
     /// <param name="channelId">Channel ID</param>
     /// <param name="config">Updated channel configuration</param>
-    void Update(ChannelId channelId, ChannelConfig config);
+    void Update(ChannelId channelId, ChannelParams config);
 
     /// <summary>
     /// Deletes a channel configuration
@@ -32,5 +32,5 @@ public interface IChannelConfigDbRepository
     /// </summary>
     /// <param name="channelId">Channel ID</param>
     /// <returns>Channel configuration or null if not found</returns>
-    Task<ChannelConfig?> GetByChannelIdAsync(ChannelId channelId);
+    Task<ChannelParams?> GetByChannelIdAsync(ChannelId channelId);
 }

@@ -1,0 +1,38 @@
+namespace NLightning.Domain.Onchain.Models;
+
+using Crypto.ValueObjects;
+using Enums;
+
+/// <summary>
+/// What the signer needs to sign one input of a sweep, claim or penalty (BOLT 5 plan §3.5,
+/// <c>ILightningSigner.SignSweepInput</c>). It carries the script and the amount rather than a sighash, so a remote
+/// signer can check what it signs.
+/// </summary>
+/// <param name="UnsignedTransaction">The whole unsigned transaction (its other inputs may be unsigned too).</param>
+/// <param name="InputIndex">The input to sign.</param>
+/// <param name="WitnessScript">The P2WSH witness script of the spent output (the BIP 143 script code). Null only for a
+/// P2WPKH <c>to_remote</c> (<see cref="SweepKeyKind.Payment"/>): the script code is then the P2PKH script of the
+/// payment key.</param>
+/// <param name="AmountSat">The amount of the spent output, in satoshis.</param>
+/// <param name="KeyKind">Which key signs.</param>
+/// <param name="PerCommitmentPoint">The per-commitment point the key is tweaked with:
+/// <see cref="SweepKeyKind.DelayedPayment"/> (ours), <see cref="SweepKeyKind.HtlcRemotePoint"/> (the peer's). For
+/// <see cref="SweepKeyKind.Revocation"/> it is optional and, when given, must equal <c>secret * G</c>.</param>
+/// <param name="PerCommitmentSecret">The peer's revealed per-commitment secret, for
+/// <see cref="SweepKeyKind.Revocation"/> only.</param>
+/// <param name="TaprootSpentOutputs">Simple taproot channels (NL-877 T4): every output the transaction spends, in input
+/// order. When set, the input is a BIP 341 script-path spend of the tapscript leaf <paramref name="WitnessScript"/>,
+/// signed with BIP 340 and <c>SIGHASH_DEFAULT</c> (a 64-byte signature, no sighash byte).</param>
+/// <param name="TaprootMerkleRoot">With <paramref name="TaprootSpentOutputs"/>: a BIP 341 <b>key-path</b> spend instead,
+/// signed by the key tweaked with this tapscript merkle root (NL-966: revocation penalties of HTLC and second-level
+/// outputs, whose internal key is the revocation key); <paramref name="WitnessScript"/> is then ignored.</param>
+public sealed record SweepSigningContext(
+    byte[] UnsignedTransaction,
+    int InputIndex,
+    byte[]? WitnessScript,
+    ulong AmountSat,
+    SweepKeyKind KeyKind,
+    CompactPubKey? PerCommitmentPoint = null,
+    Secret? PerCommitmentSecret = null,
+    IReadOnlyList<Bitcoin.Wallet.Models.SpentOutput>? TaprootSpentOutputs = null,
+    byte[]? TaprootMerkleRoot = null);

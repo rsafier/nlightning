@@ -1,0 +1,142 @@
+namespace NLightning.Application.Payments.Routing;
+
+using Domain.Crypto.ValueObjects;
+using Domain.Money;
+
+/// <summary>
+/// A route for one HTLC: the HTLC we offer to our peer and the onion layers after it. One part of a multi-part
+/// payment (BOLT 4 <c>basic_mpp</c>) when <see cref="TotalAmount"/> is above <see cref="Amount"/>.
+/// </summary>
+/// <remarks>
+/// <see cref="Hops"/>[0] is our peer (the node our channel leads to) and the last hop is the payee, whose layer has no
+/// <c>short_channel_id</c>. For every hop except the last, <c>Hops[i].AmountToForward</c> and
+/// <c>Hops[i].OutgoingCltvValue</c> are the HTLC that hop <c>i</c> offers to hop <c>i + 1</c>.
+/// </remarks>
+public sealed class PaymentRoute
+{
+    /// <summary>
+    /// The onion layers, our peer first, the payee last.
+    /// </summary>
+    public IReadOnlyList<RouteHop> Hops { get; }
+
+    /// <summary>
+    /// <c>amount_msat</c> of the HTLC we offer to <see cref="FirstHopNodeId"/>.
+    /// </summary>
+    public LightningMoney FirstHopAmount { get; }
+
+    /// <summary>
+    /// <c>cltv_expiry</c> of the HTLC we offer to <see cref="FirstHopNodeId"/>.
+    /// </summary>
+    public uint FirstHopCltvExpiry { get; }
+
+    public Hash PaymentHash { get; }
+    public Secret PaymentSecret { get; }
+    public ReadOnlyMemory<byte>? PaymentMetadata { get; }
+
+    /// <summary>
+    /// The peer our channel leads to.
+    /// </summary>
+    public CompactPubKey FirstHopNodeId => Hops[0].NodeId;
+
+    public CompactPubKey PayeeNodeId => Hops[^1].NodeId;
+
+    /// <summary>
+    /// What the payee receives.
+    /// </summary>
+    public LightningMoney Amount => Hops[^1].AmountToForward;
+
+    /// <summary>
+    /// The routing fees paid to intermediate hops (zero for a direct payment).
+    /// </summary>
+    public LightningMoney Fee => FirstHopAmount - Amount;
+
+    /// <summary>
+    /// The final payload's <c>payment_data.total_msat</c>: the amount of the whole payment, which is <see cref="Amount"/>
+    /// unless this route carries one part of a multi-part payment.
+    /// </summary>
+    public LightningMoney TotalAmount { get; }
+
+    /// <summary>
+    /// The index in <see cref="Hops"/> of the introduction node of the blinded path the route ends in, or null for a
+    /// route without one. Every hop from it on is blinded: its channels are unknown to us.
+    /// </summary>
+    public int? BlindedStartIndex { get; }
+
+    /// <summary>
+    /// The path_key of our <c>update_add_htlc</c> (<c>BlindedPathTlv</c>), when the route starts inside a blinded path
+    /// whose introduction node was this node; null otherwise.
+    /// </summary>
+    public CompactPubKey? FirstHopPathKey { get; }
+
+    /// <summary>
+    /// Which of the payment's blinded paths the route ends in (an index into the request's paths), or null.
+    /// </summary>
+    public int? BlindedPathIndex { get; init; }
+
+    /// <summary>
+    /// The number of edges from our peer whose channel we know (<see cref="RouteHop.OutgoingShortChannelId"/>): every
+    /// edge before the blinded path.
+    /// </summary>
+    public int PublicEdgeCount => BlindedStartIndex ?? Hops.Count - 1;
+
+    /// <param name="hops">The onion layers, our peer first, the payee last.</param>
+    /// <param name="firstHopAmount">The amount of our HTLC.</param>
+    /// <param name="firstHopCltvExpiry">The <c>cltv_expiry</c> of our HTLC.</param>
+    /// <param name="paymentHash">The payment hash.</param>
+    /// <param name="paymentSecret">The invoice's payment secret.</param>
+    /// <param name="paymentMetadata">The invoice's payment metadata, if any.</param>
+    /// <param name="totalAmount">The whole payment's amount for a part of a multi-part payment; null (or the payee's
+    /// amount) for a payment in one HTLC. Never below what the payee receives on this route.</param>
+    /// <param name="firstHopPathKey">The route-blinding path_key our <c>update_add_htlc</c> carries, when our peer is
+    /// a blinded hop that is not the introduction node: we were the introduction node of the path and unblinded our
+    /// own hop (BOLT 12 plan B12-PAY-02). The first hop then has no <c>current_path_key</c>.</param>
+    public PaymentRoute(IReadOnlyList<RouteHop> hops, LightningMoney firstHopAmount, uint firstHopCltvExpiry,
+                        Hash paymentHash, Secret paymentSecret, ReadOnlyMemory<byte>? paymentMetadata = null,
+                        LightningMoney? totalAmount = null, CompactPubKey? firstHopPathKey = null)
+    {
+        ArgumentNullException.ThrowIfNull(hops);
+        ArgumentNullException.ThrowIfNull(firstHopAmount);
+        if (hops.Count == 0)
+            throw new ArgumentException("A route has at least one hop.", nameof(hops));
+        if (!hops[^1].IsFinal)
+            throw new ArgumentException("The last hop is the payee and has no short_channel_id.", nameof(hops));
+        if (hops.Take(hops.Count - 1).Any(hop => hop.IsFinal))
+            throw new ArgumentException("Every hop but the last has a short_channel_id.", nameof(hops));
+
+        var blindedStart = -1;
+        for (var i = 0; i < hops.Count; i++)
+        {
+            if (hops[i].IsBlindedRelay && !hops[i].IsBlinded)
+                throw new ArgumentException("A blinded relay hop carries encrypted_recipient_data.", nameof(hops));
+            if (hops[i].IsBlinded && blindedStart < 0)
+                blindedStart = i;
+            else if (!hops[i].IsBlinded && blindedStart >= 0)
+                throw new ArgumentException("Every hop after the introduction node belongs to the blinded path.",
+                                            nameof(hops));
+        }
+
+        if (firstHopPathKey is not null && (blindedStart != 0 || hops[0].CurrentPathKey is not null))
+            throw new ArgumentException("A path_key in update_add_htlc needs a first hop that is a blinded hop "
+                                      + "without current_path_key.", nameof(firstHopPathKey));
+        if (blindedStart >= 0 && firstHopPathKey is null && hops[blindedStart].CurrentPathKey is null)
+            throw new ArgumentException("The introduction node of a blinded path gets current_path_key.",
+                                        nameof(hops));
+        if (firstHopAmount < hops[^1].AmountToForward)
+            throw new ArgumentException("The first HTLC cannot carry less than the payee receives.",
+                                        nameof(firstHopAmount));
+
+        if (totalAmount is not null && totalAmount < hops[^1].AmountToForward)
+            throw new ArgumentException("The total amount cannot be below what the payee receives.",
+                                        nameof(totalAmount));
+
+        Hops = hops;
+        FirstHopPathKey = firstHopPathKey;
+        BlindedStartIndex = blindedStart >= 0 ? blindedStart : null;
+        FirstHopAmount = firstHopAmount;
+        TotalAmount = totalAmount ?? hops[^1].AmountToForward;
+        FirstHopCltvExpiry = firstHopCltvExpiry;
+        PaymentHash = paymentHash;
+        PaymentSecret = paymentSecret;
+        PaymentMetadata = paymentMetadata;
+    }
+}

@@ -5,21 +5,14 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class ChannelReadyMessageTests
 {
-    private readonly ChannelReadyMessageTypeSerializer _channelReadyMessageTypeSerializer;
-
-    public ChannelReadyMessageTests()
-    {
-        _channelReadyMessageTypeSerializer =
-            new ChannelReadyMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                  SerializerHelper.TlvConverterFactory,
-                                                  SerializerHelper.TlvStreamSerializer);
-    }
+    private readonly IMessageTypeSerializer<ChannelReadyMessage> _channelReadyMessageTypeSerializer =
+        SerializerHelper.WireRegistry.Get<ChannelReadyMessage>()!;
 
     #region Deserialize
 

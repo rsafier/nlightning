@@ -1,14 +1,13 @@
 namespace NLightning.Infrastructure.Bitcoin.Builders.Interfaces;
 
 using Domain.Bitcoin.Transactions.Models;
-using Domain.Bitcoin.ValueObjects;
 
 public interface IFundingTransactionBuilder
 {
     /// <summary>
-    /// Builds a funding transaction from UTXOs
+    /// Builds an unsigned funding transaction from UTXOs. The model is not modified.
     /// </summary>
     /// <param name="transaction">The funding transaction model</param>
-    /// <returns>A signed transaction with the funding output</returns>
-    SignedTransaction Build(FundingTransactionModel transaction);
+    /// <returns>The unsigned transaction and the index of its funding output</returns>
+    FundingTransactionBuildResult Build(FundingTransactionModel transaction);
 }

@@ -1,0 +1,287 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+
+namespace NLightning.LnBackend.Tests;
+
+using Domain.Node.Options;
+using Domain.Protocol.ValueObjects;
+
+/// <summary>
+/// The backend's own settings (<c>LnBackend</c>, NL-1148): the listener rules and the mainnet refusal. An enabled
+/// backend serves an operator's hold invoices to every local process, so insecure settings must be explicit and
+/// mainnet must be opted into.
+/// </summary>
+public sealed class LnBackendOptionsTests
+{
+    /// <summary>The listener settings of an enabled, insecure-loopback backend (port 0: pick one).</summary>
+    private static LnBackendOptions Valid() => new()
+    {
+        Enabled = true,
+        Port = 0,
+        AllowInsecureLoopback = true
+    };
+
+    [Fact]
+    public void Given_AConfiguredXpayRetryLimit_When_Registered_Then_OptionsBindTheOperatorLimit()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["LnBackend:MaxXpayRetryFor"] = "900"
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddSingleton(Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }));
+        services.AddLnBackend(configuration);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<LnBackendOptions>>().Value;
+
+        // Assert
+        Assert.Equal(900, options.MaxXpayRetryFor);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(3601)]
+    public void Given_AnInvalidXpayRetryLimit_When_Validated_Then_ItIsReported(int seconds)
+    {
+        // Arrange
+        var options = Valid();
+        options.MaxXpayRetryFor = seconds;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.StartsWith("LnBackend:MaxXpayRetryFor", Assert.Single(errors), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Given_InsecureLoopback_When_Validated_Then_ThereIsNoError()
+    {
+        // Act
+        var errors = Valid().GetValidationErrors();
+
+        // Assert: h2c on loopback with the explicit opt-in is a supported single-user setup
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Given_NoTlsAndNoOptIn_When_Validated_Then_TheMissingChoiceIsReported()
+    {
+        // Arrange
+        var options = Valid();
+        options.AllowInsecureLoopback = false;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        var error = Assert.Single(errors);
+        Assert.StartsWith("LnBackend has no client authentication (no TlsDirectory)", error,
+                          StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Given_AnInsecureNonLoopbackListener_When_Validated_Then_ItIsReported()
+    {
+        // Arrange: every local process of every user, not just the operator's
+        var options = Valid();
+        options.ListenAddress = "0.0.0.0";
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        var error = Assert.Single(errors);
+        Assert.StartsWith("LnBackend:ListenAddress 0.0.0.0 is not loopback", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Given_MutualTls_When_Validated_Then_TheListenerMayBeOffLoopback()
+    {
+        // Arrange: a certificate directory with ca.pem authenticates every client, so any address is a valid listener
+        var directory = Directory.CreateTempSubdirectory("nltg-lnbackend-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "ca.pem"), "");
+            var options = Valid();
+            options.AllowInsecureLoopback = false;
+            options.TlsDirectory = directory;
+            options.ListenAddress = "0.0.0.0";
+
+            // Act & Assert
+            Assert.Empty(options.GetValidationErrors());
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Given_TlsWithoutCaOffLoopback_When_Validated_Then_ItIsReported(bool allowInsecureLoopback)
+    {
+        // Arrange: server TLS without ca.pem authenticates no client, and cln.Node's xpay pays from the node (NL-1089)
+        var directory = Directory.CreateTempSubdirectory("nltg-lnbackend-").FullName;
+        try
+        {
+            var options = Valid();
+            options.AllowInsecureLoopback = allowInsecureLoopback;
+            options.TlsDirectory = directory;
+            options.ListenAddress = "0.0.0.0";
+
+            // Act
+            var errors = options.GetValidationErrors();
+
+            // Assert
+            var error = Assert.Single(errors);
+            Assert.StartsWith("LnBackend:ListenAddress 0.0.0.0 is not loopback", error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void Given_TlsWithoutCaOnLoopbackAndNoOptIn_When_Validated_Then_ItIsReported()
+    {
+        // Arrange
+        var directory = Directory.CreateTempSubdirectory("nltg-lnbackend-").FullName;
+        try
+        {
+            var options = Valid();
+            options.AllowInsecureLoopback = false;
+            options.TlsDirectory = directory;
+
+            // Act
+            var errors = options.GetValidationErrors();
+
+            // Assert
+            var error = Assert.Single(errors);
+            Assert.StartsWith("LnBackend has no client authentication (no ca.pem)", error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("not-an-address")]
+    public void Given_AListenAddressThatIsNoIp_When_Validated_Then_ItIsReported(string listenAddress)
+    {
+        // Arrange
+        var options = Valid();
+        options.ListenAddress = listenAddress;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        var error = Assert.Single(errors);
+        Assert.EndsWith("is not an IP address.", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Given_InsecureIpv6Loopback_When_Validated_Then_ThereIsNoError()
+    {
+        // Arrange
+        var options = Valid();
+        options.ListenAddress = "::1";
+
+        // Act & Assert
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(65536)]
+    public void Given_APortThatIsNoTcpPort_When_Validated_Then_ItIsReported(int port)
+    {
+        // Arrange
+        var options = Valid();
+        options.Port = port;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Single(errors);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(65)]
+    public void Given_AConnectionLimitOutOfRange_When_Validated_Then_ItIsReported(int maxConnections)
+    {
+        // Arrange
+        var options = Valid();
+        options.MaxConnections = maxConnections;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Single(errors);
+    }
+
+    [Fact]
+    public void Given_Mainnet_When_ValidatedByTheValidator_Then_TheBackendIsRefused()
+    {
+        // Act
+        var result = ValidateOn(BitcoinNetwork.Mainnet, Valid());
+
+        // Assert: an ASP backend moves real money on the operator's behalf
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures,
+                        f => f.StartsWith("LnBackend is refused on mainnet unless LnBackend:AllowMainnet",
+                                          StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Given_MainnetWithAllowMainnet_When_ValidatedByTheValidator_Then_ItPasses()
+    {
+        // Arrange
+        var options = Valid();
+        options.AllowMainnet = true;
+
+        // Act & Assert
+        Assert.True(ValidateOn(BitcoinNetwork.Mainnet, options).Succeeded);
+    }
+
+    [Fact]
+    public void Given_Regtest_When_ValidatedByTheValidator_Then_ItPasses()
+    {
+        // Act & Assert
+        Assert.True(ValidateOn(BitcoinNetwork.Regtest, Valid()).Succeeded);
+    }
+
+    [Fact]
+    public void Given_ADisabledBackend_When_ValidatedByTheValidator_Then_EvenInvalidSettingsPass()
+    {
+        // Arrange: nothing listens, so the settings are never used
+        var options = new LnBackendOptions { Enabled = false };
+
+        // Act & Assert
+        Assert.True(ValidateOn(BitcoinNetwork.Mainnet, options).Succeeded);
+    }
+
+    /// <summary>Runs the options validator the way <c>AddLnBackend</c> registers it, on the given network.</summary>
+    private static ValidateOptionsResult ValidateOn(BitcoinNetwork network, LnBackendOptions options)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IOptions<NodeOptions>>(
+            Options.Create(new NodeOptions { BitcoinNetwork = network }));
+        services.AddLnBackend(new ConfigurationBuilder().Build());
+        using var provider = services.BuildServiceProvider();
+        return provider.GetRequiredService<IValidateOptions<LnBackendOptions>>().Validate(null, options);
+    }
+}

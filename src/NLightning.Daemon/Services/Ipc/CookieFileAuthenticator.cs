@@ -26,7 +26,9 @@ public sealed class CookieFileAuthenticator : IIpcAuthenticator
             if (string.IsNullOrEmpty(token)) return false;
             if (!File.Exists(_cookieFilePath)) return false;
             var expected = (await File.ReadAllTextAsync(_cookieFilePath, ct)).Trim();
-            return FixedTimeEquals(expected, token);
+
+            // An empty (truncated) cookie never authenticates anything
+            return expected.Length > 0 && FixedTimeEquals(expected, token);
         }
         catch (Exception ex)
         {
@@ -35,6 +37,10 @@ public sealed class CookieFileAuthenticator : IIpcAuthenticator
         }
     }
 
+    /// <summary>
+    /// Compares in time independent of where the strings differ. Only a length difference returns early, and the
+    /// cookie's length (64 hex characters) is not secret.
+    /// </summary>
     private static bool FixedTimeEquals(string a, string b)
     {
         var aBytes = System.Text.Encoding.UTF8.GetBytes(a);

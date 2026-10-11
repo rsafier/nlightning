@@ -2,6 +2,7 @@ namespace NLightning.Domain.Node.Interfaces;
 
 using Crypto.ValueObjects;
 using Models;
+using Protocol.Messages;
 using ValueObjects;
 
 /// <summary>
@@ -9,6 +10,9 @@ using ValueObjects;
 /// </summary>
 public interface IPeerManager
 {
+    /// <summary>Live session transitions after the init exchange, including inbound connections.</summary>
+    event EventHandler<Events.PeerStateChangedEventArgs>? OnPeerStateChanged;
+
     /// <summary>
     /// Starts the peer manager asynchronously.
     /// </summary>
@@ -30,6 +34,18 @@ public interface IPeerManager
     Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo);
 
     /// <summary>
+    /// Connects to a peer like <see cref="ConnectToPeerAsync"/>, giving up when <paramref name="cancellationToken"/> is cancelled before the connection is
+    /// kept: the TCP connect, the BOLT 8 handshake and the init exchange are abandoned and their connection closed, so
+    /// a cancelled dial never becomes a session or a saved peer. Once the session is installed the dial completes.
+    /// </summary>
+    /// <param name="peerAddressInfo">The peer address to connect to.</param>
+    /// <param name="cancellationToken">Cancels the dial (for example a caller's timeout).</param>
+    /// <returns>The connected peer.</returns>
+    /// <exception cref="OperationCanceledException">The dial was cancelled before the session was installed.
+    /// </exception>
+    Task<PeerModel> DialPeerAsync(PeerAddressInfo peerAddressInfo, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Disconnects a peer.
     /// </summary>
     /// <param name="compactPubKey" cref="CompactPubKey">CompactPubKey of the peer</param>
@@ -38,4 +54,11 @@ public interface IPeerManager
 
     List<PeerModel> ListPeers();
     PeerModel? GetPeer(CompactPubKey peerId);
+
+    /// <summary>
+    /// Queues a channel <c>error</c> on the peer's outbox (NL-273): the connection stays up (BOLT 1 MAY) and the
+    /// error follows everything queued for the peer before it.
+    /// </summary>
+    /// <returns>False when the peer is not connected or its connection is going away.</returns>
+    bool TryEnqueueChannelError(CompactPubKey peerId, ErrorMessage error);
 }

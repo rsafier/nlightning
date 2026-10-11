@@ -1,0 +1,19 @@
+# LND's gRPC protos for the NLightning.LndGrpc server stubs (LND_GRPC_PLAN.md, NL-1161). Copied from
+# test/NLightning.Testing.Lnd/Protos/ (scripts/lnd-protos/update.sh) with one change per file: the csharp_namespace line
+# names NLightning.LndGrpc.<Package> instead of NLightning.Testing.Lnd.<Package>. Package lines and field numbers are
+# LND's, so the wire service names (/lnrpc.Lightning/...) are LND's.
+# file <path> <sha256 of the upstream file> <sha256 of the committed file>
+# license <committed file> <upstream path at lnd_commit> <sha256>
+lnd_repo github.com/lightningnetwork/lnd
+lnd_tag v0.21.4-beta
+lnd_commit 390b2d2b7bdcc335c183962e483f5daeceb8f0e7
+csharp_namespace_prefix NLightning.LndGrpc
+file lightning.proto 65eec7eaae9d5ad03e1b150cff8dd595fa3d3cb9281283786cacb105db1d1eda 134f575000c31ccedb0e43ff9224319293a74a998024a9d14dc7735074c694ef
+license LICENSE-LND.txt LICENSE 7ebd67c52a36357cb0c6c5e903ece047b195a6b8b04c6e7a8c820e01c884581c
+file routerrpc/router.proto 0ba98e045a6dccfb758f71baf570238769e9461dae73cdf3f22cadddfca3fd29 c13293043fec092a39a523a68f79c5610971b7883a7aff4a3b970b53b54e0aa9
+file invoicesrpc/invoices.proto 1724f72aa2ed070c8978f5e8a40bc828a2859bbf5a56274ffa1577a65f3f05e7 6a2a4fe5ae49dc6d2cd829ab84b57c30f3e84d010291a6d6065f74a7c9d2832c
+file signrpc/signer.proto 47e5f109eae038e4c66355ed6ec9057bb4421dc8b42140248088e344f46bd547 e1dc6292108298f5394b2d8a58159d8a557ccf4d844095a171562732181e16b9
+file walletrpc/walletkit.proto 7594cc72a590ef58dc9de9eec9591fe9b383373ccbc024e5cdca1535b65b4087 4acca08bbccfa9b695f571083dd985fd3c6ac04a8172b8ec133d77735dab4483
+file stateservice.proto e7c9e1083804c5510874a4e549e3a26864e91892c830921e82d555e469f97242 ebbbbc95910a26e9062ed1441836c4d08b7dec67d8d55c716ab763eee6674e66
+file verrpc/verrpc.proto 863423e1da01ff05693084bca27a6f0bdff0e8a470c9d9df9b6c56c988d53a16 071d6dc80288d1b0a3056df39b8f5256ad198720b6558cc141ca4383e76de8e3
+file chainrpc/chainnotifier.proto dac94d55e110b40273d8f443f307bc5a99c3e9f3cd74998e902f6fb78455dab1 7bf51c16d7c80a06b4ab22028f6899a4062e5aab1d4573dfb1e8c09d3d7de523

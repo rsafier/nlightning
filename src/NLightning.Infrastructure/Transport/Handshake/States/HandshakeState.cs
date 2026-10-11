@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Transport.Handshake.States;
 using Crypto.Interfaces;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
+using Domain.Transport;
 using Domain.Utils;
 using Enums;
 using Interfaces;
@@ -21,7 +22,9 @@ internal sealed class HandshakeState : IHandshakeState
     private readonly SymmetricState _state;
     private readonly Role _role;
     private readonly Role _initiator;
-    private readonly CryptoKeyPair _s;
+    private readonly CryptoKeyPair? _s;
+    private readonly CompactPubKey _sPubKey;
+    private readonly ProtectedStaticEcdh? _protectedStaticEcdh;
     private readonly Queue<MessagePattern> _messagePatterns = new();
 
     private readonly IEcdh _dh;
@@ -29,7 +32,7 @@ internal sealed class HandshakeState : IHandshakeState
     private byte[]? _re;
     private byte[] _rs;
     private bool _turnToWrite;
-    private bool _disposed;
+    private int _disposed;
 
     public CompactPubKey? RemoteStaticPublicKey => new(_rs);
 
@@ -60,16 +63,77 @@ internal sealed class HandshakeState : IHandshakeState
         _dh = dh;
 
         _state = new SymmetricState(ProtocolConstants.Name);
-        _state.MixHash(ProtocolConstants.Prologue);
+        try
+        {
+            _state.MixHash(ProtocolConstants.Prologue);
 
-        _role = initiator ? Role.Alice : Role.Bob;
-        _initiator = Role.Alice;
-        _turnToWrite = initiator;
-        _s = _dh.GenerateKeyPair(s);
-        _rs = rs.ToArray();
+            _role = initiator ? Role.Alice : Role.Bob;
+            _initiator = Role.Alice;
+            _turnToWrite = initiator;
+            _s = _dh.GenerateKeyPair(s);
+            _sPubKey = _s.Value.CompactPubKey;
+            _rs = rs.ToArray();
 
-        ProcessPreMessages();
-        EnqueueMessages();
+            ProcessPreMessages();
+            EnqueueMessages();
+        }
+        catch
+        {
+            // Nobody gets a reference to a state whose constructor threw, so free its native memory here
+            _state.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Creates a new HandshakeState instance whose local static ECDH is computed by
+    /// <paramref name="protectedStaticEcdh"/>, so the static private key never enters this state (NL-436).
+    /// </summary>
+    /// <param name="initiator">If we are the initiator</param>
+    /// <param name="staticPublicKey">Our local static public key</param>
+    /// <param name="rs">Remote Static Public Key (the responder's copy is a placeholder: the initiator's static
+    /// arrives in act three)</param>
+    /// <param name="dh">A specific DH Function</param>
+    /// <param name="protectedStaticEcdh">Computes the ECDH of the protected local static private key.</param>
+    /// <exception cref="ArgumentException"></exception>
+    public HandshakeState(bool initiator, ReadOnlySpan<byte> staticPublicKey, ReadOnlySpan<byte> rs, IEcdh dh,
+                          ProtectedStaticEcdh protectedStaticEcdh)
+    {
+        if (staticPublicKey.IsEmpty || staticPublicKey.Length != CryptoConstants.CompactPubkeyLen)
+            throw new ArgumentException("Invalid local static public key.", nameof(staticPublicKey));
+
+        if (rs.IsEmpty)
+            throw new ArgumentException("Remote static public key required, but not provided.", nameof(rs));
+
+        if (rs.Length != CryptoConstants.CompactPubkeyLen)
+            throw new ArgumentException("Invalid remote static public key.", nameof(rs));
+
+        ArgumentNullException.ThrowIfNull(dh);
+        ArgumentNullException.ThrowIfNull(protectedStaticEcdh);
+
+        _dh = dh;
+        _protectedStaticEcdh = protectedStaticEcdh;
+
+        _state = new SymmetricState(ProtocolConstants.Name);
+        try
+        {
+            _state.MixHash(ProtocolConstants.Prologue);
+
+            _role = initiator ? Role.Alice : Role.Bob;
+            _initiator = Role.Alice;
+            _turnToWrite = initiator;
+            _sPubKey = staticPublicKey;
+            _rs = rs.ToArray();
+
+            ProcessPreMessages();
+            EnqueueMessages();
+        }
+        catch
+        {
+            // Nobody gets a reference to a state whose constructor threw, so free its native memory here
+            _state.Dispose();
+            throw;
+        }
     }
 
     /// <inheritdoc/>
@@ -78,7 +142,7 @@ internal sealed class HandshakeState : IHandshakeState
     /// <exception cref="ArgumentException">Thrown if the output was greater than <see cref="ProtocolConstants.MaxMessageLength"/> bytes in length, or if the output buffer did not have enough space to hold the ciphertext.</exception>
     public (int, byte[]?, Encryption.Transport?) WriteMessage(ReadOnlySpan<byte> payload, Span<byte> messageBuffer)
     {
-        ExceptionUtils.ThrowIfDisposed(_disposed, nameof(HandshakeState));
+        ExceptionUtils.ThrowIfDisposed(Volatile.Read(ref _disposed) != 0, nameof(HandshakeState));
 
         if (_messagePatterns.Count == 0)
             throw new InvalidOperationException(
@@ -112,7 +176,7 @@ internal sealed class HandshakeState : IHandshakeState
                 case Token.Ee: DhAndMixKey(_e, _re); break;
                 case Token.Es: ProcessEs(); break;
                 case Token.Se: ProcessSe(); break;
-                case Token.Ss: DhAndMixKey(_s, _rs); break;
+                case Token.Ss: StaticDhAndMixKey(_rs); break;
             }
         }
 
@@ -138,7 +202,7 @@ internal sealed class HandshakeState : IHandshakeState
     /// <exception cref="System.Security.Cryptography.CryptographicException">Thrown if the decryption of the message has failed.</exception>
     public (int, byte[]?, Encryption.Transport?) ReadMessage(ReadOnlySpan<byte> message, Span<byte> payloadBuffer)
     {
-        ExceptionUtils.ThrowIfDisposed(_disposed, nameof(HandshakeState));
+        ExceptionUtils.ThrowIfDisposed(Volatile.Read(ref _disposed) != 0, nameof(HandshakeState));
 
         if (_messagePatterns.Count == 0)
             throw new InvalidOperationException(
@@ -170,7 +234,7 @@ internal sealed class HandshakeState : IHandshakeState
                 case Token.Ee: DhAndMixKey(_e, _re); break;
                 case Token.Es: ProcessEs(); break;
                 case Token.Se: ProcessSe(); break;
-                case Token.Ss: DhAndMixKey(_s, _rs); break;
+                case Token.Ss: StaticDhAndMixKey(_rs); break;
             }
         }
 
@@ -193,7 +257,7 @@ internal sealed class HandshakeState : IHandshakeState
         {
             if (token == Token.S)
             {
-                _state.MixHash(_role == Role.Alice ? _s.CompactPubKey : _rs);
+                _state.MixHash(_role == Role.Alice ? _sPubKey : _rs);
             }
         }
 
@@ -201,7 +265,7 @@ internal sealed class HandshakeState : IHandshakeState
         {
             if (token == Token.S)
             {
-                _state.MixHash(_role == Role.Alice ? _rs : _s.CompactPubKey);
+                _state.MixHash(_role == Role.Alice ? _rs : _sPubKey);
             }
         }
     }
@@ -230,7 +294,7 @@ internal sealed class HandshakeState : IHandshakeState
     private Span<byte> WriteS(Span<byte> buffer)
     {
         // Start from position 1, since we need our version there
-        var bytesWritten = _state.EncryptAndHash(_s.CompactPubKey, buffer[1..]);
+        var bytesWritten = _state.EncryptAndHash(_sPubKey, buffer[1..]);
 
         // Don't forget to add our version length to the resulting Span
         return buffer[(bytesWritten + 1)..];
@@ -284,7 +348,7 @@ internal sealed class HandshakeState : IHandshakeState
         }
         else
         {
-            DhAndMixKey(_s, _re);
+            StaticDhAndMixKey(_re);
         }
     }
 
@@ -292,7 +356,7 @@ internal sealed class HandshakeState : IHandshakeState
     {
         if (_role == Role.Alice)
         {
-            DhAndMixKey(_s, _re);
+            StaticDhAndMixKey(_re);
         }
         else
         {
@@ -322,26 +386,44 @@ internal sealed class HandshakeState : IHandshakeState
         _state.MixKey(sharedKey);
     }
 
+    /// <summary>
+    /// The ECDH involving our static private key: through the key manager's delegate when the state was built
+    /// without the private key (NL-436), or through the copied key pair otherwise.
+    /// </summary>
+    private void StaticDhAndMixKey(ReadOnlySpan<byte> publicKey)
+    {
+        Debug.Assert(!publicKey.IsEmpty);
+
+        Span<byte> sharedKey = stackalloc byte[CryptoConstants.PrivkeyLen];
+        if (_protectedStaticEcdh is not null)
+        {
+            _protectedStaticEcdh(publicKey, sharedKey);
+        }
+        else
+        {
+            Debug.Assert(_s != null);
+            _dh.SecP256K1Dh(_s.Value.PrivKey, publicKey, sharedKey);
+        }
+
+        _state.MixKey(sharedKey);
+    }
+
     private void Clear()
     {
         _state.Dispose();
     }
 
+    /// <remarks>
+    /// Idempotent and safe to call from several threads. There is no finalizer (NL-560): the state holds no native
+    /// memory itself, and the <c>SecureMemory</c> and <c>Sha256</c> objects under it free theirs in
+    /// their own finalizers. A finalizer here would dispose those objects from the finalizer thread after their own
+    /// finalizers may already have freed the memory, a double free that crashed the process.
+    /// </remarks>
     public void Dispose()
     {
-        if (_disposed)
-        {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-        }
 
         Clear();
-        GC.SuppressFinalize(this);
-
-        _disposed = true;
-    }
-
-    ~HandshakeState()
-    {
-        Dispose();
     }
 }

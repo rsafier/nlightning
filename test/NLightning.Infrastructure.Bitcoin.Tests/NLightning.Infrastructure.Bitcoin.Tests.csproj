@@ -1,8 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>AnyCPU</Platforms>
@@ -22,10 +20,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="8.0.1">
+    <PackageReference Include="coverlet.collector" Version="10.1.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.12"/>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>
     <PackageReference Include="Moq" Version="4.20.72"/>
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
@@ -43,6 +42,40 @@
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Bitcoin\NLightning.Infrastructure.Bitcoin.csproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
+  </ItemGroup>
+
+  <!-- BOLT 5 on-chain tests (Onchain/, Builders/) run against the BOLT 3 Appendix C/F vectors: share the verbatim spec
+       copies and the vector harness of NLightning.Integration.Tests instead of duplicating them -->
+  <ItemGroup>
+    <Compile Include="..\NLightning.Integration.Tests\BOLT3\Vectors\Bolt3SpecVectors.cs" Link="Bolt3\Vectors\Bolt3SpecVectors.cs"/>
+    <Compile Include="..\NLightning.Integration.Tests\BOLT3\Bolt3VectorHarness.cs" Link="Bolt3\Bolt3VectorHarness.cs"/>
+    <Compile Include="..\NLightning.Integration.Tests\BOLT3\Mocks\*.cs" Link="Bolt3\Mocks\%(Filename)%(Extension)"/>
+    <Content Include="..\NLightning.Integration.Tests\BOLT3\Vectors\appendix-c.txt;..\NLightning.Integration.Tests\BOLT3\Vectors\appendix-f.json" Link="BOLT3\Vectors\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <!-- BOLT 12 signature vector (lightning/bolts bolt12/signature-test.json, verbatim) -->
+  <ItemGroup>
+    <Content Include="Offers\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <!-- BIP 327 (MuSig2) vectors and the simple taproot channels vectors (verbatim; README has the sources) -->
+  <ItemGroup>
+    <Content Include="Crypto\Musig2\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Taproot\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <!-- BOLT 4 trampoline vectors (lightning/bolts PR 836, bolt04/trampoline-*.json, verbatim; README has the commit) -->
+  <ItemGroup>
+    <Content Include="Onion\Trampoline\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <!-- BIP 352 pinned official vectors; independent Python reference is kept alongside them. -->
+  <ItemGroup>
+    <Content Include="Crypto\SilentPayments\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Wallet\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
 </Project>

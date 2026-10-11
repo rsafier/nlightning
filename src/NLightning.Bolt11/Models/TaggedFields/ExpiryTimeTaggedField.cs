@@ -16,32 +16,33 @@ using Interfaces;
 public sealed class ExpiryTimeTaggedField : ITaggedField
 {
     public TaggedFieldTypes Type => TaggedFieldTypes.ExpiryTime;
-    internal int Value { get; }
+    internal long Value { get; }
     public short Length { get; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ExpiryTimeTaggedField"/> class.
     /// </summary>
     /// <param name="value">The Expiry Time in seconds</param>
-    internal ExpiryTimeTaggedField(int value)
+    internal ExpiryTimeTaggedField(long value)
     {
         Value = value;
-        // Calculate the length of the field by getting the number of bits needed to represent the value
-        // plus 1, then add 4 to round up to the next multiple of 5 and divide by 5 to get the number of bytes
-        Length = (short)((BitOperations.Log2((uint)Value) + 1 + 4) / 5);
+        // Minimal number of 5-bit groups that hold the value (BOLT 11: no leading 0 groups, so 0 is an empty field)
+        Length = Value <= 0 ? (short)0 : (short)((BitOperations.Log2((ulong)Value) + 1 + 4) / 5);
     }
 
     /// <inheritdoc/>
     public void WriteToBitWriter(BitWriter bitWriter)
     {
-        // Write data
-        bitWriter.WriteInt32AsBits(Value, Length * 5);
+        // Write data as big-endian 5-bit groups; `x` has no upper bound, so it can be wider than 32 bits
+        for (var i = Length - 1; i >= 0; i--)
+            bitWriter.WriteByteAsBits((byte)((Value >> (i * 5)) & 0x1F), 5);
     }
 
     /// <inheritdoc/>
     public bool IsValid()
     {
-        return Value > 0;
+        // 0 is a valid (already expired) expiry
+        return Value >= 0;
     }
 
     /// <summary>
@@ -50,18 +51,35 @@ public sealed class ExpiryTimeTaggedField : ITaggedField
     /// <param name="bitReader">The BitReader to read from</param>
     /// <param name="length">The length of the field</param>
     /// <returns>The ExpiryTimeTaggedField</returns>
-    /// <exception cref="ArgumentException">Thrown when the length is invalid</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the length is negative, the value does not fit in 63 bits, or the data_length is not minimal
+    /// (BOLT 11: no leading 0 groups)
+    /// </exception>
     internal static ExpiryTimeTaggedField FromBitReader(BitReader bitReader, short length)
     {
-        if (length <= 0)
-        {
+        if (length < 0)
             throw new ArgumentException(
-                $"Invalid length for {nameof(ExpiryTimeTaggedField)}. Length must be greater than 0",
-                nameof(length));
-        }
+                $"Invalid length for {nameof(ExpiryTimeTaggedField)}. Length must not be negative", nameof(length));
 
-        // Read the data from the BitReader
-        var value = bitReader.ReadInt32FromBits(length * 5);
+        // Read the data from the BitReader as big-endian 5-bit groups (an empty field is 0)
+        long value = 0;
+        for (var i = 0; i < length; i++)
+        {
+            if (value > long.MaxValue >> 5)
+                throw new ArgumentException(
+                    $"Invalid value for {nameof(ExpiryTimeTaggedField)}. Value must fit in 63 bits", nameof(length));
+
+            var group = bitReader.ReadByteFromBits(5);
+
+            // BOLT 11: a reader SHOULD treat an invoice as invalid when `x` has a non-minimal data_length, i.e.
+            // it begins with a 0 field-element; the minimal encoding of 0 is the empty field handled above
+            if (i == 0 && group == 0)
+                throw new ArgumentException(
+                    $"Invalid value for {nameof(ExpiryTimeTaggedField)}. " +
+                    "The data_length is not minimal (leading zero groups)", nameof(length));
+
+            value = (value << 5) | group;
+        }
 
         return new ExpiryTimeTaggedField(value);
     }

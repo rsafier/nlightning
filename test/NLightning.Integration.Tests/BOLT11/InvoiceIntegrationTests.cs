@@ -80,6 +80,10 @@ public class InvoiceIntegrationTests
                         Assert.NotNull(expectedFeatures);
                         Assert.NotNull(invoice.Features);
                         Assert.True(expectedFeatures.IsCompatible(invoice.Features, out _));
+                        var maxBit = Math.Max(expectedFeatures.SizeInBits, invoice.Features.SizeInBits);
+                        for (var bit = 0; bit <= maxBit; bit++)
+                            Assert.Equal(expectedFeatures.IsFeatureSet(bit, false),
+                                         invoice.Features.IsFeatureSet(bit, false));
                         break;
                     case TaggedFieldTypes.Metadata:
                         Assert.Equal(taggedField.Value, invoice.Metadata);
@@ -112,8 +116,22 @@ public class InvoiceIntegrationTests
                 "lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j")]
     [InlineData("Invalid pico amount in invoice",
                 "lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x")]
-    [InlineData("PaymentSecret is required",
+    [InlineData("dangling bits after the last tagged field",
                 "lnbc16lta047pp5h6lta047h6lta047h6lta047h6lta047h6lta047h6lta047h6lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqh6lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqh6lqqqqqqqqqqqqqqqqqqqt703rz")]
+    // BOLT 11 "Same, but adding invalid unknown feature 100"
+    [InlineData("Invoice requires unknown feature bit(s): 100",
+                "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q4psqqqqqqqqqqqqqqqqsgqtqyx5vggfcsll4wu246hz02kp85x4katwsk9639we5n5yngc3yhqkm35jnjw4len8vrnqnf5ejh0mzj9n3vz2px97evektfm2l6wqccp3y7372")]
+    // BOLT 11 "Missing required `s` field."
+    [InlineData("PaymentSecret is required",
+                "lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp49qdkj")]
+    // BOLT 11 "Non canonical signature (high-S) with 'n' field defined"
+    [InlineData("Invalid signature in invoice",
+                "lnbc25m1p70xwfzpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaqnp4q0n326hr8v9zprg8gsvezcch06gfaqqhde2aj730yg0durunfhv66sp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsp5cfzp9ugllvk03rltd6hvndxj26ux6gcxc5azyxk060rj9tzghct5zvjlps76gx8wpq5yuu79688k8gnm2c0al6v608s96l0xzrrlqqwnzxmu")]
+    // BOLT 11 "Same, but including fields which must be ignored." Since lightning/bolts#1243 a reader MUST fail
+    // when `p`, `h`, `s` or `n` has the wrong data_length; the example (still listed as valid in the spec) carries
+    // exactly such fields, so the normative requirement wins and it is rejected.
+    [InlineData("Invalid length for PaymentHashTaggedField",
+                "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqqsgq2qrqqqfppnqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqppnqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpp4qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhpnqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhp4qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqspnqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsp4qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnp5qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqnpkqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqz599y53s3ujmcfjp5xrdap68qxymkqphwsexhmhr8wdz5usdzkzrse33chw6dlp3jhuhge9ley7j2ayx36kawe7kmgg8sv5ugdyusdcqzn8z9x")]
     public void Given_InvalidInvoiceString_When_Decoding_Then_ExceptionIsThrown(
         string errorMessage, string? invoiceString)
     {
@@ -364,9 +382,9 @@ public class InvoiceIntegrationTests
 
                     var pubKey = Convert.FromHexString(routingInfoParts[0]);
                     var shortChannelId = ShortChannelId.Parse(routingInfoParts[1]);
-                    var feeBaseMsat = int.Parse(routingInfoParts[2]);
-                    var feeProportionalMillionths = int.Parse(routingInfoParts[3]);
-                    var cltvExpiryDelta = short.Parse(routingInfoParts[4]);
+                    var feeBaseMsat = uint.Parse(routingInfoParts[2]);
+                    var feeProportionalMillionths = uint.Parse(routingInfoParts[3]);
+                    var cltvExpiryDelta = ushort.Parse(routingInfoParts[4]);
 
                     routingInfo.Add(new RoutingInfo(pubKey, shortChannelId, feeBaseMsat, feeProportionalMillionths,
                                                     cltvExpiryDelta));

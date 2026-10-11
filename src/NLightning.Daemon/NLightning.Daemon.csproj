@@ -17,25 +17,29 @@
 
   <ItemGroup>
     <PackageReference Include="CommandLineParser" Version="2.9.1"/>
-    <PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.5"/>
-    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.5"/>
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.5"/>
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5"/>
-    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.5"/>
-    <PackageReference Include="Npgsql" Version="10.0.2"/>
+    <PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.12"/>
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.12"/>
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.12"/>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12"/>
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.12"/>
+    <PackageReference Include="Npgsql" Version="10.0.3"/>
     <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1"/>
     <PackageReference Include="Serilog.Enrichers.Thread" Version="4.0.0"/>
     <PackageReference Include="Serilog.Extensions.Hosting" Version="10.0.0"/>
     <PackageReference Include="Serilog.Settings.Configuration" Version="10.0.0"/>
     <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1"/>
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0"/>
-    <PackageReference Include="MessagePack" Version="3.1.4"/>
+    <PackageReference Include="MessagePack" Version="3.1.10"/>
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../NLightning.Infrastructure.VlsSigning/NLightning.Infrastructure.VlsSigning.csproj"/>
+    <ProjectReference Include="..\NLightning.Infrastructure.RemoteSigning\NLightning.Infrastructure.RemoteSigning.csproj"/>
     <ProjectReference Include="..\NLightning.Application\NLightning.Application.csproj"/>
+    <ProjectReference Include="..\NLightning.Cashu.PaymentProcessor\NLightning.Cashu.PaymentProcessor.csproj"/>
+    <ProjectReference Include="..\NLightning.LnBackend\NLightning.LnBackend.csproj"/>
+    <ProjectReference Include="..\NLightning.LndGrpc\NLightning.LndGrpc.csproj"/>
     <ProjectReference Include="..\NLightning.Client\NLightning.Client.csproj"/>
-    <ProjectReference Include="..\NLightning.Daemon.Plugins\NLightning.Daemon.Plugins.csproj"/>
     <ProjectReference Include="..\NLightning.Infrastructure.Repositories\NLightning.Infrastructure.Repositories.csproj"/>
     <ProjectReference Include="..\NLightning.Infrastructure.Bitcoin\NLightning.Infrastructure.Bitcoin.csproj"/>
     <ProjectReference Include="..\NLightning.Infrastructure.Persistence.Postgres\NLightning.Infrastructure.Persistence.Postgres.csproj"/>
