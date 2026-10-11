@@ -200,10 +200,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 106 | 108 |
+| open | 0 | 0 | 2 | 107 | 109 |
 | in-progress | 0 | 1 | 8 | 0 | 9 |
 | fixed | 15 | 75 | 276 | 542 | 908 |
-| wontfix | 0 | 0 | 6 | 15 | 21 |
+| wontfix | 0 | 0 | 6 | 14 | 20 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **76** | **295** | **670** | **1056** |
 
@@ -7534,7 +7534,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Audit 2026-10-04:** not seen on the cluster backend since NL-820; the failure was on the retired Docker/LNUnit LND backend.
 
 ### NL-505 ABCD fixture: LND david answers 'funding failed due to internal error' to carol's open
-- **Status:** wontfix (the LNUnit/Docker LND network build is gone with NL-820, 42e96743; the cluster LndRegtestNetwork builds the network; reopen if it recurs there)
+- **Status:** open (reopened 2026-10-11: recurred on the cluster's LndRegtestNetwork; was wontfix after NL-820, 42e96743)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Abcd/` (network build)
