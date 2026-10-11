@@ -135,6 +135,9 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly Dictionary<TxId, (uint Height, int Count)> _peerCommitmentMissing = [];
     private readonly ConcurrentDictionary<ChannelId, byte> _peerChildChannels = new();
 
+    // The background rounds and re-reservations, awaited by StopAsync (NL-1355)
+    private readonly ConcurrentDictionary<Task, byte> _background = new();
+
     private CancellationTokenSource _stopping = new();
     private int _started;
     private int _pendingHeight = -1;
@@ -202,6 +205,30 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         _stopping.Cancel();
     }
 
+    /// <inheritdoc />
+    public async Task StopAsync()
+    {
+        Stop();
+        try
+        {
+            await Task.WhenAll(_background.Keys).WaitAsync(StopTimeout);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("The anchor CPFP rounds did not end within {Timeout} of the stop", StopTimeout);
+        }
+    }
+
+    /// <summary>How long <see cref="StopAsync"/> waits for the cancelled rounds (NL-1355).</summary>
+    internal TimeSpan StopTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    private void Track(Task task)
+    {
+        _background[task] = 0;
+        task.ContinueWith(t => _background.TryRemove(t, out _), CancellationToken.None,
+                          TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
     /// <summary>Waits until no round, hand-over store or input re-reservation runs (tests).</summary>
     public async Task WhenIdleAsync()
     {
@@ -228,7 +255,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         }
 
         Interlocked.Increment(ref _scheduledRounds);
-        _ = Task.Run(async () =>
+        Track(Task.Run(async () =>
         {
             try
             {
@@ -247,7 +274,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             {
                 Interlocked.Decrement(ref _scheduledRounds);
             }
-        }, CancellationToken.None);
+        }, CancellationToken.None));
     }
 
     /// <inheritdoc />
@@ -322,7 +349,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         if (Interlocked.Exchange(ref _reReserveRunning, 1) == 1)
             return;
 
-        _ = Task.Run(async () =>
+        Track(Task.Run(async () =>
         {
             try
             {
@@ -342,7 +369,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             {
                 Interlocked.Exchange(ref _reReserveRunning, 0);
             }
-        }, CancellationToken.None);
+        }, CancellationToken.None));
     }
 
     /// <summary>
@@ -686,6 +713,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
     private async Task CompleteAsync(ChannelId channelId, RoundResult result, CancellationToken cancellationToken)
     {
+        // NL-1355: stopping, nothing is published (the saved rows are sent by the chain monitor after the next start)
+        cancellationToken.ThrowIfCancellationRequested();
         if (result.Publish is { } row)
         {
             // A refused child is an orphan when its commitment is not in the mempool (below its minimum fee): the pair
@@ -1584,7 +1613,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             return;
 
         var token = _stopping.Token;
-        _ = Task.Run(async () =>
+        Track(Task.Run(async () =>
         {
             try
             {
@@ -1609,7 +1638,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             {
                 Interlocked.Exchange(ref _roundRunning, 0);
             }
-        }, CancellationToken.None);
+        }, CancellationToken.None));
     }
 
     /// <summary>A transaction's weight: 3 x its size without witnesses plus its full size.</summary>

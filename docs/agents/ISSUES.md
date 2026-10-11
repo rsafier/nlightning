@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 103 | 106 |
+| open | 0 | 0 | 2 | 104 | 106 |
 | in-progress | 0 | 1 | 8 | 1 | 10 |
-| fixed | 15 | 74 | 270 | 536 | 895 |
+| fixed | 15 | 74 | 271 | 536 | 896 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **290** | **662** | **1042** |
+| **Total** | **15** | **75** | **290** | **663** | **1043** |
 
 ### Epics
 
@@ -11044,12 +11044,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** found by NL-1357
 
 ### NL-1355 The on-chain executor's round runs on after the node stops
-- **Status:** open
+- **Status:** fixed
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`ScheduleRound`/`LoopAsync`, no stop), the hosts' stop order (`NltgDaemonService`, `NLightningTestNode`)
 - **Evidence:** `ChannelManager` schedules a round on every block (`Task.Run(LoopAsync)`) and nothing stops or awaits it: in NL-1357's benchmark a round scheduled by the last block (and one at height 0) ran after the chain monitor and peers had stopped and the service provider was disposed, logging `ObjectDisposedException` ("Releasing the wallet inputs of discarded splices ... failed") and `no such table` errors; it opened the node's SQLite database after the test deleted it, creating an empty file. Between the peers' stop and the provider's disposal the same round can still save resolutions and publish sweeps or penalties.
 - **Fix sketch:** a `StopAsync` on the executor that cancels its loop token and awaits the running round, called by the hosts with the safety services (before the chain monitor and the peers stop); `ScheduleRound` refuses after the stop.
+- **Fix:** `IOnchainResolutionExecutor.StopAsync` (final, idempotent): `ScheduleRound` and every entry point (`RunRoundAsync`, `ResolveChannelAsync`, `HandleOutputSpentAsync`, the catch-ups, the funding-reconfirmation handler) do nothing after it; work in flight is counted and runs on a token linked to the caller's and the stop's, which the stop cancels; the round's one save checks it (nothing saved after the stop; the next start's round stages it again), and after a save nothing is published, tracked or raised to the switch once the stop was requested (the chain monitor rebroadcasts the saved rows and the resolvers raise their events again after the next start); the on-chain watcher and the reorg helpers check the token before their saves; the stop waits up to 30 s for the work to end. `IChannelFailureService.StopAsync` waits likewise for its block-driven resume, splice checks and publish retries and stops the anchor CPFP service (`IAnchorCpfpService.StopAsync`, waiting for its tracked rounds; no publish after the stop). The daemon, `NLightningTestNode` and `ScaleNode` call both with the safety services, before the chain monitor and the peers stop and before the container is disposed. Tests: `OnchainResolutionExecutorStopTests` (a stop during a scheduled round waits for it, nothing saved, published or raised; a stop requested during the save publishes nothing; after the stop a block schedules nothing and direct calls do nothing), `ChannelFailureServiceTests.Given_BlockRetryPublishing_When_StopAsync_Then_WaitsForTheRetry`; the default `ChannelScaleBenchmarkTests` run logs no error after its stop. Other block-driven work with the same pattern is NL-1361.
 - **Blocks/Blocked-by:** found by NL-1357
 
 
@@ -11085,3 +11086,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `src/NLightning.Application/Payments/Send/LocalLiquidityEstimator.cs` (`MaxSendableMsat`), `PaymentRoutePlanner.BuildPaths`
 - **Evidence:** the planner orders the candidate channels by what each can send, and the estimator answers by a binary search of about 30 dry-run `SendAdd`s (half of them throwing `CommitmentRefusedException`) per channel, for every payment. With 1,000 channels to the payee, payments ran at 6.5-7.2/s with a p50 of 109-123 ms against 48 ms with 50 channels (NL-1357's live-peer benchmark; stack samples all in `LocalLiquidityEstimator.TrySend`).
 - **Fix:** the answer without planned HTLCs, a function of the immutable snapshot alone, is kept per snapshot instance and `cltv_expiry` in a `ConditionalWeakTable` (released with the snapshot). Payments over 1,000 channels to the payee: 13-17/s, p50 40 ms. Tests: `LocalLiquidityEstimatorTests` (kept answer equals a fresh search, planned HTLCs bypass it, another snapshot is searched again).
+
+### NL-1361 Block- and timer-driven work outside the stopped services can still run after the host's stop
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `ChannelManager` block handlers (`ConfirmFundingAsync`, `ForgetStaleChannelAsync`, `ScheduleConfirmedAttemptRounds`, the announcement round, `HandleFundingSpentAsync` → `OnchainChannelWatcher`), `SpliceDepthWatcher` (tracked tasks, no stop), `ClosingTimeoutMonitor` (timers live until the container's disposal; a fired check can fail a channel through `IChannelFailureService.FailChannelAsync`, which saves and broadcasts), `QuiescenceTimeoutMonitor`
+- **Evidence:** NL-1355's audit of the host-started background work. The services the hosts stop (`HtlcExpiryMonitor`, `FeeUpdateScheduler`, `OnionReplayBlockPruner`, `MempoolReactor`, `SpliceAutoBumper`, the accounting sealer, backfill, books, projector and price valuation, `PeerBootstrapService`, `ExpiredBolt12InvoicePruner`, `ChannelBackupMonitor`, `GraphPruner`, and since NL-1355 the on-chain executor, `ChannelFailureService` and `AnchorCpfpService`) cancel and await their work. These others are fire-and-forget from chain-monitor events or timers: the chain monitor and the peer manager stop in the same step, so a task already started can still save (and, for the closing timeout and the funding-spend classification, broadcast) between that step and the container's disposal, or touch the disposed container after it.
+- **Fix sketch:** track those tasks and give `ChannelManager`, `SpliceDepthWatcher` and the timeout monitors a `StopAsync` (refuse new work, cancel, await bounded) that the hosts call before the chain monitor and the peers stop.
+- **Blocks/Blocked-by:** found by NL-1355

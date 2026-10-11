@@ -303,7 +303,10 @@ internal sealed class DiscardedSpliceReservations
                         await unitOfWork.WatchedOutpointDbRepository.DeleteByTransactionIdAsync(txId,
                                                                                                 sharedOutputIndex);
                     if (removedTransaction || removedOutpoint)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
                         await unitOfWork.SaveChangesAsync();
+                    }
                 }
 
                 if (scope.ServiceProvider.GetService<IBlockchainMonitor>() is { } monitor)
@@ -360,6 +363,7 @@ internal sealed class DiscardedSpliceReservations
 
                 await unitOfWork.InteractiveTxSessionDbRepository.UpdateAsync(
                     stored with { ResolvedAt = _timeProvider.GetUtcNow() });
+                cancellationToken.ThrowIfCancellationRequested();
                 await unitOfWork.SaveChangesAsync();
             }
 

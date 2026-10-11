@@ -16,6 +16,7 @@ using Application.Accounting.Books;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
+using Application.Onchain.Interfaces;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Application.Payments.Trampoline;
@@ -183,8 +184,9 @@ internal sealed class ScaleNode : IAsyncDisposable
             if (_started)
             {
                 await Task.WhenAll(Services.GetRequiredService<IHtlcExpiryMonitor>().StopAsync(),
-                                   Services.GetRequiredService<IFeeUpdateScheduler>().StopAsync());
-                Services.GetRequiredService<IChannelFailureService>().Stop();
+                                   Services.GetRequiredService<IFeeUpdateScheduler>().StopAsync(),
+                                   Services.GetRequiredService<IOnchainResolutionExecutor>().StopAsync());
+                await Services.GetRequiredService<IChannelFailureService>().StopAsync();
                 await (Services.GetService<AccountingBooksService>()?.StopAsync() ?? Task.CompletedTask);
                 await Task.WhenAll(Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync(),
                                    Services.GetRequiredService<IMempoolReactor>().StopAsync(),

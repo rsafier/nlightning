@@ -81,6 +81,9 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
     // Splice fundings our commitment was broadcast on after the splice confirmed (SP2-C-T2), per channel
     private readonly ConcurrentDictionary<(ChannelId, TxId), byte> _spliceBroadcasts = new();
 
+    // The block-driven background work (resume, splice checks, publish retries), awaited by StopAsync (NL-1355)
+    private readonly ConcurrentDictionary<Task, byte> _background = new();
+
     private CancellationTokenSource _stopping = new();
     private Task _resumeTask = Task.CompletedTask;
     private readonly VlsCloseSigningWorkflows? _vlsCloses;
@@ -122,8 +125,37 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
         _blockchainMonitor.OnNewBlockDetected += HandleNewBlockDetected;
 
         var token = _stopping.Token;
-        _resumeTask = Task.Run(() => ResumeInterruptedBroadcastsAsync(token), CancellationToken.None);
+        _resumeTask = Track(Task.Run(() => ResumeInterruptedBroadcastsAsync(token), CancellationToken.None));
         _anchorCpfpService?.Start();
+    }
+
+    /// <inheritdoc />
+    public async Task StopAsync()
+    {
+        Stop();
+        try
+        {
+            await Task.WhenAll(_background.Keys).WaitAsync(StopTimeout);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("The channel failure service's background work did not end within {Timeout} of the "
+                             + "stop", StopTimeout);
+        }
+
+        if (_anchorCpfpService is not null)
+            await _anchorCpfpService.StopAsync();
+    }
+
+    /// <summary>How long <see cref="StopAsync"/> waits for the cancelled background work (NL-1355).</summary>
+    internal TimeSpan StopTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    private Task Track(Task task)
+    {
+        _background[task] = 0;
+        task.ContinueWith(t => _background.TryRemove(t, out _), CancellationToken.None,
+                          TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return task;
     }
 
     /// <inheritdoc />
@@ -574,7 +606,7 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
     {
         var token = _stopping.Token;
         if (Interlocked.Exchange(ref _spliceCheckRunning, 1) == 0)
-            _ = Task.Run(async () =>
+            Track(Task.Run(async () =>
             {
                 try
                 {
@@ -588,12 +620,12 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
                 {
                     Interlocked.Exchange(ref _spliceCheckRunning, 0);
                 }
-            }, CancellationToken.None);
+            }, CancellationToken.None));
 
         if (_pendingPublishes.IsEmpty || Interlocked.Exchange(ref _retryRunning, 1) == 1)
             return;
 
-        _ = Task.Run(async () =>
+        Track(Task.Run(async () =>
         {
             try
             {
@@ -607,7 +639,7 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
             {
                 Interlocked.Exchange(ref _retryRunning, 0);
             }
-        }, CancellationToken.None);
+        }, CancellationToken.None));
     }
 
     #region Force close with a pending splice (splicing plan §3.6, SP2-C-T2)
@@ -732,6 +764,7 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
                     await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(stale.TransactionId);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             await unitOfWork.SaveChangesAsync();
             _spliceBroadcasts[(channelId, spliceFundingTxId)] = 0;
         }

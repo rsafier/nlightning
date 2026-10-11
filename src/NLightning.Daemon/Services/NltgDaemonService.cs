@@ -17,6 +17,7 @@ using Application.Channels.Splicing;
 using Application.InteractiveTx;
 using Application.Node.Services;
 using Application.Onchain.Fees;
+using Application.Onchain.Interfaces;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Application.Payments.Trampoline;
@@ -74,6 +75,7 @@ public class NltgDaemonService : BackgroundService
     private readonly FinancialBooksProjector? _financialBooks;
     private readonly IAccountingBackfill? _accountingBackfill;
     private readonly TrampolineRelayService? _trampolineRelayService;
+    private readonly IOnchainResolutionExecutor? _onchainResolutionExecutor;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -101,8 +103,10 @@ public class NltgDaemonService : BackgroundService
                              IAccountingBackfill? accountingBackfill = null,
                              PriceValuationService? priceValuation = null,
                              FinancialBooksProjector? financialBooks = null,
-                             TrampolineRelayService? trampolineRelayService = null)
+                             TrampolineRelayService? trampolineRelayService = null,
+                             IOnchainResolutionExecutor? onchainResolutionExecutor = null)
     {
+        _onchainResolutionExecutor = onchainResolutionExecutor;
         _trampolineRelayService = trampolineRelayService;
         _priceValuation = priceValuation;
         _financialBooks = financialBooks;
@@ -324,9 +328,12 @@ public class NltgDaemonService : BackgroundService
         // already; then its wait ran (or still runs) and this does nothing.
         await DrainOnSignalAsync();
 
-        // The safety services and the fee rounds stop before the chain monitor and the peers they use
-        await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync());
-        _channelFailureService.Stop();
+        // The safety services, the on-chain resolution rounds and the fee rounds stop before the chain monitor and the
+        // peers they use, and before the container is disposed: nothing they started saves or broadcasts after this
+        // (NL-1355)
+        await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync(),
+                           _onchainResolutionExecutor?.StopAsync(cancellationToken) ?? Task.CompletedTask);
+        await _channelFailureService.StopAsync();
 
         // The back-valuation stops before the books (NL-602 A3-T2), the books before the sealer that feeds them (A2)
         if (_priceValuation is not null)

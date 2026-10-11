@@ -18,6 +18,12 @@ public interface IAnchorCpfpService
     void Stop();
 
     /// <summary>
+    /// <see cref="Stop"/>, then waits (bounded) for the cancelled background rounds to end (NL-1355). Called by
+    /// <c>ChannelFailureService.StopAsync</c>.
+    /// </summary>
+    Task StopAsync();
+
+    /// <summary>
     /// Schedules the round of one channel in the background and returns at once: called by the fail-the-channel path
     /// right after it published (or tried to publish) the channel's commitment, which may run on the peer's inbound
     /// loop and must not wait for a block round. The round uses the service's stopping token; a failure is logged and

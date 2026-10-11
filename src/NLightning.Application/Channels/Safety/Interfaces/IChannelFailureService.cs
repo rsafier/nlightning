@@ -56,8 +56,15 @@ public interface IChannelFailureService
     /// <summary>Subscribes to new blocks (the retry of a refused publish) and resumes interrupted broadcasts.</summary>
     void Start();
 
-    /// <summary>Unsubscribes.</summary>
+    /// <summary>Unsubscribes and cancels the block-driven background work.</summary>
     void Stop();
+
+    /// <summary>
+    /// <see cref="Stop"/>, then waits (bounded) for the cancelled background work (the resume, the splice checks, the
+    /// publish retries) and stops the anchor CPFP service (NL-1355). The hosts call it before the chain monitor and the
+    /// peers stop, so nothing it started runs on against a disposed container.
+    /// </summary>
+    Task StopAsync();
 }
 
 /// <summary>

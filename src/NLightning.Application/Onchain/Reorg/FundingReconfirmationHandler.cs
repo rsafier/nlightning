@@ -217,6 +217,7 @@ public sealed class FundingReconfirmationHandler
             // NL-607: the funding's accounting events move to the new block in the same save
             await StageFundingEventsMovedAsync(unitOfWork, watch.ChannelId, fundingTxId, height, moved,
                                                scope.ServiceProvider, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             await unitOfWork.SaveChangesAsync();
 
             channel.ShortChannelId = moved;

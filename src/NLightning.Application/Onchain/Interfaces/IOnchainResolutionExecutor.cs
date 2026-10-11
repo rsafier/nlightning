@@ -48,4 +48,12 @@ public interface IOnchainResolutionExecutor
 
     /// <summary>Waits until no scheduled round is running or pending (tests).</summary>
     Task WhenIdleAsync();
+
+    /// <summary>
+    /// Stops the executor for good (NL-1355): later rounds, spends and catch-ups are refused, the round scheduled or
+    /// running and every call in flight are cancelled, and nothing they do after this call is saved, published or
+    /// raised to the switch; waits (bounded) for them to end. The hosts call it before the chain monitor and the peers
+    /// stop. Idempotent.
+    /// </summary>
+    Task StopAsync(CancellationToken cancellationToken = default);
 }
