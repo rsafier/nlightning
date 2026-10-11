@@ -196,9 +196,7 @@ public sealed class ClnFixture : IAsyncLifetime
     {
         var address = (await Cln.CallAsync("newaddr", cancellationToken, ("addresstype", "bech32")))["bech32"]!
            .GetValue<string>();
-        var txId = await Bitcoin.Rpc.SendToAddressAsync(
-                       NBitcoin.BitcoinAddress.Create(address, NBitcoin.Network.RegTest),
-                       NBitcoin.Money.Satoshis((long)amount.Satoshi), cancellationToken: cancellationToken);
+        var txId = await SendAtOneSatPerVbyteAsync(address, amount, cancellationToken);
         await MineAndWaitAsync(6, nodes, cancellationToken);
         await Poll.UntilAsync(async () =>
         {
@@ -206,6 +204,26 @@ public sealed class ClnFixture : IAsyncLifetime
             return outputs.Any(o => o?["txid"]?.GetValue<string>() == txId.ToString()
                                  && o["status"]?.GetValue<string>() == "confirmed");
         }, TimeSpan.FromSeconds(60), "CLN sees its deposit confirmed", cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends <paramref name="amount"/> from bitcoind to <paramref name="address"/> at 1 sat/vB and returns the txid.
+    /// </summary>
+    /// <remarks>
+    /// bitcoind's wallet default is its <c>-fallbackfee</c> (20 sat/vB, 5,000 sat/kw) until it has an estimate, and
+    /// once enough of those deposits are mined, bitcoind estimates that rate, which CLN's <c>min_acceptable</c> follows
+    /// at half: 2,501 sat/kw, above our test nodes' 2,500 sat/kw opens, so every later class that opens a channel
+    /// failed. Whether a run got there depended on the class order, which xunit derives from the test assembly's path
+    /// (NL-1356; the dual-funding class pays the same, NL-531).
+    /// </remarks>
+    public async Task<NBitcoin.uint256> SendAtOneSatPerVbyteAsync(string address, Domain.Money.LightningMoney amount,
+                                                                  CancellationToken cancellationToken)
+    {
+        var sent = await Bitcoin.Rpc.SendCommandAsync(
+                       "sendtoaddress", cancellationToken, address,
+                       NBitcoin.Money.Satoshis((long)amount.Satoshi).ToDecimal(NBitcoin.MoneyUnit.BTC), "", "", false,
+                       true, null, "unset", null, 1);
+        return NBitcoin.uint256.Parse(sent.Result.ToString());
     }
 
     /// <summary>

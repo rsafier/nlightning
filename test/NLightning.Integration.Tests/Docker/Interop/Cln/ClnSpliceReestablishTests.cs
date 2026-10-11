@@ -1027,9 +1027,7 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
 
         var address = (await cln.Client.CallAsync("newaddr", ct, ("addresstype", "bech32")))["bech32"]!
            .GetValue<string>();
-        var txId = await _fixture.Bitcoin.Rpc.SendToAddressAsync(BitcoinAddress.Create(address, NBitcoin.Network.RegTest),
-                                                                 Money.Satoshis((long)amount.Satoshi),
-                                                                 cancellationToken: ct);
+        var txId = await _fixture.SendAtOneSatPerVbyteAsync(address, amount, ct);
         await _fixture.MineAsync(6, ct);
         await Poll.UntilAsync(async () =>
         {

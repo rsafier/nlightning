@@ -202,10 +202,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 3 | 103 | 106 |
 | in-progress | 0 | 1 | 8 | 1 | 10 |
-| fixed | 15 | 74 | 270 | 536 | 895 |
+| fixed | 15 | 74 | 270 | 537 | 896 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **290** | **662** | **1042** |
+| **Total** | **15** | **75** | **290** | **663** | **1043** |
 
 ### Epics
 
@@ -11052,6 +11052,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** a `StopAsync` on the executor that cancels its loop token and awaits the running round, called by the hosts with the safety services (before the chain monitor and the peers stop); `ScheduleRound` refuses after the stop.
 - **Blocks/Blocked-by:** found by NL-1357
 
+
+### NL-1356 The CLN suite failed 40 of 95 in some worktrees: bitcoind's fallback fee raised CLN's minimum feerate
+- **Status:** fixed (FIXSHA)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/ClnFixture.cs` (`FundClnWalletAsync`, `SendAtOneSatPerVbyteAsync`), `Docker/Interop/Cln/ClnSpliceReestablishTests.cs` (the dedicated CLN's deposit)
+- **Evidence:** The node-fence integration with the channel-scale lane (`619cc06a`) failed the `cln` suite twice (`mx-20261011024832`, `mx-20261011031503`: 40/95, every failure CLN's "feerate_per_kw 2500 below minimum 2501" at an open, the first in `ClnSpliceRbfTests.Given_ABumpedSplicePending_*`), while `49ca6b27` was green right after in another worktree. The scale change was not the cause: xunit v3 orders test cases by a unique id hashed from the test assembly's full path (`UniqueIDGenerator.ForAssembly`; a `NLightning.Integration.Tests.uniqueid` file next to the dll overrides it), so every worktree runs the CLN classes in its own fixed order. With the failing worktree's id pinned, `49ca6b27`'s product code failed the same way (`--class` Quiescence, Interop, SpliceRbf, OnionMessage, OfferReceive: 30/35, the same five failures). In that order `ClnSpliceRbfTests` runs third, and its `FundClnWalletAsync` deposits (two per test) paid bitcoind's wallet default, `-fallbackfee` 20 sat/vB (5,000 sat/kw); once enough of them were mined bitcoind estimated that rate and CLN's `min_acceptable` (half of it) passed our test nodes' fixed 2,500 sat/kw opens. Same family as NL-531 (the dual-funding class's deposits).
+- **Fix:** the CLN deposits pay 1 sat/vB (`ClnFixture.SendAtOneSatPerVbyteAsync`, as `ClnDualFundTests.FundClnAsync` does). With the failing order pinned and the channel-scale code: the five classes 35/35, the whole suite (`--matrix cln`, `mx-20261011035401`) 90/91 + 4 not run, the one failure `ClnPeerStorageTests` (timeout waiting for CLN's retrieval, NL-910 family) green rerun alone.
+- **Blocks/Blocked-by:** related NL-531, NL-486
 
 ### NL-1357 Channel-count scale benchmark; startup dials waited behind peers that never answer
 - **Status:** fixed (3e94b8df)
