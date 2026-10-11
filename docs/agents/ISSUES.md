@@ -11316,7 +11316,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** run the reservation before the node accepts opens: either a restore at start (before `PeerManager.StartAsync`, e.g. a pending restore file the start applies), or refuse opens and accepts while a restore is pending and until its raise committed; refuse the restore when an existing channel row already uses an index in the backup's range; make a failed raise fail the restore. Not small, not fixed here.
 
 ### NL-1393 A stop requested while the daemon was still starting failed instead of stopping cleanly
-- **Status:** fixed (this commit)
+- **Status:** fixed (adab709d)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Services/NltgDaemonService.cs` (`StopAsync`)
