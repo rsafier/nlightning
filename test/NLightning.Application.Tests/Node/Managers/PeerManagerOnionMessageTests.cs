@@ -22,6 +22,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
+using Domain.Transport;
 using Infrastructure.Node.ValueObjects;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
@@ -59,8 +60,9 @@ public class PeerManagerOnionMessageTests
                     .Returns(new FeatureOptions { OptionOnionMessages = FeatureSupport.Optional });
         _peerService.Setup(p => p.SendMessageAsync(It.IsAny<IChannelMessage>())).Returns(Task.CompletedTask);
         _peerService.Setup(p => p.SendWarningAsync(It.IsAny<WarningException>())).Returns(Task.CompletedTask);
-        _peerServiceFactory.Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
-                           .ReturnsAsync(_peerService.Object);
+        _peerServiceFactory
+           .Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<PeerConnection>()))
+           .ReturnsAsync(_peerService.Object);
         _tcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
                    .ReturnsAsync(new ConnectedPeer(_peerId, "127.0.0.1", 9735, new Mock<TcpClient>().Object));
 
@@ -260,7 +262,7 @@ public class PeerManagerOnionMessageTests
 
     private async Task ConnectInboundAsync(PeerManager peerManager, Mock<IPeerService> peerService)
     {
-        _peerServiceFactory.Setup(f => f.CreateConnectingPeerAsync(It.IsAny<TcpClient>()))
+        _peerServiceFactory.Setup(f => f.CreateConnectingPeerAsync(It.IsAny<PeerConnection>()))
                            .ReturnsAsync(peerService.Object);
         _tcpService.Raise(t => t.OnNewPeerConnected += null, _tcpService.Object,
                           new NewPeerConnectedEventArgs("127.0.0.1", 9735, new Mock<TcpClient>().Object));

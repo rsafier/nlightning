@@ -200,12 +200,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 102 | 104 |
+| open | 0 | 0 | 2 | 104 | 106 |
 | in-progress | 0 | 1 | 8 | 1 | 10 |
-| fixed | 15 | 74 | 267 | 535 | 891 |
+| fixed | 15 | 74 | 268 | 536 | 893 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **75** | **286** | **660** | **1036** |
+| **Total** | **15** | **75** | **287** | **663** | **1040** |
 
 ### Epics
 
@@ -10980,12 +10980,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** NL-1341
 
 ### NL-1343 Peer sends outside the `PeerOutbox` are not fenced
-- **Status:** open
+- **Status:** fixed (PENDING)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Infrastructure/Node/Services/PeerService.cs` (gossip query replies `SendGossipReplyAsync`, the `peer_storage_retrieval` reply), `Infrastructure/Node/Services/PeerCommunicationService.cs` (init, ping, pong, connection warnings), `Application/Gossip/Sync/GossipSyncManager.cs` (our queries and warnings), `Application/Gossip/Graph/GossipIngress.cs` (misbehaviour warning), `PeerGossipSender`'s direct fallback without an outbox
 - **Evidence:** the node write fence (NL-1341) is asked on the outbox, the single path of channel messages, our own gossip and onion messages, and before our `peer_storage` backup. These other sends carry no channel state (connection upkeep, gossip queries and their answers from the graph, handing a peer its own blob back), but a fenced instance still keeps its connections alive with them.
 - **Fix sketch:** check the fence in `PeerCommunicationService.SendMessageAsync` (one transport choke point, all message types) and close the connection on a refusal.
+- **Fix:** the fence moved to the one place every message to a peer passes, `Infrastructure/Protocol/Services/MessageService.SendMessageAsync` (`MessageServiceFactory` takes the optional `INodeWriteFence` from DI; unregistered = a null check, the send completes as before): `CheckEffectAsync(PeerSend)` before every write, so the outbox's messages and every former bypass (init, ping, pong, connection warnings, a disconnect's error or warning, gossip query replies, sync queries and filters, `peer_storage`/`peer_storage_retrieval`, the malformed-message warning) are fenced. A refusal (any exception) writes nothing, marks the connection fenced (later sends dropped without asking again) and raises, once and on another task, a `ConnectionException` carrying the `NodeFencedException` (thrown for our init), which disconnects without sending anything. The `PeerOutbox` check was removed (one check per message); `PeerStorageService` keeps its check before our backup.
+- **Validation:** `Infrastructure.Tests` `Protocol/Services/MessageServiceWriteFenceTests` (no fence: synchronous write; allowing: one check per send; refusal: nothing written, raised or thrown, sticky) and `Node/Services/PeerSendWriteFenceTests` (each former bypass on the real `PeerService`/`PeerCommunicationService`/`MessageService` stack: nothing written, connection closed); `Daemon.Tests` `NodeWriteFenceCompositionTests` (a registered fence reaches the message services). `PeerOutboxWriteFenceTests` removed with the outbox check.
 - **Blocks/Blocked-by:** NL-1341
 
 ### NL-1349 Locked start: no key material in the node's image, the key delivered at run time
@@ -11033,3 +11035,40 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `test/NLightning.Integration.Tests` `LoopPersistenceTests`
 - **Evidence:** failed with `TaskCanceledException` in two full net10.0 Integration runs on 2026-10-10 (the locked-start and node-fence lanes, neither touching the class); the class passed alone (8/8) both times.
 - **Fix sketch:** find the wall-clock wait in the durable imported-history case and make it event-driven or give it a stepped clock.
+
+### NL-1369 Peer transport seams: a host's outbound dialer and inbound acceptor
+- **Status:** fixed (PENDING)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.Domain/Transport/PeerConnection.cs`, `src/NLightning.Infrastructure/Transport/Interfaces/{IPeerConnectionDialer,IPeerInboundAcceptor,ITcpService}.cs`, `Transport/Services/{TcpService,TransportService}.cs`, `Transport/Factories/TransportServiceFactory.cs`, `Node/Factories/PeerServiceFactory.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs`, `NodeOptions.ListenEnabled`
+- **Evidence:** the node could only dial peers itself (directly or through Tor's SOCKS port) and accept them on its own listener, so an embedding host could not route its peer connections through an external TCP proxy.
+- **Fix:** every peer connection is a Domain `PeerConnection` (a `TcpClient` of our own or a host's stream, with `IsProxied` and the remote endpoint) carried by the transport and peer factories instead of the `TcpClient`. Outbound: an optional `IPeerConnectionDialer.DialAsync(nodeId, PeerAddress, ct)` (none registered by default) is asked by `TcpService.ConnectToPeerAsync` before the direct/Tor route, bounded by `Node:NetworkTimeout`; it returns a connected stream (BOLT 8 runs on it as initiator) or null to let the node dial itself. Only `PeerManager` calls `ConnectToPeerAsync`, so startup dials, the reconnect backoff, `connect`, bootstrap and graph dials, opens to new peers, restores and LND's ConnectPeer all go through it. Inbound: `IPeerInboundAcceptor.AcceptInboundAsync(stream, remoteEndPoint, isProxied, ct)`, implemented by `TcpService` (`ITcpService : IPeerInboundAcceptor`, registered as the same singleton), raises the stream like a listener connection (BOLT 8 as responder), only while the node accepts connections. A proxied (or endpoint-less) inbound peer is saved inbound-only like a loopback one (NL-497), never at the reported endpoint; a saved dialable row is kept; its announced address is used whether Tor is on or not; our init carries no `remote_addr` for it. `Node:ListenEnabled=false` opens no listener (the Tor checks read the same list). Default behavior unchanged.
+- **Validation:** `Infrastructure.Tests` `Transport/Services/TcpServicePeerTransportTests` (dialer stream, null fallback, onion address with Tor off, failure, timeout, unusable stream, acceptor before/after listening, endpoint forms, `ListenEnabled=false`, DI); `Application.Tests` `PeerManagerConnectTests` (two real peer managers with BOLT 8: a node with no listener reached only through an in-test relay over both seams, the proxied row inbound-only, a dialable row kept, and startup/reconnect/connect/dial all through the dialer) and `PeerManagerTests.PeerTransport` (the save rules); `Integration.Tests/BOLT8/PeerDialPathTests` (only `PeerManager` dials through `ITcpService`); `Docker/PeerTransport/RelayedPeerFlowTests` (Explicit, a local bitcoind: two full nodes through the relay open a channel, pay both ways, restart and pay again).
+- **Blocks/Blocked-by:** follow-ups NL-1370..NL-1372
+
+### NL-1370 A cancelled dial does not cancel the host dialer
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure/Transport/Interfaces/ITcpService.cs` (`ConnectToPeerAsync`), `TcpService.DialThroughHostAsync`
+- **Evidence:** `ITcpService.ConnectToPeerAsync` takes no cancellation token, so `PeerManager.DialPeerAsync`'s token (bootstrap and graph dials, LND's ConnectPeer timeout) stops waiting but leaves the host's `IPeerConnectionDialer.DialAsync` running until `Node:NetworkTimeout`; the stream it then returns is closed by the abandoned-dial continuation.
+- **Fix sketch:** add a `CancellationToken` to `ConnectToPeerAsync` (and its test wrappers) and link it with the network timeout.
+- **Blocks/Blocked-by:** NL-1369
+
+### NL-1371 The inbound acceptor reports no outcome to the host
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure/Transport/Interfaces/IPeerInboundAcceptor.cs`, `PeerManager.HandleNewPeerConnectedAsync`
+- **Evidence:** `AcceptInboundAsync` returns once the node took the stream; the handshake, the init exchange and the session install run in the background like a listener connection, so a host cannot learn the peer's node id or that the connection was refused (only the stream closing tells it).
+- **Fix sketch:** return a task that completes with the peer's node id once the session is installed (or faults with the reason), driven from `PeerManager`'s inbound setup.
+- **Blocks/Blocked-by:** NL-1369
+
+### NL-1372 The relayed two-node proof runs only on Docker, outside the suite matrix
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/PeerTransport/RelayedPeerFlowTests.cs`
+- **Evidence:** the end-to-end proof of NL-1369 (two full nodes behind an in-test relay: channel, payments both ways, a restart) is `Explicit` and starts its own bitcoind through the Tor fixture's Docker chain host, so `scripts/run-cluster.sh --matrix` never runs it.
+- **Fix sketch:** move it onto a cluster fixture's bitcoind (e.g. the `lnd` suite's `LightningRegtestNetworkFixture` through `NLightningTestNode.CreateAsync(fixture, ...)`) and add the class to that suite in `SuiteCatalog`.
+- **Blocks/Blocked-by:** NL-1369

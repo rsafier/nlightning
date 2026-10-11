@@ -1,4 +1,3 @@
-using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -36,14 +35,14 @@ public sealed class TransportServiceFactory : ITransportServiceFactory
 
     /// <inheritdoc />
     public ITransportService CreateTransportService(bool isInitiator, ReadOnlySpan<byte> s, ReadOnlySpan<byte> rs,
-                                                    TcpClient tcpClient)
+                                                    PeerConnection connection)
     {
         // Create a specific logger for the TransportService class
         var logger = _loggerFactory.CreateLogger<TransportService>();
 
         return new TransportService(_ecdh, logger, _messageSerializer,
-                                    TorTcpClient.GetNetworkTimeout(_nodeOptions, tcpClient, !isInitiator), isInitiator,
-                                    s, rs, tcpClient);
+                                    TorTcpClient.GetNetworkTimeout(_nodeOptions, connection, !isInitiator), isInitiator,
+                                    s, rs, connection);
     }
 
     /// <inheritdoc />
@@ -52,13 +51,13 @@ public sealed class TransportServiceFactory : ITransportServiceFactory
     /// key never leaves the key manager (NL-436).
     /// </remarks>
     public ITransportService CreateTransportService(bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey,
-                                                    ReadOnlySpan<byte> rs, TcpClient tcpClient,
+                                                    ReadOnlySpan<byte> rs, PeerConnection connection,
                                                     ProtectedStaticEcdh protectedStaticEcdh)
     {
         var logger = _loggerFactory.CreateLogger<TransportService>();
 
         return new TransportService(_ecdh, logger, _messageSerializer,
-                                    TorTcpClient.GetNetworkTimeout(_nodeOptions, tcpClient, !isInitiator), isInitiator,
-                                    localStaticPublicKey, rs, tcpClient, protectedStaticEcdh);
+                                    TorTcpClient.GetNetworkTimeout(_nodeOptions, connection, !isInitiator), isInitiator,
+                                    localStaticPublicKey, rs, connection, protectedStaticEcdh);
     }
 }

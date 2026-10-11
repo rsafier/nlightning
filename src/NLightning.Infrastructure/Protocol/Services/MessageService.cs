@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Infrastructure.Protocol.Services;
 
 using Domain.Exceptions;
+using Domain.Node.Fencing;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -22,6 +23,9 @@ using Exceptions;
 /// This class is used to send and receive messages over a transport service. Receiving is asynchronous per peer: the
 /// transport read loop only queues the raw frames it decrypts; a single consumer per peer deserializes them and runs
 /// the handlers in arrival order, so a slow handler stalls that peer's queue, never the read loop (NL-108).
+/// Every message to the peer is sent here, so this is where the optional node write fence is asked
+/// (<see cref="NodeEffect.PeerSend"/>, NL-1343): channel messages, gossip and onion messages from the outbox, but also
+/// init, ping, pong, warnings and errors, gossip queries and their replies and the peer storage reply.
 /// </remarks>
 /// <seealso cref="IMessageService" />
 internal sealed class MessageService : IMessageService
@@ -50,6 +54,7 @@ internal sealed class MessageService : IMessageService
     private readonly IMessageSerializer _messageSerializer;
     private readonly ITransportService? _transportService;
     private readonly IOnionMessageDropCounter? _onionMessageDrops;
+    private readonly INodeWriteFence? _writeFence;
 
     /// <summary>
     /// The raw frames the transport read loop handed over, consumed by the one per-peer consumer
@@ -64,6 +69,10 @@ internal sealed class MessageService : IMessageService
         });
 
     private volatile bool _disposed;
+
+    // Set by the first refusal of the write fence: the connection is closing and nothing more is sent on it
+    private volatile bool _fenced;
+    private int _fenceRaised;
     private readonly object _disposeLock = new();
     private long _malformedGossipCount;
     private long _malformedOnionMessageCount;
@@ -123,14 +132,18 @@ internal sealed class MessageService : IMessageService
     /// <param name="logger">The logger.</param>
     /// <param name="messageSerializer">The message serializer.</param>
     /// <param name="transportService">The transport service.</param>
+    /// <param name="onionMessageDrops">The onion message drop counter (the Application's metrics), or null.</param>
+    /// <param name="writeFence">The node write fence asked before every send (NL-1343); null: nothing is checked.
+    /// </param>
     public MessageService(ILogger<IMessageService> logger, IMessageSerializer messageSerializer,
                           ITransportService transportService,
-                          IOnionMessageDropCounter? onionMessageDrops = null)
+                          IOnionMessageDropCounter? onionMessageDrops = null, INodeWriteFence? writeFence = null)
     {
         _logger = logger;
         _messageSerializer = messageSerializer;
         _transportService = transportService;
         _onionMessageDrops = onionMessageDrops;
+        _writeFence = writeFence;
 
         _transportService.ExceptionRaised += RaiseException;
     }
@@ -151,6 +164,22 @@ internal sealed class MessageService : IMessageService
                 RaiseException(this, connectionException);
                 return;
             }
+
+        if (_writeFence is not null && !await IsSendAllowedAsync(message))
+        {
+            var fencedException =
+                new ConnectionException("The node write fence refused a send; closing the connection",
+                                        new NodeFencedException($"Refused to send {message.Type}"));
+            if (throwOnException)
+                throw fencedException;
+
+            // Raised once, off the sending thread (the disconnect waits for the ping loop, which may be the sender);
+            // the later refusals of the closing connection are dropped
+            if (Interlocked.Exchange(ref _fenceRaised, 1) == 0)
+                _ = Task.Run(() => RaiseException(this, fencedException), CancellationToken.None);
+
+            return;
+        }
 
         try
         {
@@ -176,6 +205,31 @@ internal sealed class MessageService : IMessageService
                 throw connectionException;
 
             RaiseException(this, connectionException);
+        }
+    }
+
+    /// <summary>
+    /// Asks the node write fence before a send (NL-1343). The first refusal (any exception) marks the connection
+    /// fenced: no later message is sent on it, and the fence is not asked again.
+    /// </summary>
+    private async ValueTask<bool> IsSendAllowedAsync(IMessage message)
+    {
+        if (_fenced)
+            return false;
+
+        try
+        {
+            await _writeFence!.CheckEffectAsync(NodeEffect.PeerSend, CancellationToken.None);
+            return !_fenced;
+        }
+        catch (Exception e)
+        {
+            if (!_fenced)
+                _logger.LogWarning(e, "The node write fence refused sending {MessageType} to the peer; closing the "
+                                    + "connection", message.Type);
+
+            _fenced = true;
+            return false;
         }
     }
 

@@ -30,6 +30,7 @@ using Domain.Payments.Enums;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Serialization.Interfaces;
+using Domain.Transport;
 using Fixtures;
 using Fixtures.Cln;
 using Infrastructure.Crypto.Interfaces;
@@ -1463,7 +1464,7 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
     {
         private readonly ITcpService _inner;
         private readonly SpliceLinkCutter _cutter;
-        private readonly ConcurrentBag<TcpClient> _clients = [];
+        private readonly ConcurrentBag<PeerConnection> _clients = [];
 
         public CuttableTcpService(ITcpService inner, SpliceLinkCutter cutter)
         {
@@ -1481,16 +1482,20 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
 
         public Task StopListeningAsync() => _inner.StopListeningAsync();
 
+        public Task AcceptInboundAsync(Stream stream, EndPoint? remoteEndPoint, bool isProxied,
+                                       CancellationToken cancellationToken = default) =>
+            _inner.AcceptInboundAsync(stream, remoteEndPoint, isProxied, cancellationToken);
+
         public async Task<ConnectedPeer> ConnectToPeerAsync(PeerAddress peerAddress)
         {
             if (_cutter.IsSevered)
                 throw new ConnectionException("The test cut the link");
 
             var connected = await _inner.ConnectToPeerAsync(peerAddress);
-            _clients.Add(connected.TcpClient);
+            _clients.Add(connected.Connection);
             if (_cutter.IsSevered)
             {
-                Reset(connected.TcpClient);
+                Reset(connected.Connection);
                 throw new ConnectionException("The test cut the link");
             }
 
@@ -1505,20 +1510,26 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
 
         private void HandleNewPeerConnected(object? sender, NewPeerConnectedEventArgs args)
         {
-            _clients.Add(args.TcpClient);
+            _clients.Add(args.Connection);
             if (_cutter.IsSevered)
             {
-                Reset(args.TcpClient);
+                Reset(args.Connection);
                 return;
             }
 
             OnNewPeerConnected?.Invoke(this, args);
         }
 
-        private static void Reset(TcpClient client)
+        private static void Reset(PeerConnection connection)
         {
             try
             {
+                if (connection.TcpClient is not { } client)
+                {
+                    connection.Close();
+                    return;
+                }
+
                 client.Client.LingerState = new LingerOption(true, 0);
                 client.Client.Close();
             }

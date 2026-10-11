@@ -25,6 +25,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Transport;
 using Infrastructure.Node.ValueObjects;
 using Infrastructure.Transport.Interfaces;
 
@@ -79,7 +80,7 @@ public class PeerManagerBatchTests
         _peerServices.Enqueue(_mockPeerService);
 
         _mockPeerServiceFactory
-           .Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
+           .Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<PeerConnection>()))
            .ReturnsAsync(() => _peerServices.Dequeue().Object);
 
         _mockChannelManager

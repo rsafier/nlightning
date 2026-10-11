@@ -25,6 +25,7 @@ using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
+using Domain.Transport;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Contexts;
@@ -55,7 +56,7 @@ public sealed class PeerManagerInboundRestartTests : IDisposable
     {
         _peerService.SetupGet(p => p.PeerPubKey).Returns(_peerId);
         _peerService.SetupGet(p => p.Features).Returns(new FeatureOptions());
-        _peerServiceFactory.Setup(f => f.CreateConnectingPeerAsync(It.IsAny<TcpClient>()))
+        _peerServiceFactory.Setup(f => f.CreateConnectingPeerAsync(It.IsAny<PeerConnection>()))
                            .ReturnsAsync(_peerService.Object);
         _keyManager.Setup(k => k.GetNodePubKey()).Returns(new Key().PubKey.ToBytes());
         _tcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))

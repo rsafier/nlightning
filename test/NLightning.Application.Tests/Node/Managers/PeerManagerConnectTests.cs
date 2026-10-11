@@ -14,7 +14,9 @@ namespace NLightning.Application.Tests.Node.Managers;
 
 using Application.Node.Managers;
 using Application.Protocol.Factories;
+using Application.Tests.Node.PeerStorage;
 using Application.Tests.Payments;
+using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
@@ -34,7 +36,7 @@ using Infrastructure.Transport.Interfaces;
 /// peer services (only the message bytes are faked): the NLightning-to-NLightning connect bugs NL-239 (the responder
 /// lost the initiator's init) and NL-240 (a simultaneous connect left no live connection).
 /// </summary>
-public sealed class PeerManagerConnectTests : IAsyncLifetime
+public sealed partial class PeerManagerConnectTests : IAsyncLifetime
 {
     private const int Rounds = 20;
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(15);
@@ -293,17 +295,36 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
 
         public bool IsConnectedTo(TestNode other) => PeerManager.GetPeer(other.NodeId) is not null;
 
+        /// <summary>Where a host hands this node the connections it accepted itself (NL-1369).</summary>
+        public IPeerInboundAcceptor Acceptor => _serviceProvider.GetRequiredService<IPeerInboundAcceptor>();
+
+        /// <summary>The endpoints the node's own listener is bound to (none with <c>ListenEnabled</c> false).</summary>
+        public List<EndPoint> ListeningTo => _serviceProvider.GetRequiredService<ITcpService>().ListeningTo;
+
         private static byte NextNodeSeed() => (byte)Interlocked.Increment(ref s_nextNodeSeed);
 
+        /// <param name="serializer">The in-process message serializer both nodes share.</param>
+        /// <param name="peerDbRepository">The peer table; a mock that saves nothing by default.</param>
+        /// <param name="torOptions">The node's <c>Node:Tor</c>.</param>
+        /// <param name="dialer">A host's outbound dialer (NL-1369), or none.</param>
+        /// <param name="listenEnabled"><c>Node:ListenEnabled</c>: false opens no listener of its own.</param>
+        /// <param name="startupPeers">The stored peers the node dials when it starts.</param>
+        /// <param name="activeChannelWith">A peer the channel memory reports an active channel with, so a drop of
+        /// that peer starts the reconnect backoff.</param>
         public static async Task<TestNode> StartAsync(IMessageSerializer serializer,
                                                       IPeerDbRepository? peerDbRepository = null,
-                                                      TorOptions? torOptions = null)
+                                                      TorOptions? torOptions = null,
+                                                      IPeerConnectionDialer? dialer = null, bool listenEnabled = true,
+                                                      IReadOnlyList<PeerModel>? startupPeers = null,
+                                                      CompactPubKey? activeChannelWith = null)
         {
             var port = GetFreePort();
             var nodeOptions = new NodeOptions
             {
                 ListenAddresses = [$"127.0.0.1:{port}"],
+                ListenEnabled = listenEnabled,
                 NetworkTimeout = TimeSpan.FromSeconds(10),
+                ReconnectInitialDelay = TimeSpan.FromMilliseconds(100),
                 Tor = torOptions ?? new TorOptions()
             };
 
@@ -316,7 +337,7 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
             var unitOfWork = new Mock<IUnitOfWork>();
             unitOfWork.Setup(u => u.PeerDbRepository)
                       .Returns(peerDbRepository ?? peerDbRepositoryMock.Object);
-            unitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync(() => []);
+            unitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync(() => [.. startupPeers ?? []]);
 
             var services = new ServiceCollection();
             services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
@@ -328,10 +349,20 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
             services.AddSingleton<IMessageFactory, MessageFactory>();
             services.AddScoped(_ => unitOfWork.Object);
             services.AddInfrastructureServices();
+            if (dialer is not null)
+                services.AddSingleton(dialer);
             var serviceProvider = services.BuildServiceProvider();
 
             var channelMemoryRepository = new Mock<IChannelMemoryRepository>();
-            channelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
+            channelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                                   .Returns((Func<ChannelModel, bool> predicate) =>
+                                    {
+                                        if (activeChannelWith is not { } peer)
+                                            return new List<ChannelModel>();
+
+                                        var channel = PeerStorageTestContext.CreateChannel(peer, ChannelState.Open);
+                                        return predicate(channel) ? [channel] : new List<ChannelModel>();
+                                    });
             var peerManager = new PeerManager(new Mock<IChannelManager>().Object, channelMemoryRepository.Object,
                                               NullLogger<PeerManager>.Instance,
                                               serviceProvider.GetRequiredService<IPeerServiceFactory>(),

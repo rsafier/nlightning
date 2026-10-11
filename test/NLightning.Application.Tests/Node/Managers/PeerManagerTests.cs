@@ -47,6 +47,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
+using Domain.Transport;
 using Infrastructure.Node.ValueObjects;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
@@ -103,11 +104,11 @@ public partial class PeerManagerTests
 
         // Set up the peer service factory to return our mock peer service
         _mockPeerServiceFactory
-           .Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
+           .Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<PeerConnection>()))
            .ReturnsAsync(_mockPeerService.Object);
 
         _mockPeerServiceFactory
-           .Setup(f => f.CreateConnectingPeerAsync(It.IsAny<TcpClient>()))
+           .Setup(f => f.CreateConnectingPeerAsync(It.IsAny<PeerConnection>()))
            .ReturnsAsync(_mockPeerService.Object);
 
         // The channel manager raises its replies through OnResponseMessageReady (under the channel lock)
@@ -198,7 +199,9 @@ public partial class PeerManagerTests
         _mockTcpService.Verify(t => t.ConnectToPeerAsync(peerAddress), Times.Once);
 
         // Verify peer service factory was called
-        _mockPeerServiceFactory.Verify(f => f.CreateConnectedPeerAsync(_compactPubKey, mockTcpClient.Object),
+        _mockPeerServiceFactory.Verify(f => f.CreateConnectedPeerAsync(
+                                           _compactPubKey,
+                                           It.Is<PeerConnection>(c => c.TcpClient == mockTcpClient.Object)),
                                        Times.Once);
 
         // Verify event handlers were set up
@@ -252,7 +255,7 @@ public partial class PeerManagerTests
 
         // Assert
         _mockPeerServiceFactory.Verify(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(),
-                                                                       It.IsAny<TcpClient>()), Times.Never);
+                                                                       It.IsAny<PeerConnection>()), Times.Never);
         Assert.Empty(peerManager.ListPeers());
     }
 
@@ -518,7 +521,9 @@ public partial class PeerManagerTests
 #pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
 
         // Then
-        _mockPeerServiceFactory.Verify(f => f.CreateConnectingPeerAsync(mockTcpClient.Object), Times.Once);
+        _mockPeerServiceFactory.Verify(f => f.CreateConnectingPeerAsync(
+                                           It.Is<PeerConnection>(c => c.TcpClient == mockTcpClient.Object)),
+                                       Times.Once);
 
         var peers = peerManager.ListPeers();
         Assert.Single(peers);
@@ -1034,7 +1039,7 @@ public partial class PeerManagerTests
         var eventArgs = new NewPeerConnectedEventArgs(ExpectedHost, ExpectedPort, mockTcpClient.Object);
 
         _mockPeerServiceFactory
-           .Setup(f => f.CreateConnectingPeerAsync(It.IsAny<TcpClient>()))
+           .Setup(f => f.CreateConnectingPeerAsync(It.IsAny<PeerConnection>()))
            .ThrowsAsync(new InvalidOperationException("Test factory error"));
 
         // When
@@ -1525,8 +1530,9 @@ public partial class PeerManagerTests
         var peerService = CreateMockPeerService();
         peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>()))
                    .ThrowsAsync(new ConnectionException("closed before init"));
-        _mockPeerServiceFactory.Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
-                               .ReturnsAsync(peerService.Object);
+        _mockPeerServiceFactory
+           .Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<PeerConnection>()))
+           .ReturnsAsync(peerService.Object);
         _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
                        .ReturnsAsync(new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort,
                                                        new Mock<TcpClient>().Object));
@@ -1549,8 +1555,9 @@ public partial class PeerManagerTests
         var initReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var peerService = CreateMockPeerService();
         peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>())).Returns(initReceived.Task);
-        _mockPeerServiceFactory.Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
-                               .ReturnsAsync(peerService.Object);
+        _mockPeerServiceFactory
+           .Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<PeerConnection>()))
+           .ReturnsAsync(peerService.Object);
         _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
                        .ReturnsAsync(new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort,
                                                        new Mock<TcpClient>().Object));
@@ -2296,7 +2303,7 @@ public partial class PeerManagerTests
 
     private void SetupInboundPeerService(Mock<IPeerService> peerService)
     {
-        _mockPeerServiceFactory.Setup(f => f.CreateConnectingPeerAsync(It.IsAny<TcpClient>()))
+        _mockPeerServiceFactory.Setup(f => f.CreateConnectingPeerAsync(It.IsAny<PeerConnection>()))
                                .ReturnsAsync(peerService.Object);
     }
 
