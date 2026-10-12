@@ -189,6 +189,11 @@ public class NltgDaemonService : BackgroundService
             // connects: a splice a peer resumes right after the restart signs reserved wallet inputs (NL-600)
             await _blockchainMonitor.LoadWalletAsync(stoppingToken);
 
+            // NL-1410: finish orphan recovery before peers can reserve inputs for a new negotiation. Otherwise a
+            // sweep can see a just-persisted reservation before the contributor records its in-process ownership.
+            if (_interactiveTxContributor is not null)
+                await _interactiveTxContributor.ReleaseOrphanedReservationsAsync(stoppingToken);
+
             // Load the per-channel routing policies before any forward or channel_update (wave sp1 SP1-G); a failure
             // fails the start
             if (_channelPolicyStore is not null)
@@ -238,10 +243,6 @@ public class NltgDaemonService : BackgroundService
             // Release the withdraw reservations a crash left without their broadcast row (wave m6 W1)
             if (_walletSpendService is not null)
                 await _walletSpendService.ReleaseOrphanedReservationsAsync(stoppingToken);
-
-            // Release the interactive-tx input reservations no stored negotiation holds any more (splicing plan IT2)
-            if (_interactiveTxContributor is not null)
-                await _interactiveTxContributor.ReleaseOrphanedReservationsAsync(stoppingToken);
 
             // Catch up on splices that reached their depth while we were down (wave sp1 SP1-D); resolving the watcher
             // also subscribes it to the chain monitor's confirmations
