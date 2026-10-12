@@ -21,7 +21,8 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
     /// (up to <c>PayInvoiceClientHandler.MaxTimeoutSeconds</c>), so the cap must leave room for the short commands
     /// (listchannels, listpayments) polled meanwhile; the CLI gives up connecting after 2 s.
     /// </summary>
-    internal const int MaxServerInstances = 64;
+    // Bounded below the platform maximum of 254: 64 long-running payments still leave room for control calls.
+    internal const int MaxServerInstances = 128;
 
     /// <summary>
     /// How long a client has to send its request, before it is authenticated. A connection that sends nothing (or

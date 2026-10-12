@@ -122,12 +122,13 @@ public class NamedPipeIpcServiceTests : IDisposable
         Assert.False(File.Exists(cookiePath));
     }
 
-    [Fact]
-    public async Task Given_MoreThanTenClientsHeld_When_AnotherClientConnects_Then_ItIsStillServed()
+    [Theory]
+    [InlineData(15)]
+    [InlineData(80)]
+    public async Task Given_ConcurrentClientsHeld_When_MoreThanTheOldLimitConnect_Then_TheyAreAllServed(int clients)
     {
         // Arrange: every connection is held open inside the framing read, like a PayInvoice waiting for its outcome.
-        // The old cap of 10 pipe instances made the 11th client wait until one of them finished.
-        const int clients = 15;
+        // Keep the original >10 proof and cover 64 long waits with spare room for short control commands.
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var served = 0;
         var framingMock = new Mock<IIpcFraming>();

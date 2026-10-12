@@ -201,11 +201,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 116 | 118 |
-| in-progress | 0 | 2 | 10 | 0 | 12 |
-| fixed | 15 | 76 | 285 | 544 | 920 |
+| in-progress | 0 | 1 | 8 | 0 | 9 |
+| fixed | 15 | 77 | 287 | 545 | 924 |
 | wontfix | 0 | 0 | 7 | 15 | 22 |
 | duplicate | 0 | 0 | 3 | 8 | 11 |
-| **Total** | **15** | **78** | **307** | **683** | **1083** |
+| **Total** | **15** | **78** | **307** | **684** | **1084** |
 
 ### Epics
 
@@ -11445,7 +11445,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** look for a `SqliteConnection` shared by two contexts or a pool cleared by another test of the class; give each restart its own connection string or clear only this test's pool.
 
 ### NL-1408 Restarting a signed dual-funded open restores incompatible legacy wallet locks
-- **Status:** in-progress
+- **Status:** fixed (56a805c9)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`RestoreChannelUtxoLocksAsync`)
@@ -11454,7 +11454,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1409 Asynchronous stop cancellation can let an on-chain round save after stop
-- **Status:** in-progress
+- **Status:** fixed (21993f9d)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`StageAndSaveAsync`, `StopAsync`)
@@ -11463,7 +11463,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation:** The delayed-linked-cancellation regression fails on the original code with an unexpected saved output and sweep. With the stop-source check, all 39 `OnchainResolutionExecutorTests` pass on net10.0 Release, including caller cancellation propagation and stop after a save starts.
 
 ### NL-1410 Aborting a stored interactive transaction leaves its unsigned wallet contribution reserved
-- **Status:** in-progress
+- **Status:** fixed (28ab48f1)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`FinishAbortAsync`)
@@ -11471,3 +11471,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** commit the terminal abort before releasing its contribution or forgetting the active attempt. Keep a failed save retryable, and preserve reservations shared by completed RBF attempts and inputs whose signatures may still confirm. Startup orphan reconciliation recovers an unsigned reservation if the process stops after the abort save and before release.
 - **Validation:** Original driver fails all three ordering/save-failure regressions. With the fix, all 154 interactive-transaction tests pass on net10.0 Release, including local/peer abort, failed-save redelivery, unsigned shared-RBF retention and restart orphan recovery with active/signed references.
 - **Startup ordering:** The existing interactive reservation sweep now runs immediately after wallet load, before peers and the chain monitor start. The daemon regression uses the real contributor to recover a restored aborted reservation and verifies it is gone when peer startup runs; it fails on the old order (one reservation still held at peer start). Withdrawal sweeping stays in its existing position.
+
+- **Combined baseline gates (`28ab48f1`, 2026-10-12):** Release build and net11 daemon compile have zero warnings/errors; full formatting passes; all 13 net10 projects pass (19,192 tests, six skipped). The complete 14-suite cluster matrix passes with zero failures and zero reruns in 1,400 seconds (393 passed, ten not run, two suites skipped by plan). These gates cover NL-1408, NL-1409 and NL-1410 before the subsequent IPC limit-only change.
+
+
+### NL-1411 Sixty-four pending IPC requests exhaust the pipe instance limit and delay control calls
+- **Status:** fixed (this commit)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Services/Ipc/NamedPipeIpcService.cs` (`MaxServerInstances`)
+- **Evidence:** Every `payinvoice` call holds a named-pipe instance until its outcome. At the old limit of 64, 64 pending requests leave no spare instance for the accept loop or short control commands. The existing concurrent-client regression extended to 80 held clients fails on the original code: only 64 handlers enter. The installed .NET 10.0.3 macOS runtime enforces the cap in `NamedPipeServerStream.SharedServer.Get`; constructor validation permits bounded counts from 1 through 254 or the `MaxAllowedServerInstances` sentinel -1.
+- **Fix sketch:** raise the bounded instance limit to 128, leaving headroom for control traffic alongside 64 long-running requests. Preserve owner-only pipes, authentication, read deadlines and cleanup. Branch `wip/ipc-capacity`.
+- **Validation:** The original >10-client regression remains; the additional 80-held-client case covers the previous capacity boundary. All 14 named-pipe service tests pass on net10.0 Release, including 15 and 80 simultaneously held clients. Independent source reviews cleared the bounded cap and unchanged authentication/lifetime behavior. Release build has zero warnings/errors and full formatting passes. The owner accepted these checks for the limit-only change and waived another heavy suite/framework/matrix run; no full-gate coverage is claimed for the new limit.
