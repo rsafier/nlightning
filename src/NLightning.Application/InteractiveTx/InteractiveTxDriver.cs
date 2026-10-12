@@ -1023,14 +1023,18 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
     private async Task FinishAbortAsync(ChannelEntry entry, Attempt attempt, string reason, IUnitOfWork unitOfWork,
                                         CancellationToken cancellationToken)
     {
-        entry.Current = null;
-        await ReleaseContributionAsync(entry, attempt.Contribution, cancellationToken);
         if (attempt.Model is not null)
         {
-            attempt.Model = attempt.Model with { State = InteractiveTxSessionState.Aborted };
-            await SaveModelAsync(attempt, unitOfWork);
+            // NL-1410: the wallet refuses release while a durable session still owns the inputs. Commit the abort
+            // first, keeping the previous model and current attempt if the save fails so delivery can be retried.
+            var aborted = attempt.Model with { State = InteractiveTxSessionState.Aborted };
+            await unitOfWork.InteractiveTxSessionDbRepository.UpdateAsync(aborted);
+            await unitOfWork.SaveChangesAsync();
+            attempt.Model = aborted;
         }
 
+        entry.Current = null;
+        await ReleaseContributionAsync(entry, attempt.Contribution, cancellationToken);
         await entry.Host!.OnAbortedAsync(attempt.Terms.ChannelId, reason, cancellationToken);
         _quiescenceService?.Terminate(attempt.Terms.ChannelId, QuiescenceEndReason.TxAbort);
     }

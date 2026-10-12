@@ -23,6 +23,75 @@ public class InteractiveTxRecoveryTests
     public static TheoryData<string> Engines => InteractiveTxEngines.All;
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AStoredUnsignedNegotiation_When_Aborted_Then_TheAbortCommitsBeforeItsReservationIsReleased(
+        bool localAbort)
+    {
+        // Arrange: the wallet refuses to release a reservation while its stored negotiation remains active
+        var ct = TestContext.Current.CancellationToken;
+        var harness = new InteractiveTxHarness(InteractiveTxEngines.Domain, 100_000, 50_000);
+        harness.Alice.Fund(300_000);
+        harness.Bob.Fund(200_000);
+        await harness.PumpAsync(harness.Alice, await harness.StartAsync(FeeratePerKw, ct), ct,
+                                (_, message) => message is TestCommitmentSignedMessage);
+        var stored = harness.Alice.StoredSession(s_channelId)!;
+        Assert.Equal(InteractiveTxSessionState.AwaitingCommitmentSigned, stored.State);
+        InteractiveTxSessionState? stateAtRelease = null;
+        harness.Alice.Contributor.OnRelease = _ => stateAtRelease = harness.Alice.StoredSession(s_channelId)!.State;
+
+        // Act
+        if (localAbort)
+            await harness.Alice.Driver.AbortAsync(s_channelId, "withdrawn", harness.Alice.UnitOfWork, ct);
+        else
+            await harness.Alice.Driver.ReceiveAsync(InteractiveTxDriver.CreateTxAbort(s_channelId, "unknown funding"),
+                                                    harness.Bob.NodeId, harness.Alice.UnitOfWork, ct);
+
+        // Assert
+        Assert.Equal(InteractiveTxSessionState.Aborted, stateAtRelease);
+        Assert.Equal(stored.LocalContribution.ReservationId, Assert.Single(harness.Alice.Contributor.Released));
+        Assert.Single(harness.Alice.Host.Aborts);
+        Assert.False(harness.Alice.Driver.IsNegotiating(s_channelId));
+    }
+
+    [Fact]
+    public async Task Given_TheAbortSaveFails_When_AbortingAgain_Then_TheReservationAndNegotiationSurviveUntilCommit()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var harness = new InteractiveTxHarness(InteractiveTxEngines.Domain, 100_000, 50_000);
+        var quiescence = new Mock<IQuiescenceService>();
+        harness.Alice.Configure(quiescence.Object);
+        harness.Alice.Fund(300_000);
+        harness.Bob.Fund(200_000);
+        await harness.PumpAsync(harness.Alice, await harness.StartAsync(FeeratePerKw, ct), ct,
+                                (_, message) => message is TestCommitmentSignedMessage);
+        harness.Alice.FailNextSave = true;
+        var abort = InteractiveTxDriver.CreateTxAbort(s_channelId, "unknown funding");
+
+        // Act
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Alice.Driver.ReceiveAsync(
+            abort, harness.Bob.NodeId, harness.Alice.UnitOfWork, ct));
+
+        // Assert: neither wallet ownership nor the host is changed by an uncommitted abort
+        Assert.Empty(harness.Alice.Contributor.Released);
+        Assert.Empty(harness.Alice.Host.Aborts);
+        Assert.True(harness.Alice.Driver.IsNegotiating(s_channelId));
+        Assert.Equal(InteractiveTxSessionState.AwaitingCommitmentSigned,
+                     harness.Alice.StoredSession(s_channelId)!.State);
+        quiescence.Verify(q => q.Terminate(s_channelId, It.IsAny<QuiescenceEndReason>()), Times.Never);
+
+        // Act: redelivery can finish the same abort after the database recovers
+        await harness.Alice.Driver.ReceiveAsync(abort, harness.Bob.NodeId, harness.Alice.UnitOfWork, ct);
+
+        // Assert
+        Assert.Equal(InteractiveTxSessionState.Aborted, harness.Alice.StoredSession(s_channelId)!.State);
+        Assert.Single(harness.Alice.Contributor.Released);
+        Assert.Single(harness.Alice.Host.Aborts);
+        quiescence.Verify(q => q.Terminate(s_channelId, QuiescenceEndReason.TxAbort), Times.Once);
+    }
+
+    [Theory]
     [MemberData(nameof(Engines))]
     public async Task Given_TheSaveOfTheLastSignaturesFails_When_Redelivered_Then_CompletedOnceWithTheDatabase(
         string engine)

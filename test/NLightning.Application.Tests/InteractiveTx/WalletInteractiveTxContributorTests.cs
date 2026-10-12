@@ -610,6 +610,33 @@ public class WalletInteractiveTxContributorTests
         Assert.False(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(InteractiveTxSessionState.AwaitingCommitmentSigned)]
+    [InlineData(InteractiveTxSessionState.Signed)]
+    public async Task Given_ACrashAfterTheAbortSave_When_SweepingAtStartup_Then_OnlyAnUnsharedReservationIsReleased(
+        InteractiveTxSessionState? otherAttempt)
+    {
+        // Arrange: the terminal abort committed, but the process stopped before releasing its wallet inputs
+        var ct = TestContext.Current.CancellationToken;
+        var contributor = CreateDurableContributor();
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await contributor.ContributeAsync(Request(300_000), ct);
+        _storedSessions.Add(StoredSession(contribution, InteractiveTxSessionState.Aborted));
+        if (otherAttempt is { } state)
+            _storedSessions.Add(StoredSession(contribution, state));
+        var restarted = CreateDurableContributor();
+
+        // Act
+        var released = await restarted.ReleaseOrphanedReservationsAsync(ct);
+
+        // Assert: a signed original or active RBF sibling retains ownership of the shared reservation
+        Assert.Equal(otherAttempt is null ? 1 : 0, released);
+        Assert.Equal(otherAttempt is not null,
+                     _utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+        Assert.Equal(otherAttempt is null ? 0 : 1, _stored.Count);
+    }
+
     [Fact]
     public async Task Given_ReservationsLeftByACrash_When_SweepingAtStartup_Then_OnlyOrphanedNegotiationsAreReleased()
     {

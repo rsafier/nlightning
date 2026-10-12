@@ -201,11 +201,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 116 | 118 |
-| in-progress | 0 | 2 | 9 | 0 | 11 |
+| in-progress | 0 | 2 | 10 | 0 | 12 |
 | fixed | 15 | 76 | 285 | 544 | 920 |
 | wontfix | 0 | 0 | 7 | 15 | 22 |
 | duplicate | 0 | 0 | 3 | 8 | 11 |
-| **Total** | **15** | **78** | **306** | **683** | **1082** |
+| **Total** | **15** | **78** | **307** | **683** | **1083** |
 
 ### Epics
 
@@ -11461,3 +11461,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** `CancellationTokenSource.CancelAsync` marks the stop source canceled immediately but queues its callbacks, including linked-token cancellation. A round released from its resolver before those callbacks execute sees its linked token still active and saves after stop was requested. The stop regression holds a real stop callback ahead of linked propagation and releases the resolver, deterministically exposing the save.
 - **Fix sketch:** check the executor's stop source directly at the save boundary as well as the caller's linked token. Preserve already-started saves and suppress their subsequent publication.
 - **Validation:** The delayed-linked-cancellation regression fails on the original code with an unexpected saved output and sweep. With the stop-source check, all 39 `OnchainResolutionExecutorTests` pass on net10.0 Release, including caller cancellation propagation and stop after a save starts.
+
+### NL-1410 Aborting a stored interactive transaction leaves its unsigned wallet contribution reserved
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`FinishAbortAsync`)
+- **Evidence:** A restarted unsigned splice receives `tx_abort` for an unknown next funding. The driver asks the wallet to release its reservation while the stored session is still `AwaitingCommitmentSigned`; the wallet correctly refuses until the session is durably aborted. The driver then commits `Aborted` and discards the funding without retrying release, leaving the input unavailable for a fresh splice.
+- **Fix sketch:** commit the terminal abort before releasing its contribution or forgetting the active attempt. Keep a failed save retryable, and preserve reservations shared by completed RBF attempts and inputs whose signatures may still confirm. Startup orphan reconciliation recovers an unsigned reservation if the process stops after the abort save and before release.
+- **Validation:** Original driver fails all three ordering/save-failure regressions. With the fix, all 154 interactive-transaction tests pass on net10.0 Release, including local/peer abort, failed-save redelivery, unsigned shared-RBF retention and restart orphan recovery with active/signed references.

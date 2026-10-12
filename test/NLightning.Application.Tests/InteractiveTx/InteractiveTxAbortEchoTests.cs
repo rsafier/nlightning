@@ -24,6 +24,35 @@ public class InteractiveTxAbortEchoTests
 
     [Theory]
     [MemberData(nameof(Engines))]
+    public async Task Given_AnUnsignedRbfSharingTheSignedOriginalsReservation_When_Aborted_Then_TheReservationIsKept(
+        string engine)
+    {
+        // Arrange: the signed original may still confirm while an unsigned bump uses the same wallet inputs
+        var ct = TestContext.Current.CancellationToken;
+        var harness = new InteractiveTxHarness(engine, 100_000, 50_000);
+        harness.Alice.Fund(300_000);
+        harness.Bob.Fund(200_000);
+        await harness.PumpAsync(harness.Alice, await harness.StartAsync(FeeratePerKw, ct), ct);
+        var original = Assert.Single(harness.Alice.Repository.Committed.Values);
+        AcceptRbfReusingInputs(harness.Bob, harness.Alice);
+        var rbf = await harness.Alice.Driver.RequestRbfAsync(ReusingTerms(harness.Alice, harness.Bob, 1_100),
+                                                            harness.Alice.Host.LocalOutputShare, ct);
+        await harness.PumpAsync(harness.Alice, rbf, ct, (_, message) => message is TestCommitmentSignedMessage);
+
+        // Act
+        await harness.Alice.Driver.AbortAsync(s_channelId, "withdrawn bump", harness.Alice.UnitOfWork, ct);
+
+        // Assert
+        Assert.Empty(harness.Alice.Contributor.Released);
+        Assert.Equal(InteractiveTxSessionState.Signed,
+                     harness.Alice.Repository.Committed[(s_channelId, original.SessionId)].State);
+        var aborted = Assert.Single(harness.Alice.Repository.Committed.Values,
+                                    row => row.State == InteractiveTxSessionState.Aborted);
+        Assert.Equal(original.LocalContribution.ReservationId, aborted.LocalContribution.ReservationId);
+    }
+
+    [Theory]
+    [MemberData(nameof(Engines))]
     public async Task Given_AWithdrawnRbfRequest_When_AnotherFollowsAtOnce_Then_RefusedUntilTheEchoAndNoAbortLoop(
         string engine)
     {

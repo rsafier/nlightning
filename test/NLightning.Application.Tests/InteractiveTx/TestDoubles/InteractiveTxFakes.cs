@@ -133,6 +133,7 @@ internal sealed class FakeInteractiveTxContributor : IInteractiveTxContributor
     public List<WalletUtxo> Utxos { get; } = [];
     public HashSet<TxId> Unconfirmed { get; } = [];
     public List<Guid> Released { get; } = [];
+    public Action<InteractiveTxContribution>? OnRelease { get; set; }
     public int SignCalls { get; private set; }
     public BitcoinScript ChangeScript { get; } = new(new Key().PubKey.WitHash.ScriptPubKey.ToBytes());
 
@@ -170,6 +171,7 @@ internal sealed class FakeInteractiveTxContributor : IInteractiveTxContributor
 
     public Task ReleaseAsync(InteractiveTxContribution contribution, CancellationToken cancellationToken = default)
     {
+        OnRelease?.Invoke(contribution);
         if (contribution.ReservationId is { } id)
         {
             Released.Add(id);
