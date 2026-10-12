@@ -22,6 +22,7 @@ public static class PeerEntityConfiguration
             entity.Property(e => e.Port).IsRequired();
             entity.Property(e => e.Type).IsRequired();
             entity.Property(e => e.LastSeenAt).IsRequired();
+            entity.Property(e => e.IsInboundOnly).IsRequired();
 
             // Required byte[] properties
             entity.Property(e => e.NodeId)

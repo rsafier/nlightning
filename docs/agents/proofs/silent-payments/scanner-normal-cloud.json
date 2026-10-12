@@ -1,0 +1,93 @@
+{
+  "runtime": ".NET 10.0.12",
+  "os": "Debian GNU/Linux 13 (trixie)",
+  "architecture": "X64",
+  "logical_cpus": 4,
+  "workload": "4000 transactions, 2000 eligible, four taproot outputs each",
+  "serialized_block_bytes": 766083,
+  "configured_recovery_labels": 100,
+  "warmup_rounds": 2,
+  "sample_rounds": 10,
+  "matched_outputs_per_round": 0,
+  "min_ms": 1587.6378,
+  "median_ms": 1666.8991,
+  "p95_ms": 1815.7028,
+  "max_ms": 1815.7028,
+  "samples_ms": [
+    1587.6378,
+    1628.1406,
+    1645.8113,
+    1647.9218,
+    1650.9349,
+    1682.8633,
+    1712.0988,
+    1723.9428,
+    1778.9071,
+    1815.7028
+  ],
+  "gc_last_collected_heap_bytes_per_sample": [
+    12608800,
+    16339736,
+    16339736,
+    19848752,
+    19848752,
+    22066584,
+    29069144,
+    29069144,
+    12782552,
+    12782552
+  ],
+  "gc_collection_counts_per_sample": [
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      2,
+      2,
+      1
+    ],
+    [
+      0,
+      0,
+      0
+    ]
+  ],
+  "limitation": "Preloaded prevouts; includes block parsing and scanner maths, excludes RPC/storage. Cloud timing does not certify the Mac reference-machine budget."
+}

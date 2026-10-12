@@ -19,4 +19,27 @@ public sealed class NodeInfoIpcResponse
     [Key(5)] public DateTimeOffset? BestBlockTime { get; init; }
     [Key(6)] public string? Implementation { get; set; } = "NLightning";
     [Key(7)] public string? Version { get; init; }
+
+    /// <summary>Connected peers; null from a daemon that does not report it.</summary>
+    [Key(8)] public int? PeerCount { get; init; }
+
+    /// <summary>Channels in the Open state.</summary>
+    [Key(9)] public int? ActiveChannelCount { get; init; }
+
+    /// <summary>Channels being opened (funding not locked yet).</summary>
+    [Key(10)] public int? PendingChannelCount { get; init; }
+
+    /// <summary>Channels shutting down, failed or resolving on chain, not Closed yet.</summary>
+    [Key(11)] public int? ClosingChannelCount { get; init; }
+
+    /// <summary>The Tor mode (<c>Off</c>, <c>Hybrid</c>, <c>TorOnly</c>); null from a daemon that does not report it.
+    /// </summary>
+    [Key(12)] public string? TorMode { get; init; }
+
+    /// <summary>Our onion service, <c>pubkey@&lt;56 chars&gt;.onion:port</c>, once Tor accepted it.</summary>
+    [Key(13)] public string? OnionAddress { get; init; }
+    [Key(14)] public bool? SilentPaymentRecoverableElsewhere { get; init; }
+    [Key(15)] public string? NodeId { get; init; }
+    [Key(16)] public string? OwnerId { get; init; }
+    [Key(17)] public string? SignerId { get; init; }
 }

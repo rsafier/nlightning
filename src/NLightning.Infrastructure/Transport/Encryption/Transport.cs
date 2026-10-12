@@ -29,10 +29,19 @@ internal sealed class Transport : ITransport
     /// <inheritdoc/>
     /// <exception cref="ObjectDisposedException">Thrown if the current instance has already been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown if the responder has attempted to write a message to a one-way stream.</exception>
-    /// <exception cref="ArgumentException">Thrown if the encrypted payload was greater than <see cref="ProtocolConstants.MaxMessageLength"/> bytes in length, or if the output buffer did not have enough space to hold the ciphertext.</exception>
+    /// <exception cref="ArgumentException">Thrown if the plaintext payload was greater than <see cref="ProtocolConstants.MaxMessageLength"/> bytes in length, or if the output buffer did not have enough space to hold the ciphertext.</exception>
     public int WriteMessage(ReadOnlySpan<byte> payload, Span<byte> messageBuffer)
     {
         ExceptionUtils.ThrowIfDisposed(_disposed, nameof(Transport));
+
+        // Validate before encrypting anything so a rejected payload does not consume a nonce
+        if (payload.Length > ProtocolConstants.MaxMessageLength)
+            throw new ArgumentException(
+                $"Lightning message must be less than or equal to {ProtocolConstants.MaxMessageLength} bytes in length.");
+
+        if (ProtocolConstants.MessageHeaderSize + payload.Length + CryptoConstants.Chacha20Poly1305TagLen >
+            messageBuffer.Length)
+            throw new ArgumentException("Message buffer does not have enough space to hold the ciphertext.");
 
         // Serialize length into 2 bytes encoded as a big-endian integer
         var l = BitConverter.GetBytes((ushort)payload.Length);
@@ -97,12 +106,12 @@ internal sealed class Transport : ITransport
     /// Thrown if the responder has attempted to write a message to a one-way stream.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// Thrown if the encrypted payload was greater than <see cref="ProtocolConstants.MaxMessageLength"/>
+    /// Thrown if the plaintext payload was greater than <see cref="ProtocolConstants.MaxMessageLength"/>
     /// bytes in length, or if the output buffer did not have enough space to hold the ciphertext.
     /// </exception>
     private int WriteMessagePart(ReadOnlySpan<byte> payload, Span<byte> messageBuffer)
     {
-        if (payload.Length + CryptoConstants.Chacha20Poly1305TagLen > ProtocolConstants.MaxMessageLength)
+        if (payload.Length > ProtocolConstants.MaxMessageLength)
             throw new ArgumentException(
                 $"Noise message must be less than or equal to {ProtocolConstants.MaxMessageLength} bytes in length.");
 
@@ -129,7 +138,7 @@ internal sealed class Transport : ITransport
     /// Thrown if the initiator has attempted to read a message from a one-way stream.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// Thrown if the message was greater than <see cref="ProtocolConstants.MaxMessageLength"/>
+    /// Thrown if the message was greater than <see cref="ProtocolConstants.MaxEncryptedMessageLength"/>
     /// bytes in length, or if the output buffer did not have enough space to hold the plaintext.
     /// </exception>
     /// <exception cref="System.Security.Cryptography.CryptographicException">
@@ -139,8 +148,8 @@ internal sealed class Transport : ITransport
     {
         switch (message.Length)
         {
-            case > ProtocolConstants.MaxMessageLength:
-                throw new ArgumentException($"Noise message must be less than or equal to {ProtocolConstants.MaxMessageLength} bytes in length.");
+            case > ProtocolConstants.MaxEncryptedMessageLength:
+                throw new ArgumentException($"Noise message must be less than or equal to {ProtocolConstants.MaxEncryptedMessageLength} bytes in length.");
             case < CryptoConstants.Chacha20Poly1305TagLen:
                 throw new ArgumentException($"Noise message must be greater than or equal to {CryptoConstants.Chacha20Poly1305TagLen} bytes in length.");
         }

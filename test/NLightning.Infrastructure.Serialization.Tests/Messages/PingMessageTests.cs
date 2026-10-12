@@ -2,17 +2,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class PingMessageTests
 {
-    private readonly PingMessageTypeSerializer _pingMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<PingMessage> _pingMessageTypeSerializer;
 
     public PingMessageTests()
     {
         _pingMessageTypeSerializer =
-            new PingMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.WireRegistry.Get<PingMessage>()!;
     }
 
     [Fact]
@@ -34,6 +34,20 @@ public class PingMessageTests
         Assert.NotNull(pingMessage);
         Assert.Equal(expectedPayload.BytesLength, pingMessage.Payload.BytesLength);
         Assert.Equal(expectedPayload.NumPongBytes, pingMessage.Payload.NumPongBytes);
+    }
+
+    [Fact]
+    public async Task Given_PingWithIgnoredBytes_When_DeserializeAsync_Then_IgnoredBytesAreConsumed()
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString("00030002aabb"));
+
+        // Act
+        var pingMessage = await _pingMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Equal(stream.Length, stream.Position);
+        Assert.Equal(Convert.FromHexString("aabb"), pingMessage.Payload.Ignored);
     }
 
     [Fact]

@@ -1,6 +1,9 @@
+using NLightning.Domain.Bitcoin.Transactions.Enums;
+using NLightning.Domain.Bitcoin.Transactions.Extensions;
 using NLightning.Domain.Bitcoin.Transactions.Interfaces;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Money;
 using NLightning.Domain.Protocol.Models;
 
@@ -13,15 +16,23 @@ namespace NLightning.Domain.Bitcoin.Transactions.Models;
 /// </summary>
 public class CommitmentTransactionModel
 {
+    private readonly bool _hasAnchors;
+    private readonly CommitmentFormat? _format;
+
     /// <summary>
     /// Gets the funding outpoint that this commitment transaction spends.
     /// </summary>
     public FundingOutputInfo FundingOutput { get; }
 
     /// <summary>
-    /// Gets the commitment number for this transaction.
+    /// Gets the channel's commitment number obscuring helper.
     /// </summary>
     public CommitmentNumber CommitmentNumber { get; }
+
+    /// <summary>
+    /// Gets the commitment number of this transaction (the holder's commitment number, not an index).
+    /// </summary>
+    public ulong Number { get; }
 
     /// <summary>
     /// Gets or sets the transaction ID after the transaction is constructed.
@@ -59,14 +70,80 @@ public class CommitmentTransactionModel
     public IReadOnlyList<ReceivedHtlcOutputInfo> ReceivedHtlcOutputs { get; }
 
     /// <summary>
-    /// Gets the total fee for this transaction.
+    /// Gets the base fee of this transaction (BOLT 3 "base fee"; trimmed HTLC value is extra fee not included here).
     /// </summary>
     public LightningMoney Fee { get; }
 
     /// <summary>
+    /// Gets the feerate (sat per 1000 weight) the commitment was built with. HTLC transactions spending its HTLC outputs
+    /// use the same feerate.
+    /// </summary>
+    public ulong FeeRatePerKw { get; init; }
+
+    /// <summary>
+    /// Gets whether option_anchors applies (HTLC scripts with <c>1 OP_CSV</c>, zero-fee HTLC transactions with
+    /// sequence 1 and <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> remote HTLC signatures). When <see cref="Format"/> is
+    /// set it decides (always true for <see cref="CommitmentFormat.SimpleTaproot"/>, which keeps those rules), so the
+    /// two never contradict each other.
+    /// </summary>
+    public bool HasAnchors
+    {
+        get => _format?.HasAnchorOutputs() ?? _hasAnchors;
+        init => _hasAnchors = value;
+    }
+
+    /// <summary>
+    /// Gets the commitment format: which scripts the outputs use and which weight the fee was computed with. When not
+    /// set it follows <see cref="HasAnchors"/> (<see cref="CommitmentFormat.Anchors"/> or
+    /// <see cref="CommitmentFormat.StaticRemoteKey"/>); <see cref="CommitmentFormat.SimpleTaproot"/> builds P2TR
+    /// outputs (bolt-simple-taproot.md).
+    /// </summary>
+    public CommitmentFormat Format
+    {
+        get => _format ?? CommitmentFormatExtensions.FromOptionAnchors(_hasAnchors);
+        init => _format = value;
+    }
+
+    /// <summary>Gets whether this is a simple taproot commitment (<see cref="CommitmentFormat.SimpleTaproot"/>).</summary>
+    public bool IsSimpleTaproot => Format == CommitmentFormat.SimpleTaproot;
+
+    /// <summary>
+    /// Gets the CSV delay on the holder's delayed outputs (to_local and the HTLC transaction outputs).
+    /// </summary>
+    public ushort ToSelfDelay { get; init; }
+
+    /// <summary>
+    /// Gets the holder's <c>local_delayedpubkey</c> for this commitment. HTLC transaction outputs pay to it after
+    /// <see cref="ToSelfDelay"/>. Null only for models built without the factory.
+    /// </summary>
+    public CompactPubKey? LocalDelayedPubKey { get; init; }
+
+    /// <summary>
+    /// Gets the <c>revocationpubkey</c> for this commitment (the counterparty's penalty key). Null only for models built
+    /// without the factory.
+    /// </summary>
+    public CompactPubKey? RevocationPubKey { get; init; }
+
+    /// <summary>
+    /// Gets the holder's per-commitment point for this commitment: every HTLC key of the commitment and of its HTLC
+    /// transactions is derived from it. Null only for models built without the factory.
+    /// </summary>
+    public CompactPubKey? PerCommitmentPoint { get; init; }
+
+    /// <summary>
     /// Creates a new instance of CommitmentTransactionModel.
     /// </summary>
-    public CommitmentTransactionModel(CommitmentNumber commitmentNumber, LightningMoney fee,
+    /// <param name="commitmentNumber">The channel's obscuring helper.</param>
+    /// <param name="number">The commitment number of this transaction.</param>
+    /// <param name="fee">The commitment transaction fee.</param>
+    /// <param name="fundingOutput">The funding output spent by the commitment transaction.</param>
+    /// <param name="localAnchorOutput">The local anchor output, if any.</param>
+    /// <param name="remoteAnchorOutput">The remote anchor output, if any.</param>
+    /// <param name="toLocalOutput">The to_local output, if any.</param>
+    /// <param name="toRemoteOutput">The to_remote output, if any.</param>
+    /// <param name="offeredHtlcOutputs">The offered HTLC outputs.</param>
+    /// <param name="receivedHtlcOutputs">The received HTLC outputs.</param>
+    public CommitmentTransactionModel(CommitmentNumber commitmentNumber, ulong number, LightningMoney fee,
                                       FundingOutputInfo fundingOutput, AnchorOutputInfo? localAnchorOutput = null,
                                       AnchorOutputInfo? remoteAnchorOutput = null,
                                       ToLocalOutputInfo? toLocalOutput = null,
@@ -78,7 +155,10 @@ public class CommitmentTransactionModel
             throw new ArgumentException("Funding output must have a valid transaction ID.", nameof(fundingOutput));
 
         FundingOutput = fundingOutput;
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, CommitmentNumber.MaxValue);
+
         CommitmentNumber = commitmentNumber;
+        Number = number;
         Fee = fee;
         ToLocalOutput = toLocalOutput;
         ToRemoteOutput = toRemoteOutput;
@@ -91,12 +171,12 @@ public class CommitmentTransactionModel
     /// <summary>
     /// Gets the Bitcoin locktime for this commitment transaction, derived from the commitment number.
     /// </summary>
-    public BitcoinLockTime GetLockTime() => CommitmentNumber.CalculateLockTime();
+    public BitcoinLockTime GetLockTime() => CommitmentNumber.LockTime(Number);
 
     /// <summary>
     /// Gets the Bitcoin sequence for this commitment transaction, derived from the commitment number.
     /// </summary>
-    public BitcoinSequence GetSequence() => CommitmentNumber.CalculateSequence();
+    public BitcoinSequence GetSequence() => CommitmentNumber.Sequence(Number);
 
     /// <summary>
     /// Gets all outputs of this commitment transaction.

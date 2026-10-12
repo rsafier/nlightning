@@ -20,19 +20,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_UlongValue_When_ConvertedToBigEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const ulong value = 0x0123;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x01, 0x23 }, result);
-    }
-
-    [Fact]
     public void Given_UlongValue_When_ConvertedToLittleEndianBytes_Then_ReturnsCorrectByteArray()
     {
         // Given
@@ -40,19 +27,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.GetBytesLittleEndian(value);
-
-        // Then
-        Assert.Equal(new byte[] { 0x23, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_UlongValue_When_ConvertedToLittleEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const ulong value = 0x0123;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
 
         // Then
         Assert.Equal(new byte[] { 0x23, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, result);
@@ -72,19 +46,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_BigEndianBytes_When_ConvertedToUlongPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x01, 0x23 };
-
-        // When
-        var result = EndianBitConverter.ToUInt64BigEndian(bytes, true);
-
-        // Then
-        Assert.Equal(0x0123UL, result);
-    }
-
-    [Fact]
     public void Given_LittleEndianBytes_When_ConvertedToUlong_Then_ReturnsCorrectValue()
     {
         // Given
@@ -92,19 +53,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.ToUInt64LittleEndian(bytes);
-
-        // Then
-        Assert.Equal(0x0123UL, result);
-    }
-
-    [Fact]
-    public void Given_LittleEndianBytes_When_ConvertedToUlongPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x23, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-
-        // When
-        var result = EndianBitConverter.ToUInt64LittleEndian(bytes, true);
 
         // Then
         Assert.Equal(0x0123UL, result);
@@ -150,32 +98,6 @@ public class EndianBitConverterTests
         Assert.Throws<ArgumentOutOfRangeException>(() => EndianBitConverter.ToUInt64LittleEndian(bytes));
     }
 
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToUInt64BigEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const ulong value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToUInt64LittleEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const ulong value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
     #endregion
 
     #region Long
@@ -194,19 +116,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_LongValue_When_ConvertedToBigEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const long value = 0x0123;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x01, 0x23 }, result);
-    }
-
-    [Fact]
     public void Given_LongValue_When_ConvertedToLittleEndianBytes_Then_ReturnsCorrectByteArray()
     {
         // Given
@@ -214,19 +123,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.GetBytesLittleEndian(value);
-
-        // Then
-        Assert.Equal(new byte[] { 0x23, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_LongValue_When_ConvertedToLittleEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const long value = 0x0123;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
 
         // Then
         Assert.Equal(new byte[] { 0x23, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, result);
@@ -246,19 +142,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_BigEndianBytes_When_ConvertedToLongPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x01, 0x23 };
-
-        // When
-        var result = EndianBitConverter.ToInt64BigEndian(bytes, true);
-
-        // Then
-        Assert.Equal(0x0123L, result);
-    }
-
-    [Fact]
     public void Given_LittleEndianBytes_When_ConvertedToLong_Then_ReturnsCorrectValue()
     {
         // Given
@@ -266,19 +149,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.ToInt64LittleEndian(bytes);
-
-        // Then
-        Assert.Equal(0x0123L, result);
-    }
-
-    [Fact]
-    public void Given_LittleEndianBytes_When_ConvertedToLongPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x23, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-
-        // When
-        var result = EndianBitConverter.ToInt64LittleEndian(bytes, true);
 
         // Then
         Assert.Equal(0x0123L, result);
@@ -324,32 +194,6 @@ public class EndianBitConverterTests
         Assert.Throws<ArgumentOutOfRangeException>(() => EndianBitConverter.ToInt64LittleEndian(bytes));
     }
 
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToInt64BigEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const long value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToInt64LittleEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const long value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
     #endregion
 
     #region UInt
@@ -368,19 +212,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_UintValue_When_ConvertedToBigEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const uint value = 0x0123;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x01, 0x23 }, result);
-    }
-
-    [Fact]
     public void Given_UintValue_When_ConvertedToLittleEndianBytes_Then_ReturnsCorrectByteArray()
     {
         // Given
@@ -388,19 +219,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.GetBytesLittleEndian(value);
-
-        // Then
-        Assert.Equal(new byte[] { 0x23, 0x01, 0x00, 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_UintValue_When_ConvertedToLittleEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const uint value = 0x0123;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
 
         // Then
         Assert.Equal(new byte[] { 0x23, 0x01, 0x00, 0x00 }, result);
@@ -420,19 +238,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_BigEndianBytes_When_ConvertedToUintPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x01, 0x23 };
-
-        // When
-        var result = EndianBitConverter.ToUInt32BigEndian(bytes, true);
-
-        // Then
-        Assert.Equal(0x0123U, result);
-    }
-
-    [Fact]
     public void Given_LittleEndianBytes_When_ConvertedToUint_Then_ReturnsCorrectValue()
     {
         // Given
@@ -440,19 +245,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.ToUInt32LittleEndian(bytes);
-
-        // Then
-        Assert.Equal(0x0123U, result);
-    }
-
-    [Fact]
-    public void Given_LittleEndianBytes_When_ConvertedToUintPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x23, 0x01, 0x00, 0x00 };
-
-        // When
-        var result = EndianBitConverter.ToUInt32LittleEndian(bytes, true);
 
         // Then
         Assert.Equal(0x0123U, result);
@@ -498,32 +290,6 @@ public class EndianBitConverterTests
         Assert.Throws<ArgumentOutOfRangeException>(() => EndianBitConverter.ToUInt32LittleEndian(bytes));
     }
 
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToUInt32BigEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const uint value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToUInt32LittleEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const uint value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
     #endregion
 
     #region Int
@@ -542,19 +308,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_IntValue_When_ConvertedToBigEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const int value = 0x0123;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x01, 0x23 }, result);
-    }
-
-    [Fact]
     public void Given_IntValue_When_ConvertedToLittleEndianBytes_Then_ReturnsCorrectByteArray()
     {
         // Given
@@ -562,19 +315,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.GetBytesLittleEndian(value);
-
-        // Then
-        Assert.Equal(new byte[] { 0x23, 0x01 }, result);
-    }
-
-    [Fact]
-    public void Given_IntValue_When_ConvertedToLittleEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const int value = 0x0123;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
 
         // Then
         Assert.Equal(new byte[] { 0x23, 0x01 }, result);
@@ -594,19 +334,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_BigEndianBytes_When_ConvertedToIntPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x01, 0x23 };
-
-        // When
-        var result = EndianBitConverter.ToInt32BigEndian(bytes, true);
-
-        // Then
-        Assert.Equal(0x0123, result);
-    }
-
-    [Fact]
     public void Given_LittleEndianBytes_When_ConvertedToInt_Then_ReturnsCorrectValue()
     {
         // Given
@@ -614,19 +341,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.ToInt32LittleEndian(bytes);
-
-        // Then
-        Assert.Equal(0x0123, result);
-    }
-
-    [Fact]
-    public void Given_LittleEndianBytes_When_ConvertedToIntPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x23, 0x01, 0x00, 0x00 };
-
-        // When
-        var result = EndianBitConverter.ToInt32LittleEndian(bytes, true);
 
         // Then
         Assert.Equal(0x0123, result);
@@ -672,32 +386,6 @@ public class EndianBitConverterTests
         Assert.Throws<ArgumentOutOfRangeException>(() => EndianBitConverter.ToInt32LittleEndian(bytes));
     }
 
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToInt32BigEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const int value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToInt32LittleEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const int value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
     #endregion
 
     #region UShort
@@ -716,19 +404,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_UshortValue_When_ConvertedToBigEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const ushort value = 0x01;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x01 }, result);
-    }
-
-    [Fact]
     public void Given_UshortValue_When_ConvertedToLittleEndianBytes_Then_ReturnsCorrectByteArray()
     {
         // Given
@@ -736,19 +411,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.GetBytesLittleEndian(value);
-
-        // Then
-        Assert.Equal(new byte[] { 0x01, 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_UshortValue_When_ConvertedToLittleEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const ushort value = 0x01;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
 
         // Then
         Assert.Equal(new byte[] { 0x01, 0x00 }, result);
@@ -768,19 +430,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_BigEndianBytes_When_ConvertedToUshortPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x01 };
-
-        // When
-        var result = EndianBitConverter.ToUInt16BigEndian(bytes, true);
-
-        // Then
-        Assert.Equal((ushort)0x01, result);
-    }
-
-    [Fact]
     public void Given_LittleEndianBytes_When_ConvertedToUshort_Then_ReturnsCorrectValue()
     {
         // Given
@@ -788,19 +437,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.ToUInt16LittleEndian(bytes);
-
-        // Then
-        Assert.Equal((ushort)0x01, result);
-    }
-
-    [Fact]
-    public void Given_LittleEndianBytes_When_ConvertedToUshortPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x01, 0x00 };
-
-        // When
-        var result = EndianBitConverter.ToUInt16LittleEndian(bytes, true);
 
         // Then
         Assert.Equal((ushort)0x01, result);
@@ -846,32 +482,6 @@ public class EndianBitConverterTests
         Assert.Throws<ArgumentOutOfRangeException>(() => EndianBitConverter.ToUInt16LittleEndian(bytes));
     }
 
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToUInt16BigEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const ushort value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToUInt16LittleEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const ushort value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesLittleEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
-    }
-
     #endregion
 
     #region Short
@@ -890,19 +500,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_ShortValue_When_ConvertedToBigEndianBytesWithTrim_Then_ReturnsFullByteArray()
-    {
-        // Given
-        const short value = 0x01;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x01 }, result);
-    }
-
-    [Fact]
     public void Given_BigEndianBytes_When_ConvertedToShort_Then_ReturnsCorrectValue()
     {
         // Given
@@ -916,19 +513,6 @@ public class EndianBitConverterTests
     }
 
     [Fact]
-    public void Given_BigEndianBytes_When_ConvertedToShortPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x01 };
-
-        // When
-        var result = EndianBitConverter.ToInt16BigEndian(bytes, true);
-
-        // Then
-        Assert.Equal((short)0x01, result);
-    }
-
-    [Fact]
     public void Given_LittleEndianBytes_When_ConvertedToShort_Then_ReturnsCorrectValue()
     {
         // Given
@@ -936,19 +520,6 @@ public class EndianBitConverterTests
 
         // When
         var result = EndianBitConverter.ToInt16LittleEndian(bytes);
-
-        // Then
-        Assert.Equal((short)0x01, result);
-    }
-
-    [Fact]
-    public void Given_LittleEndianBytes_When_ConvertedToShortPadded_Then_ReturnsCorrectValue()
-    {
-        // Given
-        var bytes = new byte[] { 0x01, 0x00 };
-
-        // When
-        var result = EndianBitConverter.ToInt16LittleEndian(bytes, true);
 
         // Then
         Assert.Equal((short)0x01, result);
@@ -992,19 +563,6 @@ public class EndianBitConverterTests
 
         // When & Then
         Assert.Throws<ArgumentOutOfRangeException>(() => EndianBitConverter.ToInt16LittleEndian(bytes));
-    }
-
-    [Fact]
-    public void Given_AllZeroBytes_When_ConvertedToInt16BigEndianTrimmed_Then_ReturnsSingleZeroByte()
-    {
-        // Given
-        const short value = 0;
-
-        // When
-        var result = EndianBitConverter.GetBytesBigEndian(value, true);
-
-        // Then
-        Assert.Equal(new byte[] { 0x00 }, result);
     }
 
     #endregion

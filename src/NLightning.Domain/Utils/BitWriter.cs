@@ -10,6 +10,7 @@ public class BitWriter : IBitWriter
 {
     private int _bitOffset;
     private byte[] _buffer;
+    private bool _disposed;
 
     public int TotalBits { get; private set; }
 
@@ -21,7 +22,10 @@ public class BitWriter : IBitWriter
         TotalBits = totalBits;
         var totalBytes = (totalBits + 7) / 8;
         _buffer = ArrayPool<byte>.Shared.Rent(totalBytes);
-        Array.Clear(_buffer, 0, totalBytes);
+
+        // Rented arrays may be larger than requested and hold stale data; clear all of it, because writes OR
+        // into the buffer and GrowByBits can expose bytes past the requested length.
+        Array.Clear(_buffer);
     }
 
     public void GrowByBits(int additionalBits)
@@ -33,7 +37,16 @@ public class BitWriter : IBitWriter
         var newTotalBits = Math.Max(TotalBits * 2, requiredBits);
         var newByteCount = (newTotalBits + 7) / 8;
 
-        Array.Resize(ref _buffer, newByteCount);
+        if (newByteCount > _buffer.Length)
+        {
+            // Rent a new pooled buffer instead of Array.Resize, so Dispose always returns a pooled array
+            var newBuffer = ArrayPool<byte>.Shared.Rent(newByteCount);
+            Array.Clear(newBuffer);
+            Array.Copy(_buffer, newBuffer, (TotalBits + 7) / 8);
+            ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = newBuffer;
+        }
+
         TotalBits = requiredBits;
     }
 
@@ -127,7 +140,7 @@ public class BitWriter : IBitWriter
         if (bits is < 1 or > shortBitSize)
             throw new ArgumentOutOfRangeException(nameof(bits), $"must be between 1 and {shortBitSize}.");
 
-        var masked = value & (short)((1 >> bits) - 1);
+        var masked = value & (short)((1 << bits) - 1);
         var shifted = (short)(masked << (shortBitSize - bits));
 
         Span<byte> bytes = stackalloc byte[sizeof(short)];
@@ -214,6 +227,11 @@ public class BitWriter : IBitWriter
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
         ArrayPool<byte>.Shared.Return(_buffer);
+        GC.SuppressFinalize(this);
     }
 }

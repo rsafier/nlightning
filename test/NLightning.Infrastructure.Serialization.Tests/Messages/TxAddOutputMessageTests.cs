@@ -4,17 +4,17 @@ using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class TxAddOutputMessageTests
 {
-    private readonly TxAddOutputMessageTypeSerializer _txAddOutputMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<TxAddOutputMessage> _txAddOutputMessageTypeSerializer;
 
     public TxAddOutputMessageTests()
     {
         _txAddOutputMessageTypeSerializer =
-            new TxAddOutputMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.WireRegistry.Get<TxAddOutputMessage>()!;
     }
 
     [Fact]

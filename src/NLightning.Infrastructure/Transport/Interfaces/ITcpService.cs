@@ -6,7 +6,7 @@ using Events;
 using Node.ValueObjects;
 using Protocol.Models;
 
-public interface ITcpService
+public interface ITcpService : IPeerInboundAcceptor
 {
     /// <summary>
     /// Gets the list of IP endpoints that the service is currently listening to for incoming connections.

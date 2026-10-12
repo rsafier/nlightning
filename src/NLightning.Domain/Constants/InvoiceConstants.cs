@@ -18,4 +18,9 @@ public static class InvoiceConstants
     public const decimal BtcInSatoshis = 100_000_000m;
     public const decimal BtcInMillisatoshis = 100_000_000_000m;
     public const int DefaultExpirationSeconds = 3600;
+
+    /// <summary>
+    /// The min_final_cltv_expiry_delta a payer must use when the invoice has no <c>c</c> field (BOLT 11)
+    /// </summary>
+    public const ushort DefaultMinFinalCltvExpiryDelta = 18;
 }

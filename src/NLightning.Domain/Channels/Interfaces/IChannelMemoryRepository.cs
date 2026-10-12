@@ -10,6 +10,18 @@ using ValueObjects;
 
 public interface IChannelMemoryRepository
 {
+    /// <summary>A new persisted channel was installed (startup loads do not raise this).</summary>
+    event EventHandler<ChannelUpdatedEventArgs>? OnChannelAdded;
+
+    /// <summary>A channel was removed after its terminal state was persisted.</summary>
+    event EventHandler<ChannelUpdatedEventArgs>? OnChannelRemoved;
+
+    /// <summary>Loads an existing channel without publishing a new pending open.</summary>
+    void LoadChannel(ChannelModel channel) => AddChannel(channel);
+
+    /// <summary>Publishes operational progress before its interactive-tx save; passive lifecycle feeds omit it.</summary>
+    void UpdateStagedChannel(ChannelModel channel) => UpdateChannel(channel);
+
     /// <summary>
     /// Event triggered when a channel has been successfully upgraded.
     /// </summary>
@@ -28,6 +40,17 @@ public interface IChannelMemoryRepository
     /// providing subscribers the opportunity to take actions or synchronize with the updated channel data.
     /// </remarks>
     event EventHandler<ChannelUpdatedEventArgs>? OnChannelUpdated;
+
+    /// <summary>
+    /// Event triggered when a channel becomes Open, i.e. ready and usable (NL-054).
+    /// </summary>
+    /// <remarks>
+    /// Raised by <see cref="UpdateChannel"/> when the channel's state moves into <see cref="ChannelState.Open"/> from
+    /// anything else: both <c>channel_ready</c> messages have been exchanged (either order), so normal operation can
+    /// start. It does not fire again while the channel stays Open, and not for an already-Open channel added to the
+    /// repository (e.g. loaded at startup).
+    /// </remarks>
+    event EventHandler<ChannelUpdatedEventArgs>? OnChannelOpened;
 
     /// <summary>
     /// Attempts to retrieve a channel that matches the specified channel ID.
@@ -111,6 +134,14 @@ public interface IChannelMemoryRepository
     /// <param name="channelId">The unique identifier of the channel to be removed.</param>
     /// <returns><c>true</c> if the temporary channel was successfully removed; otherwise, <c>false</c>.</returns>
     bool TryRemoveTemporaryChannel(CompactPubKey compactPubKey, ChannelId channelId);
+
+    /// <summary>
+    /// Removes every temporary channel of a peer: an open that has not reached funding_created (fundee) or turned
+    /// into a real channel after accept_channel (opener) does not survive its connection (BOLT 2; NL-392).
+    /// </summary>
+    /// <param name="compactPubKey">The peer whose temporary channels are removed.</param>
+    /// <returns>The temporary channel ids that were removed.</returns>
+    IReadOnlyList<ChannelId> RemoveTemporaryChannels(CompactPubKey compactPubKey);
 
     /// <summary>
     /// Upgrades an existing channel by removing it from the temporary channel list and adding it to the channel list.

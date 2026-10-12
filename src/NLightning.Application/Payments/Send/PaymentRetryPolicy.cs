@@ -1,0 +1,255 @@
+namespace NLightning.Application.Payments.Send;
+
+using Domain.Bitcoin.Interfaces;
+using Domain.Channels.Commitments;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Graph;
+using Domain.Gossip.Interfaces;
+using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Payloads;
+using Domain.Protocol.ValueObjects;
+using Domain.Routing.Pathfinding;
+using Routing;
+
+/// <summary>
+/// Decides, from one failed part, whether the payment may be sent again and what the next routes must avoid or change
+/// (BOLT 4 "Receiving Failure Codes", NL-270). It writes what it learns into the payment's
+/// <see cref="RouteConstraints"/>.
+/// </summary>
+/// <remarks>
+/// <list type="bullet">
+///   <item>The payee: <c>mpp_timeout</c> is retried as is; a PERM failure, one this node does not understand, or a
+///   NODE-bit failure (e.g. the payee's <c>temporary_node_failure</c>, NL-593: no route can avoid the payee) stops
+///   the payment; any other (e.g. <c>final_incorrect_cltv_expiry</c>) is retried, with more CLTV for the CLTV one.</item>
+///   <item>An intermediate hop with the NODE bit: its node is avoided.</item>
+///   <item>An intermediate hop's channel failure (its outgoing channel, the next hop's incoming one):
+///   <c>fee_insufficient</c>, <c>incorrect_cltv_expiry</c> and <c>amount_below_minimum</c> use the hop's signed
+///   <c>channel_update</c> (right chain, the channel of the failure, the hop's direction, a valid signature by the hop,
+///   not disabled, newer than one already used) as that channel's policy for this payment, else avoid the channel;
+///   <c>expiry_too_soon</c> adds <see cref="PaymentSendOptions.ExpiryTooSoonExtraBlocks"/> to the final CLTV (and uses
+///   the update); <c>temporary_channel_failure</c> bounds what the channel may forward to less than the failed HTLC
+///   (and uses the update); every other channel failure (PERM ones, <c>unknown_next_peer</c>,
+///   <c>channel_disabled</c>, BADONION from downstream) avoids the channel.</item>
+///   <item>An error no hop authenticated: with <c>attribution_data</c> blaming hop <c>i</c> (its attribution HMAC did
+///   not verify, BOLT 4 M3b, NL-333) the channel after hop <c>i</c> is avoided, else our channel of that part is.
+///   <c>update_fail_malformed_htlc</c> from our peer: our channel of that part is avoided, unless our peer is a blinded
+///   hop of a path we introduced (B12-PAY-02): then that path is avoided. An
+///   HTLC timed out on chain: that channel is closed and avoided.</item>
+/// </list>
+/// <para>Beyond the payment (BOLT 7 plan G4-T2, G3-T5): every attributed failure is also handed to
+/// <see cref="MissionControl"/>, so later payments and this payment's later rounds avoid the failed edge or node for a
+/// while; an intermediate hop's UPDATE failure asks the gossip sync for the channel's current gossip
+/// (<see cref="IGossipScidRefresher"/>). The failure's <c>channel_update</c> is used only by this payment
+/// (<see cref="RouteConstraints.PolicyOverrides"/>, <see cref="RouteConstraints.GraphPolicyOverrides"/>) and never
+/// written to the graph (BOLT 4 MUST NOT, plan D9).</para>
+/// Retries are bounded by the caller (attempts, fee limit, timeout).
+/// </remarks>
+internal sealed class PaymentRetryPolicy
+{
+    private readonly ILightningSigner _lightningSigner;
+    private readonly ChainHash _chainHash;
+    private readonly uint _expiryTooSoonExtraBlocks;
+    private readonly MissionControl? _missionControl;
+    private readonly IGossipScidRefresher? _scidRefresher;
+
+    public PaymentRetryPolicy(ILightningSigner lightningSigner, ChainHash chainHash, uint expiryTooSoonExtraBlocks,
+                              MissionControl? missionControl = null, IGossipScidRefresher? scidRefresher = null)
+    {
+        _lightningSigner = lightningSigner;
+        _chainHash = chainHash;
+        _expiryTooSoonExtraBlocks = expiryTooSoonExtraBlocks;
+        _missionControl = missionControl;
+        _scidRefresher = scidRefresher;
+    }
+
+    /// <summary>
+    /// Learns from the failure of <paramref name="part"/> and says whether the payment may be retried.
+    /// </summary>
+    /// <param name="part">The failed part.</param>
+    /// <param name="removalKind">How the HTLC was removed.</param>
+    /// <param name="interpretation">The decrypted and interpreted error onion (for <see cref="HtlcRemovalKind.Fail"/>).
+    /// </param>
+    /// <param name="constraints">The payment's constraints, updated in place.</param>
+    /// <param name="attributionBlame">The hop the <c>attribution_data</c> blames (the first hop whose attribution HMAC
+    /// did not verify, BOLT 4 M3b), when the error onion names no erring hop (NL-333).</param>
+    /// <returns>Whether to retry, and a short note of what was learnt (for the failure reason and logs).</returns>
+    public (bool Retry, string Note) Decide(PaymentPart part, HtlcRemovalKind removalKind,
+                                            FailureInterpretation? interpretation, RouteConstraints constraints,
+                                            int? attributionBlame = null)
+    {
+        ArgumentNullException.ThrowIfNull(part);
+        ArgumentNullException.ThrowIfNull(constraints);
+
+        switch (removalKind)
+        {
+            case HtlcRemovalKind.FailMalformed when part.Route is { FirstHopPathKey: not null, BlindedPathIndex: { } path }:
+                // Our peer is a blinded hop (not the introduction node) of a path we introduced (B12-PAY-02, the
+                // route's FirstHopPathKey): BOLT 4 has it answer every failure with update_fail_malformed_htlc
+                // (invalid_onion_blinding), so the path failed, not our channel. A peer that is itself the
+                // introduction node answers with update_fail_htlc, so its malformed means our onion was bad: the
+                // channel is avoided as for any route
+                constraints.ExcludedBlindedPaths.Add(path);
+                return (true, $"blinded path {path} failed at our peer and is avoided");
+            case HtlcRemovalKind.FailMalformed:
+                constraints.ExcludedLocalChannels.Add(part.Channel.ChannelId);
+                return (true, $"our channel {part.Channel.ShortChannelId} is avoided");
+            case HtlcRemovalKind.OnchainTimeout:
+                constraints.ExcludedLocalChannels.Add(part.Channel.ChannelId);
+                return (true, $"our channel {part.Channel.ShortChannelId} closed on chain");
+        }
+
+        if (interpretation is null)
+            return (false, "the error could not be read");
+
+        var hops = part.Route.Hops;
+        if (!interpretation.IsAttributed)
+        {
+            // attribution_data (BOLT 4, M3b): a hop whose attribution HMAC did not verify shares the blame with its
+            // upstream neighbour, so the failure is at or behind its outgoing channel; avoid that one instead of our
+            // own first channel (NL-333). The blame of the payee (no outgoing channel) keeps the fallback
+            if (attributionBlame is { } blamed && blamed < hops.Count
+             && hops[blamed].OutgoingShortChannelId is { } blamedScid)
+            {
+                constraints.ExcludedChannels.Add(blamedScid);
+                return (true, $"attribution_data blames hop {blamed}; channel {blamedScid} is avoided");
+            }
+
+            constraints.ExcludedLocalChannels.Add(part.Channel.ChannelId);
+            return (true, $"no hop authenticated the error; our channel {part.Channel.ShortChannelId} is avoided");
+        }
+
+        var index = interpretation.ErringHopIndex!.Value;
+        if (index < hops.Count)
+            _missionControl?.RecordFailure(part.Route, index, interpretation.Code);
+
+        // BOLT 4: inside a blinded path only the introduction node answers, with invalid_onion_blinding whatever went
+        // wrong behind it; the path is not used again, another one may be. A recipient that is itself the introduction
+        // node (a one-hop path) returns normal errors, which the final-node rules below handle
+        if (part.Route.BlindedStartIndex is { } blindedStart && index >= blindedStart
+         && (!interpretation.IsFinalNode || interpretation.Code == FailureCode.InvalidOnionBlinding))
+        {
+            if (part.Route.BlindedPathIndex is not { } pathIndex)
+                return (false, $"the blinded path failed ({interpretation.Code})");
+
+            constraints.ExcludedBlindedPaths.Add(pathIndex);
+            return (true, $"blinded path {pathIndex} failed ({interpretation.Code}) and is avoided");
+        }
+
+        if (interpretation.IsFinalNode)
+        {
+            if (interpretation.Code == FailureCode.MppTimeout)
+                return (true, "the payee timed the parts out");
+            if (!interpretation.ShouldRetry)
+                return (false, interpretation.IsNodeFailure
+                                   ? "the payee refused the payment (node-level failure)"
+                                   : "permanent failure from the payee");
+            if (interpretation.Code == FailureCode.FinalIncorrectCltvExpiry)
+                constraints.ExtraCltvDelta += _expiryTooSoonExtraBlocks;
+            return (true, "the payee may accept a new attempt");
+        }
+
+        var node = hops[index].NodeId;
+        if (interpretation.IsNodeFailure)
+        {
+            constraints.ExcludedNodes.Add(node);
+            return (true, $"node {node} is avoided");
+        }
+
+        // The failure is about the hop's outgoing channel
+        var shortChannelId = hops[index].OutgoingShortChannelId!.Value;
+        var nextNode = hops[index + 1].NodeId;
+
+        // The graph's policy of the channel may be stale: ask the gossip sync (the failure's update stays here, D9)
+        if (interpretation.Code is { } failureCode
+         && ((FailureCodeFlags)((ushort)failureCode & 0xF000)).HasFlag(FailureCodeFlags.Update))
+            _scidRefresher?.RequestRefresh(shortChannelId);
+
+        switch (interpretation.Code)
+        {
+            case FailureCode.FeeInsufficient or FailureCode.IncorrectCltvExpiry or FailureCode.AmountBelowMinimum:
+                if (TryUsePolicy(interpretation, shortChannelId, node, nextNode, constraints, out var why))
+                    return (true, $"channel {shortChannelId} policy updated from the hop's channel_update");
+
+                constraints.ExcludedChannels.Add(shortChannelId);
+                return (true, $"channel {shortChannelId} is avoided ({why})");
+            case FailureCode.ExpiryTooSoon:
+                constraints.ExtraCltvDelta += _expiryTooSoonExtraBlocks;
+                TryUsePolicy(interpretation, shortChannelId, node, nextNode, constraints, out _);
+                return (true, $"{constraints.ExtraCltvDelta} more blocks of CLTV");
+            case FailureCode.TemporaryChannelFailure:
+                TryUsePolicy(interpretation, shortChannelId, node, nextNode, constraints, out _);
+                var forwarded = hops[index].AmountToForward.MilliSatoshi;
+                constraints.BoundChannelLiquidity(shortChannelId, forwarded);
+                return (true, $"channel {shortChannelId} could not forward {forwarded} msat");
+            default:
+                constraints.ExcludedChannels.Add(shortChannelId);
+                return (true, $"channel {shortChannelId} is avoided");
+        }
+    }
+
+    /// <summary>
+    /// Uses the <c>channel_update</c> of an UPDATE failure as the channel's policy for this payment (BOLT 4: the origin
+    /// MAY, when it is valid and newer than the one it routed with). A disabled channel is avoided instead.
+    /// </summary>
+    private bool TryUsePolicy(FailureInterpretation interpretation, ShortChannelId shortChannelId,
+                              CompactPubKey erringNode, CompactPubKey nextNode, RouteConstraints constraints,
+                              out string reason)
+    {
+        if (interpretation.ChannelUpdate is not { } payload || !ChannelUpdatePayload.TryParse(payload.Span,
+                                                                                               out var update))
+        {
+            reason = "no channel_update";
+            return false;
+        }
+
+        if (update.ChainHash != _chainHash)
+        {
+            reason = "channel_update for another chain";
+            return false;
+        }
+
+        if (update.ShortChannelId != shortChannelId)
+        {
+            reason = $"channel_update for another channel ({update.ShortChannelId})";
+            return false;
+        }
+
+        // BOLT 7: direction 0 is the channel end with the lower node id
+        var erringIsNode2 = ((ReadOnlySpan<byte>)erringNode).SequenceCompareTo(nextNode) > 0;
+        if (update.Direction != erringIsNode2)
+        {
+            reason = "channel_update for the other direction";
+            return false;
+        }
+
+        if (!_lightningSigner.VerifyNodeMessage(update.GetSignatureHash(), update.Signature, erringNode))
+        {
+            reason = "channel_update with an invalid signature";
+            return false;
+        }
+
+        if (update.IsDisabled)
+        {
+            constraints.ExcludedChannels.Add(shortChannelId);
+            reason = "channel disabled";
+            return false;
+        }
+
+        if (constraints.PolicyOverrides.TryGetValue(shortChannelId, out var current)
+         && update.Timestamp <= current.Timestamp)
+        {
+            reason = "channel_update not newer than the one already used";
+            return false;
+        }
+
+        constraints.PolicyOverrides[shortChannelId] =
+            new HintChannelPolicy(update.FeeBaseMsat, update.FeeProportionalMillionths, update.CltvExpiryDelta,
+                                  update.HtlcMinimumMsat, update.HtlcMaximumMsat, update.Timestamp);
+        constraints.GraphPolicyOverrides[DirectedChannel.Between(shortChannelId, erringNode, nextNode)] =
+            GraphPolicy.FromChannelUpdate(update);
+        reason = string.Empty;
+        return true;
+    }
+}

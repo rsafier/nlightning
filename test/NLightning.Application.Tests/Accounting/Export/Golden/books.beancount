@@ -1,0 +1,58 @@
+; NLightning accounting export (beancount, amounts in MSAT = millisatoshi)
+option "title" "NLightning books"
+option "operating_currency" "MSAT"
+
+2026-01-01 open Assets:Lightning:Channels MSAT
+2026-01-01 open Assets:Onchain:Wallet MSAT
+2026-01-01 open Assets:Onchain:Clearing MSAT
+2026-01-01 open Income:Lightning:Received MSAT
+2026-01-01 open Income:Lightning:Routing MSAT
+2026-01-01 open Expenses:Lightning:Sent MSAT
+2026-01-01 open Expenses:Lightning:Routing-fees MSAT
+2026-01-01 open Expenses:Onchain:Fees:Funding MSAT
+2026-01-01 open Equity:Transfers:In MSAT
+
+2026-01-01 * "WalletReceived"
+  key: "wallet:aa:0:in"
+  seq: 1
+  time: "2026-01-01T09:30:00.123Z"
+  Assets:Onchain:Wallet                             1000000000 MSAT
+  Equity:Transfers:In                              -1000000000 MSAT
+
+2026-01-02 * "ChannelFunded"
+  key: "chan:01:funded"
+  seq: 2
+  time: "2026-01-02T09:30:00.123Z"
+  Assets:Lightning:Channels                          500000000 MSAT
+  Expenses:Onchain:Fees:Funding                        1234567 MSAT
+  Assets:Onchain:Clearing                           -501234567 MSAT
+
+2026-01-02 * "WalletOutputSpent"
+  key: "wallet:aa:0:spent"
+  seq: 3
+  time: "2026-01-02T09:30:00.123Z"
+  Assets:Onchain:Wallet                             -501234567 MSAT
+  Assets:Onchain:Clearing                            501234567 MSAT
+
+2026-01-03 * "InvoiceSettled: coffee; \"large\", \\ été"
+  key: "inv:01:settled"
+  seq: 4
+  time: "2026-01-03T09:30:00.123Z"
+  Assets:Lightning:Channels                           12345678 MSAT
+  Income:Lightning:Received                          -12345678 MSAT
+
+2026-01-04 * "ForwardSettled"
+  key: "fwd:01:0:settled"
+  seq: 5
+  time: "2026-01-04T09:30:00.123Z"
+  Assets:Lightning:Channels                               1001 MSAT
+  Income:Lightning:Routing                               -1001 MSAT
+
+2026-01-05 * "PaymentSucceeded: =HYPERLINK(\"x\")"
+  key: "pay:02:succeeded"
+  seq: 6
+  time: "2026-01-05T09:30:00.123Z"
+  Assets:Lightning:Channels                           -5000051 MSAT
+  Expenses:Lightning:Sent                              5000000 MSAT
+  Expenses:Lightning:Routing-fees                           51 MSAT
+

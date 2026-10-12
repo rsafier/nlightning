@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Security
+
+- `Invoice.Decode` rejects an invoice with more than one `p` (payment hash) field, identical or not (BOLT 11 after
+  bolts#1357, NL-516). It used to keep the first one, so a component using another parser that takes the last `p`
+  could disagree with us about which payment hash a signed invoice asks for;
+
+### Changed
+
+- `Invoice.Encode` now validates the invoice before signing (NL-120): p, s and d/h are required, the `9` field must
+  carry var_onion_optin and payment_secret (added as compulsory when missing), every BOLT 9 dependency must be set
+  and no known feature outside the invoice context may be set. Unknown even (compulsory) bits and features with both
+  the optional and compulsory bit set are rejected too, so we never sign an invoice our own `Decode` refuses;
+- `Invoice.Encode()` copies the node private key it gets from `ISecureKeyManager` and zeroes only that copy, so a key
+  manager that returns its internal buffer keeps its key;
+
+### Breaking Changes
+
+- `IInvoiceValidationService` gained `ValidateForEncoding` and `ValidateFeatures`;
+- Encoding an incomplete invoice (no payment hash, secret or description) now throws `InvoiceSerializationException`;
+
 ## v5.0.0
 
 BOLT 11 compliance fix for unknown fallback address versions and updated package URL.

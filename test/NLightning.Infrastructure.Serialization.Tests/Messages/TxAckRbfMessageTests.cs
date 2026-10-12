@@ -6,20 +6,18 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class TxAckRbfMessageTests
 {
-    private readonly TxAckRbfMessageTypeSerializer _txAckRbfMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<TxAckRbfMessage> _txAckRbfMessageTypeSerializer;
 
     public TxAckRbfMessageTests()
     {
         _txAckRbfMessageTypeSerializer =
-            new TxAckRbfMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                              SerializerHelper.TlvConverterFactory,
-                                              SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.WireRegistry.Get<TxAckRbfMessage>()!;
     }
 
     #region Deserialize

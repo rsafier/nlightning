@@ -1,0 +1,116 @@
+; NLightning accounting export, financial book (hledger journal, amounts in millisatoshi, costs in USD)
+commodity 1. msat
+commodity 1.00 USD
+account assets:lightning:channels
+account assets:onchain:wallet
+account equity:fiat-rounding
+account equity:opening-balances
+account equity:transfers:in
+account equity:transfers:out
+account expenses:fees:funding
+account expenses:fees:routing
+account expenses:fees:withdraw
+account expenses:payments
+account expenses:unclassified
+account income:gains:realized
+account income:routing
+account income:sales
+
+P 2025-12-31 00:00:00 msat 0.0000003 USD
+P 2026-01-01 00:00:00 msat 0.0000004 USD
+P 2026-02-10 00:00:00 msat 0.0000005 USD
+P 2026-03-01 00:00:00 msat 0.0000006 USD
+P 2027-03-20 00:00:00 msat 0.000001 USD
+P 2027-03-21 00:00:00 msat 0.0000003333333333333 USD
+
+2025-12-31 OpeningBalance
+    ; key: fixture:1
+    ; seq: 1
+    ; time: 2025-12-31T12:00:00.000Z
+    ; class Default
+    assets:onchain:wallet                               50000000 msat @@ 15 USD
+    equity:opening-balances                            -50000000 msat @@ 15 USD
+
+2026-01-01 WalletReceived
+    ; key: fixture:2
+    ; seq: 2
+    ; time: 2026-01-01T00:10:00.000Z
+    ; class Default
+    assets:onchain:wallet                             1000000000 msat @@ 400 USD
+    equity:transfers:in                              -1000000000 msat @@ 400 USD
+
+2026-01-05 ChannelFunded
+    ; key: fixture:3
+    ; seq: 3
+    ; time: 2026-01-05T00:00:00.000Z
+    ; class Default
+    assets:lightning:channels                          500000000 msat @@ 200 USD
+    expenses:fees:funding                                1000000 msat @@ 0.4 USD
+    assets:onchain:wallet                             -501000000 msat @@ 200.4 USD
+
+2026-02-10 InvoiceSettled: shop - Coffee, "large" with milk
+    ; key: fixture:4
+    ; seq: 4
+    ; time: 2026-02-10T12:00:00.000Z
+    ; class Rule 7
+    assets:lightning:channels                          200000000 msat @@ 100 USD
+    income:sales                                      -200000000 msat @@ 100 USD
+
+2026-03-02 PaymentSucceeded
+    ; key: fixture:5
+    ; seq: 5
+    ; time: 2026-03-02T00:00:00.000Z
+    ; class Default
+    expenses:payments                                  100000000 msat @@ 60 USD
+    expenses:fees:routing                                  10000 msat @@ 0.006 USD
+    assets:lightning:channels                         -100010000 msat @@ 35.004 USD
+    income:gains:realized                                -25.002 USD
+
+2026-03-05 ForwardSettled
+    ; key: fixture:6
+    ; seq: 6
+    ; time: 2026-03-05T00:00:00.000Z
+    ; flags Unvalued, class Default
+    ; unvalued: not every line has a value in USD, written in msat only
+    assets:lightning:channels                               5000 msat
+    income:routing                                         -5000 msat
+
+2026-03-06 PaymentSucceeded
+    ; key: fixture:7
+    ; seq: 7
+    ; time: 2026-03-06T00:00:00.000Z
+    ; flags Unclassified|Unvalued, class Default
+    ; unvalued: not every line has a value in USD, written in msat only
+    expenses:unclassified                                1000000 msat
+    assets:lightning:channels                           -1000000 msat
+
+2026-03-20 PaymentSucceeded (adjustment 1)
+    ; key: fixture:7
+    ; seq: 7
+    ; adjustment: 1
+    ; time: 2026-03-20T00:00:00.000Z
+    ; flags Adjustment|Unvalued, class Override
+    ; unvalued: not every line has a value in USD, written in msat only
+    expenses:payments                                    1000000 msat
+    expenses:unclassified                               -1000000 msat
+
+2027-03-20 WalletSent
+    ; key: fixture:8
+    ; seq: 8
+    ; time: 2027-03-20T06:00:00.000Z
+    ; class Default
+    equity:transfers:out                               300000000 msat @@ 300 USD
+    expenses:fees:withdraw                                200000 msat @@ 0.2 USD
+    assets:onchain:wallet                             -300200000 msat @@ 120.08 USD
+    income:gains:realized                                -180.12 USD
+
+2027-03-21 PaymentSucceeded
+    ; key: fixture:9
+    ; seq: 9
+    ; time: 2027-03-21T06:00:00.000Z
+    ; class Default
+    expenses:payments                                          1 msat @@ 0.00000033 USD
+    expenses:fees:routing                                      1 msat @@ 0.00000033 USD
+    assets:lightning:channels                                 -2 msat @@ 0.00000067 USD
+    equity:fiat-rounding                              0.00000001 USD  ; fiat rounding
+

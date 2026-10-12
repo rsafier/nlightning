@@ -58,6 +58,22 @@ public class WitnessTypeSerializerTests
     }
 
     [Fact]
+    public async Task Given_LengthLargerThanRemainingBytes_When_Deserialized_Then_ThrowsBeforeReadingWitnessData()
+    {
+        // Given
+        var witnessSerializer = new WitnessTypeSerializer();
+        using var memoryStream = new MemoryStream([0xFF, 0xFF, 0x01, 0x02, 0x03]);
+
+        // When
+        var exception = await Assert.ThrowsAsync<SerializationException>(async () =>
+            await witnessSerializer.DeserializeAsync(memoryStream));
+
+        // Then
+        Assert.Equal(sizeof(ushort), memoryStream.Position);
+        Assert.Contains("exceeds", exception.InnerException?.Message ?? exception.Message);
+    }
+
+    [Fact]
     public async Task Given_LargeWitnessData_When_SerializedAndDeserialized_Then_DataIsPreserved()
     {
         // Given

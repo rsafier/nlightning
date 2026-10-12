@@ -52,14 +52,21 @@ public sealed class Sha256 : ISha256
     }
 
     #region Dispose Pattern
+    private int _disposed;
+
     private void ReleaseUnmanagedResources()
     {
-        _cryptoProvider.MemoryZero(_state, CryptoConstants.Sha256HashLen);
+        _cryptoProvider.MemoryZero(_state, CryptoConstants.LibsodiumSha256StateLen);
         _cryptoProvider.MemoryFree(_state);
     }
 
     private void Dispose(bool disposing)
     {
+        // Frees the state once: an owner's Dispose can follow this object's own finalizer, because the finalizers of
+        // an unreachable graph run in any order, and a second free of the state crashes the process (NL-560)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         ReleaseUnmanagedResources();
         if (disposing)
         {

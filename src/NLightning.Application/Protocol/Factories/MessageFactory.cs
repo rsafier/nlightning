@@ -5,6 +5,8 @@ namespace NLightning.Application.Protocol.Factories;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Addresses;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
@@ -17,7 +19,7 @@ using Domain.Protocol.ValueObjects;
 /// <summary>
 /// Factory for creating messages.
 /// </summary>
-public class MessageFactory : IMessageFactory
+public partial class MessageFactory : IMessageFactory
 {
     private readonly NodeOptions _nodeOptions;
     private readonly BitcoinNetwork _bitcoinNetwork;
@@ -33,16 +35,21 @@ public class MessageFactory : IMessageFactory
     /// <summary>
     /// Create an Init message.
     /// </summary>
-    /// <returns>The Init message.</returns>
+    /// <param name="remoteAddress">The BOLT 1 <c>remote_addr</c> TLV: the connection's remote endpoint as an address
+    /// descriptor, sent by the receiver of an IP connection (NL-009); null sends no <c>remote_addr</c>.</param>
+    /// <returns>The Init message, with our <c>option_will_fund</c> rates when we sell liquidity (NL-850).</returns>
     /// <seealso cref="InitMessage"/>
     /// <seealso cref="InitPayload"/>
-    public InitMessage CreateInitMessage()
+    public InitMessage CreateInitMessage(AddressDescriptor? remoteAddress = null)
     {
         // Get features from options
         var features = _nodeOptions.Features.GetNodeFeatures();
         var payload = new InitPayload(features);
 
-        return new InitMessage(payload, _nodeOptions.Features.GetInitTlvs());
+        var willFundRates = _nodeOptions.LiquidityAds.GetWillFundRates();
+        return new InitMessage(payload, _nodeOptions.Features.GetInitTlvs(),
+                               remoteAddress is null ? null : new RemoteAddressTlv(remoteAddress),
+                               willFundRates is null ? null : new WillFundRatesTlv(willFundRates));
     }
 
     #endregion
@@ -266,19 +273,23 @@ public class MessageFactory : IMessageFactory
     /// <param name="channelId">The channel id.</param>
     /// <param name="locktime">The locktime.</param>
     /// <param name="feerate">The feerate</param>
-    /// <param name="fundingOutputContrubution">The output contribution.</param>
+    /// <param name="fundingOutputContrubution">The signed contribution in satoshis (negative for a splice-out);
+    /// 0 omits the TLV.</param>
     /// <param name="requireConfirmedInputs">How many confirmed inputs we need.</param>
+    /// <param name="requestFunding">Our liquidity ads request (NL-850), null for none.</param>
     /// <returns>The TxInitRbf message.</returns>
     /// <seealso cref="TxInitRbfMessage"/>
     /// <seealso cref="ChannelId"/>
     /// <seealso cref="TxInitRbfPayload"/>
     public TxInitRbfMessage CreateTxInitRbfMessage(ChannelId channelId, uint locktime, uint feerate,
-                                                   long fundingOutputContrubution, bool requireConfirmedInputs)
+                                                   long fundingOutputContrubution, bool requireConfirmedInputs,
+                                                   RequestFunding? requestFunding = null)
     {
         FundingOutputContributionTlv? fundingOutputContributionTlv = null;
         RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null;
 
-        if (fundingOutputContrubution > 0)
+        // s64 on the wire: a splice-out RBF carries a negative contribution; 0 means not contributing (omitted)
+        if (fundingOutputContrubution != 0)
         {
             fundingOutputContributionTlv = new FundingOutputContributionTlv(fundingOutputContrubution);
         }
@@ -288,17 +299,20 @@ public class MessageFactory : IMessageFactory
             requireConfirmedInputsTlv = new RequireConfirmedInputsTlv();
         }
 
-        var payload = new TxInitRbfPayload(channelId, locktime, feerate);
+        var payload = new TxInitRbfPayload(channelId, feerate, locktime);
 
-        return new TxInitRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv);
+        return new TxInitRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv,
+                                    requestFunding is null ? null : new RequestFundingTlv(requestFunding));
     }
 
     /// <summary>
     /// Create a TxAckRbf message.
     /// </summary>
     /// <param name="channelId">The channel id.</param>
-    /// <param name="fundingOutputContrubution">The output contribution.</param>
+    /// <param name="fundingOutputContrubution">The signed contribution in satoshis (negative for a splice-out);
+    /// 0 omits the TLV.</param>
     /// <param name="requireConfirmedInputs">How many confirmed inputs we need.</param>
+    /// <param name="willFund">Our liquidity ads answer (NL-850), null for none.</param>
     /// <returns>The TxAckRbf message.</returns>
     /// <seealso cref="TxAckRbfMessage"/>
     /// <seealso cref="ChannelId"/>
@@ -307,12 +321,13 @@ public class MessageFactory : IMessageFactory
     /// <seealso cref="FundingOutputContributionTlv"/>
     /// <seealso cref="RequireConfirmedInputsTlv"/>
     public TxAckRbfMessage CreateTxAckRbfMessage(ChannelId channelId, long fundingOutputContrubution,
-                                                 bool requireConfirmedInputs)
+                                                 bool requireConfirmedInputs, WillFund? willFund = null)
     {
         FundingOutputContributionTlv? fundingOutputContributionTlv = null;
         RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null;
 
-        if (fundingOutputContrubution > 0)
+        // s64 on the wire: a splice-out RBF carries a negative contribution; 0 means not contributing (omitted)
+        if (fundingOutputContrubution != 0)
         {
             fundingOutputContributionTlv = new FundingOutputContributionTlv(fundingOutputContrubution);
         }
@@ -324,7 +339,8 @@ public class MessageFactory : IMessageFactory
 
         var payload = new TxAckRbfPayload(channelId);
 
-        return new TxAckRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv);
+        return new TxAckRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv,
+                                   willFund is null ? null : new ProvideFundingTlv(willFund));
     }
 
     /// <summary>
@@ -386,37 +402,15 @@ public class MessageFactory : IMessageFactory
     }
 
     /// <summary>
-    /// Create a ClosingSigned message.
-    /// </summary>
-    /// <param name="channelId">The channel id.</param>
-    /// <param name="feeSatoshis">The fee we want them to pay for closing the channel.</param>
-    /// <param name="signature">The signature for closing the channel.</param>
-    /// <param name="minFeeSatoshis">The min fee we will accept them to pay to close the channel.</param>
-    /// <param name="maxFeeSatoshis">The max fee we will accept them to pay to close the channel.</param>
-    /// <returns>The ClosingSigned message.</returns>
-    /// <seealso cref="ClosingSignedMessage"/>
-    /// <seealso cref="ChannelId"/>
-    /// <seealso cref="CompactSignature"/>
-    /// <seealso cref="ClosingSignedPayload"/>
-    public ClosingSignedMessage CreateClosingSignedMessage(ChannelId channelId, ulong feeSatoshis,
-                                                           CompactSignature signature,
-                                                           ulong minFeeSatoshis, ulong maxFeeSatoshis)
-    {
-        var payload = new ClosingSignedPayload(channelId, feeSatoshis, signature);
-
-        return new ClosingSignedMessage(payload, new FeeRangeTlv(minFeeSatoshis, maxFeeSatoshis));
-    }
-
-    /// <summary>
     /// Create an OpenChannel1 message.
     /// </summary>
     /// <param name="temporaryChannelId">The temporary channel id.</param>
     /// <param name="fundingAmount">The amount of satoshis we're adding to the channel.</param>
     /// <param name="fundingPubKey">The funding pubkey of the channel.</param>
     /// <param name="pushAmount">The amount of satoshis we're pushing to the other side.</param>
-    /// <param name="channelReserveAmount">The channel reserve amount.</param>
+    /// <param name="localParams">The channel parameters we announce (dust limit, reserve, htlc minimum, max accepted
+    /// htlcs, max htlc value in flight and to_self_delay).</param>
     /// <param name="feeRatePerKw">The fee rate per kw.</param>
-    /// <param name="maxAcceptedHtlcs">The max accepted htlcs.</param>
     /// <param name="revocationBasepoint">The revocation pubkey.</param>
     /// <param name="paymentBasepoint">The payment pubkey.</param>
     /// <param name="delayedPaymentBasepoint">The delayed payment pubkey.</param>
@@ -434,8 +428,7 @@ public class MessageFactory : IMessageFactory
     /// <seealso cref="ChannelTypeTlv"/>
     public OpenChannel1Message CreateOpenChannel1Message(ChannelId temporaryChannelId, LightningMoney fundingAmount,
                                                          CompactPubKey fundingPubKey, LightningMoney pushAmount,
-                                                         LightningMoney channelReserveAmount,
-                                                         LightningMoney feeRatePerKw, ushort maxAcceptedHtlcs,
+                                                         ChannelParty localParams, LightningMoney feeRatePerKw,
                                                          CompactPubKey revocationBasepoint,
                                                          CompactPubKey paymentBasepoint,
                                                          CompactPubKey delayedPaymentBasepoint,
@@ -445,47 +438,21 @@ public class MessageFactory : IMessageFactory
                                                          ChannelTypeTlv channelTypeTlv,
                                                          UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv)
     {
-        var maxHtlcValueInFlight =
-            LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight * fundingAmount.Satoshi /
-                                    100M);
         var payload = new OpenChannel1Payload(_nodeOptions.BitcoinNetwork.ChainHash, channelFlags, temporaryChannelId,
-                                              channelReserveAmount, delayedPaymentBasepoint,
-                                              _nodeOptions.DustLimitAmount, feeRatePerKw, firstPerCommitmentPoint,
+                                              localParams.ChannelReserveAmount, delayedPaymentBasepoint,
+                                              localParams.DustLimitAmount, feeRatePerKw, firstPerCommitmentPoint,
                                               fundingAmount, fundingPubKey, htlcBasepoint,
-                                              _nodeOptions.HtlcMinimumAmount, maxAcceptedHtlcs, maxHtlcValueInFlight,
-                                              paymentBasepoint, pushAmount, revocationBasepoint,
-                                              _nodeOptions.ToSelfDelay);
+                                              localParams.HtlcMinimumAmount, localParams.MaxAcceptedHtlcs,
+                                              localParams.MaxHtlcValueInFlight, paymentBasepoint, pushAmount,
+                                              revocationBasepoint, localParams.ToSelfDelay);
 
         return new OpenChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);
     }
 
-    /// <summary>
-    /// Create an OpenChannel2 message.
-    /// </summary>
-    /// <param name="temporaryChannelId">The temporary channel id.</param>
-    /// <param name="fundingFeeRatePerKw">The funding fee rate to open the channel.</param>
-    /// <param name="commitmentFeeRatePerKw">The commitment fee rate.</param>
-    /// <param name="fundingSatoshis">The amount of satoshis we're adding to the channel.</param>
-    /// <param name="fundingPubKey">The funding pubkey of the channel.</param>
-    /// <param name="revocationBasepoint">The revocation pubkey.</param>
-    /// <param name="paymentBasepoint">The payment pubkey.</param>
-    /// <param name="delayedPaymentBasepoint">The delayed payment pubkey.</param>
-    /// <param name="htlcBasepoint">The htlc pubkey.</param>
-    /// <param name="firstPerCommitmentPoint">The first per-commitment pubkey.</param>
-    /// <param name="secondPerCommitmentPoint">The second per-commitment pubkey.</param>
-    /// <param name="channelFlags">The flags for the channel.</param>
-    /// <param name="shutdownScriptPubkey">The shutdown script to be used when closing the channel.</param>
-    /// <param name="channelType">The type of the channel.</param>
-    /// <param name="requireConfirmedInputs">If we want confirmed inputs to open the channel.</param>
-    /// <returns>The OpenChannel2 message.</returns>
-    /// <seealso cref="OpenChannel2Message"/>
-    /// <seealso cref="ChannelId"/>
-    /// <seealso cref="CompactPubKey"/>
-    /// <seealso cref="ChannelFlags"/>
-    /// <seealso cref="BitcoinScript"/>
-    /// <seealso cref="OpenChannel2Payload"/>
+    /// <inheritdoc />
     public OpenChannel2Message CreateOpenChannel2Message(ChannelId temporaryChannelId, uint fundingFeeRatePerKw,
-                                                         uint commitmentFeeRatePerKw, ulong fundingSatoshis,
+                                                         uint commitmentFeeRatePerKw, LightningMoney fundingAmount,
+                                                         ChannelParty localParams, uint locktime,
                                                          CompactPubKey fundingPubKey,
                                                          CompactPubKey revocationBasepoint,
                                                          CompactPubKey paymentBasepoint,
@@ -493,48 +460,38 @@ public class MessageFactory : IMessageFactory
                                                          CompactPubKey htlcBasepoint,
                                                          CompactPubKey firstPerCommitmentPoint,
                                                          CompactPubKey secondPerCommitmentPoint,
-                                                         ChannelFlags channelFlags,
-                                                         BitcoinScript? shutdownScriptPubkey = null,
-                                                         byte[]? channelType = null,
-                                                         bool requireConfirmedInputs = false)
+                                                         ChannelFlags channelFlags, ChannelTypeTlv channelTypeTlv,
+                                                         UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
+                                                         bool requireConfirmedInputs = false,
+                                                         RequestFunding? requestFunding = null)
     {
-        var maxHtlcValueInFlight =
-            LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight * fundingSatoshis / 100M);
-
         var payload = new OpenChannel2Payload(_bitcoinNetwork.ChainHash, channelFlags, commitmentFeeRatePerKw,
-                                              delayedPaymentBasepoint, _nodeOptions.DustLimitAmount,
-                                              firstPerCommitmentPoint, fundingSatoshis, fundingFeeRatePerKw,
-                                              fundingPubKey, htlcBasepoint, _nodeOptions.HtlcMinimumAmount,
-                                              _nodeOptions.Locktime, _nodeOptions.MaxAcceptedHtlcs,
-                                              maxHtlcValueInFlight, paymentBasepoint, revocationBasepoint,
-                                              secondPerCommitmentPoint, _nodeOptions.ToSelfDelay, temporaryChannelId);
+                                              delayedPaymentBasepoint, localParams.DustLimitAmount,
+                                              firstPerCommitmentPoint, fundingAmount, fundingFeeRatePerKw,
+                                              fundingPubKey, htlcBasepoint, localParams.HtlcMinimumAmount, locktime,
+                                              localParams.MaxAcceptedHtlcs, localParams.MaxHtlcValueInFlight,
+                                              paymentBasepoint, revocationBasepoint, secondPerCommitmentPoint,
+                                              localParams.ToSelfDelay, temporaryChannelId);
 
-        return new OpenChannel2Message(payload,
-                                       shutdownScriptPubkey is null
-                                           ? null
-                                           : new UpfrontShutdownScriptTlv(shutdownScriptPubkey.Value),
-                                       channelType is null
-                                           ? null
-                                           : new ChannelTypeTlv(channelType),
-                                       requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+        return new OpenChannel2Message(payload, upfrontShutdownScriptTlv, channelTypeTlv,
+                                       requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                       requestFunding is null ? null : new RequestFundingTlv(requestFunding));
     }
 
     /// <summary>
     /// Creates an AcceptChannel1 message.
     /// </summary>
-    /// <param name="channelReserveAmount">The reserve amount for the channel.</param>
-    /// <param name="channelTypeTlv">Optional parameter specifying the channel type.</param>
+    /// <param name="localParams">The channel parameters we announce (dust limit, reserve, htlc minimum, max accepted
+    /// htlcs, max htlc value in flight and to_self_delay); never the opener's values.</param>
+    /// <param name="channelTypeTlv">The channel type; BOLT 2 requires the one from open_channel.</param>
     /// <param name="delayedPaymentBasepoint">The basepoint for the delayed payment key.</param>
     /// <param name="firstPerCommitmentPoint">The first per-commitment point for the channel.</param>
     /// <param name="fundingPubKey">Public key associated with the channel funding.</param>
     /// <param name="htlcBasepoint">The basepoint for the HTLC key.</param>
-    /// <param name="maxAcceptedHtlcs">The maximum number of HTLCs to be accepted for this channel.</param>
-    /// <param name="maxHtlcValueInFlight">The maximum HTLC value that can be in flight.</param>
     /// <param name="minimumDepth">The minimum confirmation depth required for the channel opening transaction.</param>
     /// <param name="paymentBasepoint">The basepoint for the payment key.</param>
     /// <param name="revocationBasepoint">The basepoint for the revocation key.</param>
     /// <param name="temporaryChannelId">The temporary identifier for the channel negotiation.</param>
-    /// <param name="toSelfDelay">The delay in blocks before self outputs can be claimed.</param>
     /// <param name="upfrontShutdownScriptTlv">Optional parameter specifying the upfront shutdown script TLV.</param>
     /// <returns>The created AcceptChannel1 message.</returns>
     /// <seealso cref="AcceptChannel1Message"/>
@@ -544,76 +501,50 @@ public class MessageFactory : IMessageFactory
     /// <seealso cref="CompactPubKey"/>
     /// <seealso cref="UpfrontShutdownScriptTlv"/>
     /// <seealso cref="ChannelTypeTlv"/>
-    public AcceptChannel1Message CreateAcceptChannel1Message(LightningMoney channelReserveAmount,
-                                                             ChannelTypeTlv channelTypeTlv,
+    public AcceptChannel1Message CreateAcceptChannel1Message(ChannelParty localParams, ChannelTypeTlv channelTypeTlv,
                                                              CompactPubKey delayedPaymentBasepoint,
                                                              CompactPubKey firstPerCommitmentPoint,
                                                              CompactPubKey fundingPubKey, CompactPubKey htlcBasepoint,
-                                                             ushort maxAcceptedHtlcs,
-                                                             LightningMoney maxHtlcValueInFlight, uint minimumDepth,
-                                                             CompactPubKey paymentBasepoint,
+                                                             uint minimumDepth, CompactPubKey paymentBasepoint,
                                                              CompactPubKey revocationBasepoint,
-                                                             ChannelId temporaryChannelId, ushort toSelfDelay,
+                                                             ChannelId temporaryChannelId,
                                                              UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv)
     {
-        var payload = new AcceptChannel1Payload(temporaryChannelId, channelReserveAmount, delayedPaymentBasepoint,
-                                                _nodeOptions.DustLimitAmount, firstPerCommitmentPoint, fundingPubKey,
-                                                htlcBasepoint, _nodeOptions.HtlcMinimumAmount, maxAcceptedHtlcs,
-                                                maxHtlcValueInFlight, minimumDepth, paymentBasepoint,
-                                                revocationBasepoint, toSelfDelay);
+        var payload = new AcceptChannel1Payload(temporaryChannelId, localParams.ChannelReserveAmount,
+                                                delayedPaymentBasepoint, localParams.DustLimitAmount,
+                                                firstPerCommitmentPoint, fundingPubKey, htlcBasepoint,
+                                                localParams.HtlcMinimumAmount, localParams.MaxAcceptedHtlcs,
+                                                localParams.MaxHtlcValueInFlight, minimumDepth, paymentBasepoint,
+                                                revocationBasepoint, localParams.ToSelfDelay);
 
         return new AcceptChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);
     }
 
-    /// <summary>
-    /// Create an AcceptChannel2 message.
-    /// </summary>
-    /// <param name="temporaryChannelId">The temporary channel id.</param>
-    /// <param name="fundingSatoshis">The amount of satoshis we're adding to the channel.</param>
-    /// <param name="fundingPubKey">The funding pubkey of the channel.</param>
-    /// <param name="revocationBasepoint">The revocation pubkey.</param>
-    /// <param name="paymentBasepoint">The payment pubkey.</param>
-    /// <param name="delayedPaymentBasepoint">The delayed payment pubkey.</param>
-    /// <param name="htlcBasepoint">The htlc pubkey.</param>
-    /// <param name="firstPerCommitmentPoint">The first per-commitment pubkey.</param>
-    /// <param name="maxHtlcValueInFlight">Maximum HTLC value that can be in flight.</param>
-    /// <param name="shutdownScriptPubkey">The shutdown script to be used when closing the channel.</param>
-    /// <param name="channelType">The type of the channel.</param>
-    /// <param name="requireConfirmedInputs">If we want confirmed inputs to open the channel.</param>
-    /// <returns>The AcceptChannel2 message.</returns>
-    /// <seealso cref="AcceptChannel2Message"/>
-    /// <seealso cref="ChannelId"/>
-    /// <seealso cref="CompactPubKey"/>
-    /// <seealso cref="BitcoinScript"/>
-    /// <seealso cref="AcceptChannel2Payload"/>
+    /// <inheritdoc />
     public AcceptChannel2Message CreateAcceptChannel2Message(ChannelId temporaryChannelId,
-                                                             LightningMoney fundingSatoshis,
-                                                             CompactPubKey fundingPubKey,
+                                                             LightningMoney fundingAmount, ChannelParty localParams,
+                                                             uint minimumDepth, CompactPubKey fundingPubKey,
                                                              CompactPubKey revocationBasepoint,
                                                              CompactPubKey paymentBasepoint,
                                                              CompactPubKey delayedPaymentBasepoint,
                                                              CompactPubKey htlcBasepoint,
                                                              CompactPubKey firstPerCommitmentPoint,
-                                                             LightningMoney maxHtlcValueInFlight,
-                                                             BitcoinScript? shutdownScriptPubkey = null,
-                                                             byte[]? channelType = null,
-                                                             bool requireConfirmedInputs = false)
+                                                             CompactPubKey secondPerCommitmentPoint,
+                                                             ChannelTypeTlv channelTypeTlv,
+                                                             UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
+                                                             bool requireConfirmedInputs = false,
+                                                             WillFund? willFund = null)
     {
-        var payload = new AcceptChannel2Payload(delayedPaymentBasepoint, _nodeOptions.DustLimitAmount,
-                                                firstPerCommitmentPoint, fundingSatoshis, fundingPubKey,
-                                                htlcBasepoint, _nodeOptions.HtlcMinimumAmount,
-                                                _nodeOptions.MaxAcceptedHtlcs, maxHtlcValueInFlight,
-                                                _nodeOptions.MinimumDepth, paymentBasepoint, revocationBasepoint,
-                                                temporaryChannelId, _nodeOptions.ToSelfDelay);
+        var payload = new AcceptChannel2Payload(delayedPaymentBasepoint, localParams.DustLimitAmount,
+                                                firstPerCommitmentPoint, fundingAmount, fundingPubKey, htlcBasepoint,
+                                                localParams.HtlcMinimumAmount, localParams.MaxAcceptedHtlcs,
+                                                localParams.MaxHtlcValueInFlight, minimumDepth, paymentBasepoint,
+                                                revocationBasepoint, temporaryChannelId, localParams.ToSelfDelay,
+                                                secondPerCommitmentPoint);
 
-        return new AcceptChannel2Message(payload,
-                                         shutdownScriptPubkey is null
-                                             ? null
-                                             : new UpfrontShutdownScriptTlv(shutdownScriptPubkey.Value),
-                                         channelType is null
-                                             ? null
-                                             : new ChannelTypeTlv(channelType),
-                                         requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+        return new AcceptChannel2Message(payload, upfrontShutdownScriptTlv, channelTypeTlv,
+                                         requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                         willFund is null ? null : new ProvideFundingTlv(willFund));
     }
 
     /// <summary>
@@ -672,7 +603,7 @@ public class MessageFactory : IMessageFactory
     /// <seealso cref="UpdateAddHtlcPayload"/>
     public UpdateAddHtlcMessage CreateUpdateAddHtlcMessage(ChannelId channelId, ulong id, ulong amountMsat,
                                                            ReadOnlyMemory<byte> paymentHash, uint cltvExpiry,
-                                                           ReadOnlyMemory<byte>? onionRoutingPacket = null)
+                                                           ReadOnlyMemory<byte> onionRoutingPacket)
     {
         var payload = new UpdateAddHtlcPayload(amountMsat, channelId, cltvExpiry, id, paymentHash, onionRoutingPacket);
 
@@ -685,16 +616,23 @@ public class MessageFactory : IMessageFactory
     /// <param name="channelId">The channel id.</param>
     /// <param name="id">The htlc id.</param>
     /// <param name="preimage">The preimage for this htlc.</param>
+    /// <param name="attributionData">The <c>attribution_data</c> (920 bytes), or empty for no TLV 1.</param>
+    /// <param name="fulfillmentPayload">The <c>fulfillment_payload</c>, or empty for no TLV 3.</param>
     /// <returns>The UpdateFulfillHtlc message.</returns>
     /// <seealso cref="UpdateFulfillHtlcMessage"/>
     /// <seealso cref="ChannelId"/>
     /// <seealso cref="UpdateFulfillHtlcPayload"/>
     public UpdateFulfillHtlcMessage CreateUpdateFulfillHtlcMessage(ChannelId channelId, ulong id,
-                                                                   ReadOnlyMemory<byte> preimage)
+                                                                   ReadOnlyMemory<byte> preimage,
+                                                                   ReadOnlyMemory<byte> attributionData = default,
+                                                                   ReadOnlyMemory<byte> fulfillmentPayload = default)
     {
         var payload = new UpdateFulfillHtlcPayload(channelId, id, preimage);
 
-        return new UpdateFulfillHtlcMessage(payload);
+        return new UpdateFulfillHtlcMessage(payload, ToAttributionTlv(attributionData),
+                                            fulfillmentPayload.IsEmpty
+                                                ? null
+                                                : new FulfillmentPayloadTlv(fulfillmentPayload.ToArray()));
     }
 
     /// <summary>
@@ -703,16 +641,23 @@ public class MessageFactory : IMessageFactory
     /// <param name="channelId">The channel id.</param>
     /// <param name="id">The htlc id.</param>
     /// <param name="reason">The reason for failure.</param>
+    /// <param name="attributionData">The <c>attribution_data</c> (920 bytes), or empty for no TLV 1.</param>
     /// <returns>The UpdateFailHtlc message.</returns>
     /// <seealso cref="UpdateFailHtlcMessage"/>
     /// <seealso cref="ChannelId"/>
     /// <seealso cref="UpdateFailHtlcPayload"/>
-    public UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason)
+    public UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason,
+                                                             ReadOnlyMemory<byte> attributionData = default)
     {
         var payload = new UpdateFailHtlcPayload(channelId, id, reason);
 
-        return new UpdateFailHtlcMessage(payload);
+        return new UpdateFailHtlcMessage(payload, ToAttributionTlv(attributionData));
     }
+
+    /// <summary>The <c>attribution_data</c> TLV, or null for none (empty).</summary>
+    /// <exception cref="ArgumentException">Neither empty nor 920 bytes.</exception>
+    private static AttributionDataTlv? ToAttributionTlv(ReadOnlyMemory<byte> attributionData) =>
+        attributionData.IsEmpty ? null : new AttributionDataTlv(attributionData.ToArray());
 
     /// <summary>
     /// Create a CommitmentSigned message.
@@ -720,17 +665,20 @@ public class MessageFactory : IMessageFactory
     /// <param name="channelId">The channel id.</param>
     /// <param name="signature">The signature for the commitment transaction.</param>
     /// <param name="htlcSignatures">The signatures for each open htlc.</param>
+    /// <param name="fundingTxId">The funding transaction spent by the signed commitment. BOLT 2: the sender MUST set
+    /// the <c>funding_txid</c> TLV.</param>
     /// <returns>The CommitmentSigned message.</returns>
     /// <seealso cref="CommitmentSignedMessage"/>
     /// <seealso cref="ChannelId"/>
     /// <seealso cref="CompactSignature"/>
     /// <seealso cref="CommitmentSignedPayload"/>
     public CommitmentSignedMessage CreateCommitmentSignedMessage(ChannelId channelId, CompactSignature signature,
-                                                                 IEnumerable<CompactSignature> htlcSignatures)
+                                                                 IEnumerable<CompactSignature> htlcSignatures,
+                                                                 TxId fundingTxId)
     {
         var payload = new CommitmentSignedPayload(channelId, htlcSignatures, signature);
 
-        return new CommitmentSignedMessage(payload);
+        return new CommitmentSignedMessage(payload, new FundingTxIdTlv(fundingTxId));
     }
 
     /// <summary>
@@ -809,6 +757,84 @@ public class MessageFactory : IMessageFactory
                                                     nextRevocationNumber, yourLastPerCommitmentSecret);
 
         return new ChannelReestablishMessage(payload);
+    }
+
+    /// <summary>
+    /// Create an AnnouncementSignatures message (BOLT 7, type 259).
+    /// </summary>
+    /// <param name="channelId">The channel id.</param>
+    /// <param name="shortChannelId">The channel's real short channel id.</param>
+    /// <param name="nodeSignature">Our node-key signature of the channel_announcement hash.</param>
+    /// <param name="bitcoinSignature">Our funding-key signature of the channel_announcement hash.</param>
+    /// <returns>The AnnouncementSignatures message.</returns>
+    /// <seealso cref="AnnouncementSignaturesMessage"/>
+    /// <seealso cref="AnnouncementSignaturesPayload"/>
+    public AnnouncementSignaturesMessage CreateAnnouncementSignaturesMessage(ChannelId channelId,
+                                                                             ShortChannelId shortChannelId,
+                                                                             CompactSignature nodeSignature,
+                                                                             CompactSignature bitcoinSignature)
+    {
+        var payload = new AnnouncementSignaturesPayload(channelId, shortChannelId, nodeSignature, bitcoinSignature);
+
+        return new AnnouncementSignaturesMessage(payload);
+    }
+
+    /// <inheritdoc />
+    public AnnouncementSignatures2Message CreateAnnouncementSignatures2Message(
+        ChannelId channelId, ShortChannelId shortChannelId, MusigPartialSignature nodePartialSignature,
+        MusigPartialSignature bitcoinPartialSignature, TxId fundingTxId)
+    {
+        return new AnnouncementSignatures2Message(AnnouncementSignatures2Payload.Create(
+                                                      channelId, shortChannelId, nodePartialSignature,
+                                                      bitcoinPartialSignature, fundingTxId));
+    }
+
+    #endregion
+
+    #region Splicing
+
+    /// <inheritdoc />
+    public SpliceInitMessage CreateSpliceInitMessage(ChannelId channelId, long fundingContributionSatoshis,
+                                                     uint fundingFeeratePerKw, uint locktime,
+                                                     CompactPubKey fundingPubKey, bool requireConfirmedInputs = false,
+                                                     RequestFunding? requestFunding = null)
+    {
+        var payload = new SpliceInitPayload(channelId, fundingContributionSatoshis, fundingFeeratePerKw, locktime,
+                                            fundingPubKey);
+
+        return new SpliceInitMessage(payload, requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                     requestFunding is null ? null : new RequestFundingTlv(requestFunding));
+    }
+
+    /// <inheritdoc />
+    public SpliceAckMessage CreateSpliceAckMessage(ChannelId channelId, long fundingContributionSatoshis,
+                                                   CompactPubKey fundingPubKey, bool requireConfirmedInputs = false,
+                                                   WillFund? willFund = null)
+    {
+        var payload = new SpliceAckPayload(channelId, fundingContributionSatoshis, fundingPubKey);
+
+        return new SpliceAckMessage(payload, requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                    willFund is null ? null : new ProvideFundingTlv(willFund));
+    }
+
+    /// <inheritdoc />
+    public SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId,
+                                                         AnnouncementNodeNonceTlv? announcementNodeNonce = null,
+                                                         AnnouncementBitcoinNonceTlv? announcementBitcoinNonce = null)
+    {
+        return new SpliceLockedMessage(new SpliceLockedPayload(channelId, spliceTxId), announcementNodeNonce,
+                                       announcementBitcoinNonce);
+    }
+
+    /// <inheritdoc />
+    public StartBatchMessage CreateStartBatchMessage(ChannelId channelId, ushort batchSize)
+    {
+        // BOLT 2 "Batching channel messages": a sender sets 1 < batch_size <= 20
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, (ushort)2);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(batchSize, (ushort)20);
+
+        return new StartBatchMessage(new StartBatchPayload(channelId, batchSize),
+                                     StartBatchMessageTypeTlv.CommitmentSigned());
     }
 
     #endregion

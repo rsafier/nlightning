@@ -1,0 +1,1038 @@
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave spr @ `a0800ac2`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+
+## Status
+
+### Wave spr (splice RBF, `SPLICING_PLAN.md` wave SPR, plus day-0 hardening): integrated into `wip/fafo` @ `a0800ac2` (2026-09-28), gates GREEN except known flakes and one CLN quiescence case that also fails before the wave
+
+Plan: [`SPLICING_PLAN.md`](SPLICING_PLAN.md) wave SPR (SPR-A..C, Proof SPR) plus lane SPR-D (day-0 hardening, migration owner: `AddSpliceHardening` on all three providers, `Commitments.SignedOnFundings` and `Peers.IsInboundOnly`, guarded `Down`, `HasPendingModelChanges` false everywhere) and lane SPR-E (day-0 follow-ups), five lanes on the SPR-0 contracts (`2a386cb8`, lane `b72a42ea`), each with a review/fix step. 28 commits on top of `64bfcbb7`, cherry-picked with `-x` in the order contracts → SPR-D → SPR-A → SPR-E → SPR-B → SPR-C (no conflicts; only `CLAUDE.md` files auto-merged). `OptionSplice`, `OptionQuiesce` and `OptionDualFund` stay No and experimental (D13 not applied). `ClientCommand`: BumpSplice **37** (next free **38**).
+
+| Lane | Result | `wip/fafo` SHAs (lane SHAs) | Ledger |
+|---|---|---|---|
+| Contracts SPR-0 | done | 2a386cb8 (b72a42ea) | — |
+| SPR-A RBF protocol | done: splice RBF both directions under the BOLT 2 splice rules, RBF siblings in `FundingSet`, batches over every attempt, lock discards siblings, SP-LK-04 receive side, negative contributions; review: peer feerate and fee-share caps, bumped attempt rebroadcast until the lock, RBF host restored | 7a044d49, 9d13d0de, f3635ed7, c1e20033 (a7d1c925, 6914d866, ef461190, 8e5a78fc) | NL-489, NL-481 fixed; NL-488 partial; NL-509, NL-510 |
+| SPR-B bump | done: `bumpsplice` (37), `SpliceAutoBumper` (off by default) with its own feerate ceiling, fee cap and bounded wait; stopped-at-CommitmentSigned note on `SpliceIpcResponse` key 5 | d34ab24b, a1e2b6c5, 9d017a7f (b237d8a4, d5f764e3, e62f882a) | NL-506 fixed; NL-507, NL-508, NL-515 |
+| SPR-C Proof SPR | done: `ClnSpliceRbfTests` 5 cases + container-free helper tests, `Day0FlowTests` step 9, `DAY0_RUNBOOK.md` RBF lines; review: BOLT 2 RBF floor, `tx_abort` reason asserted, `bumpsplice` syntax | c5943068, e25249ea, b7b23099 (187326ca, 2946b2d3, 942ac98d) | NL-511 |
+| SPR-D day-0 hardening (migration owner) | done: `SignedOnFundings` persisted, current funding in the signing info, loopback inbound peers kept; review: damaged records tolerated, inbound-only rows out of backups, guarded rollback | e86bb0c4, a3748f4d, 84f5696c, 1304b5f6, 900810a8, a9721c49, e0b8a7a9 (ba9895a1, 45ba3224, bc54353b, 5a926a7e, 98530b68, 85b5b017, 44c8fb26) | NL-494, NL-495, NL-497 fixed; NL-513, NL-514 |
+| SPR-E day-0 follow-ups | done: retired-SCID half ignored, discarded splice reservations released at irrevocable depth, recorded funding spends replayed, CLN fee cases order-independent, LND spliced-channel observer proof, dual-fund harness timeout | c51fe99a, f9c6b7f0, de620e7b, 7c4bbde5, 8566caf2, 12d9e451 (8a2a8e67, 4f04ed6d, a6f7e628, 3223820e, 17ba9717, 8e13d4f5) | NL-490, NL-492, NL-486 fixed; NL-493, NL-496 partial |
+| Integration | auto-bumper registered and started after the chain monitor and the peers (8a3ad0a3); slow-bump unit test retried at the next block (fd704b26); a splice RBF always sends `funding_output_contribution`, 0 included, and Proof SPR (c) driven through CLN's `splice_init` (96d32442); observer proof funds the fundee's anchors reserve and the upgrade-in-place proof counts only dialable peers (a0800ac2) | 8a3ad0a3, fd704b26, 96d32442, a0800ac2 | NL-503 fixed; NL-502, NL-504, NL-505 |
+
+Gates at `a0800ac2`:
+- Build: SDK 10: Release and Release.Native, 0 errors, the **5** baseline CS86xx warnings (NL-171). SDK 11 (net10.0 + net11.0): clean for both configs before the last integration fixes and for Release after them. `dotnet format --verify-no-changes` clean.
+- Tests (net10.0): **10839** non-Docker per config, no skips (Domain 3516, Application 2942, Integration 932, Infrastructure.Bitcoin 1348, Daemon 755, Serialization 613, Infrastructure 455, Bolt11 278). Release.Native all green on the first run; reruns after the fixes: Release.Native 3 flakes (`GossipGraphReloadTests` x2 NL-466, `GossipFloodTests` NL-382), Release 2 (`GraphPathfinderTests` NL-434, `GossipGraphReloadTests` NL-466), plus `PeerManagerConnectTests` once (NL-482), all green alone. Both 10k-seed `Category=Long` simulators green.
+- Docker (net10.0, in-container runner with `--network host`, SQL Server skipped): CLN **69/70** after reruns (+4 `Explicit`; Proof SPR `ClnSpliceRbfTests` 5/5 alone after the fix, `ClnSpliceTests`, `ClnSpliceReestablishTests`, `ClnDualFundTests` green; the failure is `ClnQuiescenceTests.Given_OurHtlcInFlight_*`, NL-477, also alone); LND (Postgres only) **72/73** (`NormalOperationFlowTests.Given_TrimmedHtlc_*` once, class 8/8 alone, NL-504); on-chain legacy + anchors **47/47** incl. `OnchainSpliceTests` (+2 `Explicit`); `BackupRestoreFlowTests` **6/6**; gossip collection **30/32** in the full run, the 2 `Day0UpgradeInPlaceTests` and `SpliceLndObserverTests` green after a0800ac2 (`Day0FlowTests` with the RBF step green); ABCD **3 x 10/10** (two earlier attempts failed building the network: NL-505 and the LNUnit bitcoind start). Not run: SQL Server tests and the `MultiNodeHarnessTests` server-database theory (NL-429).
+
+### Carried into the next wave (after spr)
+
+- **Splicing** (user priority): the D13 decision (`OptionSplice` + `OptionQuiesce` Optional by default): Proofs SP1, SP2, SPR and the LND observer check are green; settle NL-477 first. Follow-ups: NL-488 (announcement flag writer), NL-493 (persisted reorg alert, depth-watcher reorg), NL-496 (restart variants and Docker cases), NL-507 (auto-bump state), NL-508 (RBF test gaps), NL-509, NL-510 (fresh inputs in an RBF), NL-515 (config template keys), NL-480, NL-483; CLN-side NL-502, NL-511.
+- **Real-funds readiness:** NL-514 (non-loopback inbound peer saved at port 9735), NL-498; the Mutinynet day-0 rehearsal per `DAY0_RUNBOOK.md` with the spr build (step 6b is the splice RBF drill).
+- **Dual funding:** DF3 (not scheduled), NL-473, NL-474; a zero-contribution dual-funded RBF against CLN (NL-503 residue).
+- **Quiescence:** NL-477, the rest of NL-470, NL-467, NL-468, Proof Q (d) against LND 0.20.
+- **Goal (BOLT 7) and the mainnet gate** (unchanged): NL-417, NL-360, NL-376 (medium), NL-416, NL-418..NL-425, NL-345, NL-346 (partial), NL-357, NL-361.
+- **lh1 follow-ups** (unchanged): NL-461, NL-462, NL-463, NL-460, NL-464, NL-458.
+- **Test and build hygiene:** flakes NL-504, NL-505, NL-512, NL-513 (new), NL-491, NL-499, NL-500, NL-501, NL-482, NL-465, NL-466, NL-469, NL-471, NL-472, NL-434, NL-445, NL-382, NL-394; NL-429.
+- **Other open:** NL-285, NL-286; NL-451, NL-452; NL-433, NL-435; NL-446; security NL-224, NL-436..NL-439; NL-440; NL-332; the rest of `REMAINING_WORK.md`.
+
+### Wave sp2 (splicing completion, `SPLICING_PLAN.md` wave SP2, plus backups across splices and the day-0 proofs): integrated into `wip/fafo` @ `31950b81` (2026-09-27), gates GREEN except known and order-dependent Docker cases that pass alone
+
+Plan: [`SPLICING_PLAN.md`](SPLICING_PLAN.md) wave SP2 (SP2-A..D, Proof SP2) plus lane SP2-E (static channel backups and peer storage across splices and dual-funded opens, NL-478) and lane SP2-F (day-0 Docker proofs, `DAY0_RUNBOOK.md`), six lanes on the SP2-0 contracts (`81e337f8`, lane `3560f3a9`), each with a review/fix step; SP2-C was the migration owner and shipped none. 29 commits on top of `01e7d6c0`, cherry-picked with `-x` in the order contracts → SP2-C → SP2-A → SP2-B → SP2-E → SP2-D → SP2-F (conflicts only in the Application and Domain `CLAUDE.md` files). `OptionSplice`, `OptionQuiesce` and `OptionDualFund` stay No and experimental (D13 not applied).
+
+| Lane | Result | `wip/fafo` SHAs (lane SHAs) | Ledger |
+|---|---|---|---|
+| Contracts SP2-0 | done | 81e337f8 (3560f3a9) | — |
+| SP2-A reestablish | done (T3 partial): planner SP-RE-01..06, byte-identical splice CS / `tx_signatures` retransmission (stored rows after a restart), TLV 5 processed, unknown `next_funding` through the driver's echo guard, `SpliceConformanceTests` SP-T-03..11; review: stored `tx_signatures`, aborted splice's funding row discarded, bit 0 after a lock | 059383f4, a887c488, ff87bd93 (ba62a09c, 49349d13, 6b4dfb4b) | NL-021, NL-037 partial; NL-484, NL-488, NL-496, NL-499, NL-500 |
+| SP2-B lock + gossip | done: full `splice_locked`, 72-block `RetiredScidMap`, `channel_update` on the new SCID, re-announcement at 6 confirmations with the current keys; review: halves reset in the lock's save, alias-only channels keep their real SCID unretired | 64374dd0, 505a3b90 (7f8070b4, ebd8b65c) | NL-478 fixed (with SP2-E); NL-487, NL-489, NL-490, NL-491, NL-495 |
+| SP2-C BOLT 5 across fundings (migration owner, none needed) | done (T4 partial): `ClassifyAny`, force close on either funding, revocation log and resolvers per funding, reorged-out close retired, reorg alert; Docker `OnchainSpliceTests` 5/5 | 7bfeb108, 768f8642, 82b98af3, 2b6910ac, b9bd0183, 9af8307e, c8d4257d, ba5bb413, d5e13781 (38fa66ec, af5f88b6, edacca02, bb9bb42b, 59b8c885, 334445e1, c789a296, e93342c5, a7a7d112) | NL-479 fixed; NL-492, NL-493, NL-494, NL-501 |
+| SP2-D IPC + Proof SP2 | done: `listchannels` fundings (key 23) and retired SCIDs (24); `ClnSpliceReestablishTests` (Proof SP2) 11/11 against CLN v26.06.8 after integration | 71df7272, d786e4f8, 1339ed01 (b49ee0e2, 7fe7cd7b, a2f0b87d) | NL-021 partial; NL-496 |
+| SP2-E backups across splices | done: SCB entries with the current funding, key index and pending splices, restore follows splice spends, rewrite at the lock, peer storage blob v2, every signed dual-funded RBF candidate; CLN `ClnSpliceBackupRestoreTests` | 252063df, ba8ecfd6, 5f078964 (903f5236, aa881b2e, b1131684) | NL-478 fixed |
+| SP2-F day-0 proofs | done: `Day0FlowTests`, `Day0UpgradeInPlaceTests` (pre-sp1 database upgraded in place), `DAY0_RUNBOOK.md` | c8d6ad6b, 3d0240ee, af6b1bcd (ae8d789a, f72331ba, f00408a6) | NL-021, NL-037 partial; NL-497, NL-498 |
+| Integration | retired map loaded before the peers and pruned at the tip (a31c6c0d); pending splices restored on reload and the negotiation resumed on `channel_reestablish` (990d3381); Proof SP2 (c) gossip flush and CLTV margin (7abc96b2); day-0 step 5 (a) expectation (db276852); test guide (31950b81) | a31c6c0d, 990d3381, 7abc96b2, db276852, 31950b81 | NL-484, NL-487 fixed; NL-485 (= NL-472), NL-486 |
+
+Gates at `31950b81`:
+- Build: SDK 10: Release and Release.Native, 0 errors, the **5** baseline CS86xx warnings (NL-171). SDK 11 (net10.0 + net11.0): Release and Release.Native, 0 errors, the same 5 per target. `dotnet format --verify-no-changes` and `scripts/check-sln-configs.py` clean. No schema change.
+- Tests (net10.0): **10626** non-Docker per config, no skips (Domain 3447, Application 2853, Infrastructure.Bitcoin 1348, Integration 919, Daemon 713, Serialization 613, Infrastructure 455, Bolt11 278). Release.Native 10626/10626; Release 10624/10626 with `GossipFloodTests` (NL-382) and `GraphPathfinderTests` (NL-434) passing alone; earlier runs also hit `GossipGraphReloadTests` (NL-466) and `ChannelRestoreServiceTests.Given_TheConnectBudgetSpent_*` (NL-472), both green alone. Both 10k-seed `Category=Long` simulators (commitments and splicing) green.
+- Docker (net10.0, in-container runner with `--network host`, one process at a time, SQL Server skipped): CLN **65/68** (+1 `Explicit`; Proof SP2 11/11, `ClnSpliceTests`, `ClnDualFundTests`, `ClnSpliceBackupRestoreTests`, `ClnPeerStorageTests`; failures: `ClnQuiescenceTests.Given_OurHtlcInFlight_*` NL-477 (also alone), `ClnCloseTests.Given_ChannelClnFunded_*` and `ClnInteropTests.Given_ClnFundsAtItsOwnEstimate_*` order-dependent, 15/15 alone, NL-486); LND **69/72** in the full run (`ReestablishFlowTests` x2 NL-469 and `ChannelPolicyPublicFlowTests` whose fixture failed to start; 4/4 on class reruns); on-chain legacy **29/29** incl. `OnchainSpliceTests` 5 (2 `Explicit` not run); anchors **18/18**; `BackupRestoreFlowTests` **6/6**; gossip **28/28**; Day0 **3/3**; ABCD **3 x 10/10**. Not run: SQL Server tests and the `MultiNodeHarnessTests` server-database theory (NL-429).
+
+### Carried into the next wave (after sp2)
+
+- **Splicing** (user priority): wave SPR (splice RBF, NL-481, NL-489), then D13 (`OptionSplice` + `OptionQuiesce` Optional by default; Proof SP2 is green, so this is a decision: check an LND 0.20 peer learning a spliced channel (NL-496) and settle NL-477 first). Follow-ups: NL-488 (bit 0 flag never stored, dead fallbacks), NL-490, NL-492, NL-493 (SP2-C-T4 remainder), NL-494, NL-495, NL-496, NL-480, NL-483.
+- **Real-funds readiness (from the day-0 proofs):** NL-497 (medium: a loopback inbound peer is not saved and its channels are forgotten at a restart), NL-498 (the peer's `channel_update` of our channel reaches our other peers only as relayed gossip).
+- **Dual funding:** DF3 (not scheduled), NL-473, NL-474; a dual-fund RBF of a public channel.
+- **Quiescence:** NL-477, the rest of NL-470, NL-467, NL-468, Proof Q (d) against LND 0.20.
+- **Goal (BOLT 7) and the mainnet gate** (unchanged): NL-417, NL-360, NL-376 (medium), NL-416, NL-418..NL-425, NL-345, NL-346 (partial), NL-357, NL-361.
+- **lh1 follow-ups** (unchanged): NL-461, NL-462, NL-463, NL-460, NL-464, NL-458.
+- **Test and build hygiene:** flakes NL-486, NL-491, NL-499, NL-500, NL-501 (new), NL-482, NL-465, NL-466, NL-469, NL-471, NL-472, NL-434, NL-445, NL-382, NL-394; NL-429.
+- **Other open:** NL-285, NL-286; NL-451, NL-452; NL-433, NL-435; NL-446; security NL-224, NL-436..NL-439; NL-440; NL-332; the rest of `REMAINING_WORK.md`.
+
+### Wave sp1 (splicing core, dual-funded open, channel policies; `SPLICING_PLAN.md` wave SP1 and wave DF's DF1/DF2): integrated into `wip/fafo` @ `3660bff2` (2026-09-27), gates GREEN except one CLN quiescence case that also fails before the wave
+
+Plan: [`SPLICING_PLAN.md`](SPLICING_PLAN.md) wave SP1 (SP1-A..E, Proof SP1) plus lane SP1-F (wave DF: DF1, DF2, Proof DF) and lane SP1-G (per-channel routing policies), seven lanes on the SP1-0/DF-0 contracts (`52338a14`, lane `5ad7acb4`), each with a review/fix step; SP1-C was the migration owner (`AddSpliceFundings`, all three providers: `ChannelFundings`, per-funding `Commitments`/`RevokedCommitments` keys, `ChannelPolicies`, the dual-funding columns; hand-written data step, guarded `Down`). 48 commits on top of `03b9a664`. Lane commits cherry-picked with `-x` in the order contracts → SP1-C → SP1-A → SP1-B → SP1-D → SP1-F → SP1-G → SP1-E; for SP1-D only its own commits (its merge commits, its "scratch: merge sp1-b" commit and the empty `c75157ae` skipped). Conflicts: the Domain/Application/Client `CLAUDE.md` files, the `CommitmentSigned` case in `ChannelManager` (splice receiver check first, then the dual-fund check) and `ClientApp` (both command sets kept). Integrator commits: **d778d100** `AddDualFundingServices()` in `AddApplicationServices`; `SpliceOptions`, `DualFundingOptions` (`Node:DualFund`), `AddSpliceIpcServices()`, `AddChannelPolicyIpcServices()` in `AddNltgNodeServices`; `Splice` and `Node:DualFund` template keys; `ChannelPolicyStore.LoadAsync` before `PeerManager` starts and `SpliceDepthWatcher.CatchUpAsync` after the chain monitor (daemon and `NLightningTestNode`); `ThreeNodeHarness.HookedUnitOfWork` forwards the fundings and policies repositories; the dual-funded RBF reads the s64 contribution; the policy composition test on a migrated SQLite file. **2ba4fe09** two bugs Proof SP1 found against CLN: the locked splice's SCID (from the confirmation's block and index, set on the funding row, `ChannelModel` and the signer) and the anchors built on the original funding keys (CLN "Bad commit_sig" on the first post-lock commitment; `ChannelModel.LocalFundingPubKey`/`RemoteFundingPubKey` now return the current funding's keys, used by `CommitmentTransactionModelFactory` and `AnchorCpfpService`). **3660bff2** Domain/Application `CLAUDE.md`. `OptionSplice`, `OptionDualFund` and `OptionQuiesce` stay No and experimental. `ClientCommand`: SpliceIn **33**, SpliceOut **34**, SetChannelPolicy **35**, GetChannelPolicy **36** (next free **37**).
+
+| Lane | Result | `wip/fafo` SHAs (lane SHAs) | Ledger |
+|---|---|---|---|
+| Contracts SP1-0/DF-0 | done | 52338a14 (5ad7acb4) | — |
+| SP1-A wire + batching | done: 77/80/81/127 and `channel_reestablish` TLV 5 read strictly, s64 contributions, `start_batch` grouping in the peer inbound loop gated on negotiated `option_splice`, partial batch dropped with its connection | 830610fc, e9f17f6b, 15099a4c, acbab68b (725e3811, d2a968ad, 783abb59, 0f575e6d) | NL-021, NL-037 partial; NL-475, NL-476 fixed; NL-481 |
+| SP1-B engine | done: several fundings, batched CS + one RAA, splice commitment step, lock/discard, validation on every funding, splicing simulator (500 seeds, 10k Long); review: `start_batch` gated before reestablish, shutdown held while a splice is unlocked, lenient receive reserve on a spliced funding, `funding_txid` from the engine | c2ff9279, d37427ae, b50bdfbc, c7936b7e, 1cd7515d, 29b4ae25 (546a3feb, 832108ce, 826c46d2, 28317176, d8b5a13b, b666ce28) | NL-021 partial; NL-480, NL-483 |
+| SP1-C signer + schema (migration owner) | done: per-funding keys `m/0'/i'`, SP-I1 shared-input guard, per-funding S1, `AddSpliceFundings` ×3, funding and policy repositories, revocation log read per funding, Postgres round trip in `Docker/PostgresTests` | be14108b, 01b70bf1, e33ae3d2, 48b0339f (095947c2, 4c047ac7, 3eb2dbc9, bc7a8133) | NL-021, NL-037 partial; NL-478, NL-479 |
+| SP1-D negotiation | done: `SpliceRules` (65 rows), `SpliceService` and handlers over the IT driver, splice harness on the real engine (SP-T-01/02), minimal `splice_locked` with `SpliceDepthWatcher`, the funding output moved at the lock, our own splice tx not a close; NL-470 seams | 7410e221, 940da49c, 4577c997, c7badd17, a00b8cbe, 957c1519, cf4db235, 11eeced9, df9a869a, ccb98862, 9cbd7bac (820cb401, 78125ab8, 1d51ff3e, 956eec3d, 2a78c7a5, 7ea75ab9, d356d27b, 05f70f86, 47b06f99, cee102c8, 5f729e95) | NL-021 partial; NL-470 partial |
+| SP1-E IPC + Proof SP1 | done: `splicein`/`spliceout`; `ClnSpliceTests` 5/5 against CLN v26.06.8 after 2ba4fe09 | 03691f28, b22e204e, d7c77659 (6a913611, 99843709, 3b0d1ca8) | NL-021 partial |
+| SP1-F dual funding (DF1, DF2) | done: v2 channel id, `open_channel2`/`accept_channel2`, `DualFundHost`, first commitment, RBF of an unconfirmed open (off by default), `next_funding` retransmission, `openchannel --dual-fund`; Proof DF `ClnDualFundTests` green | 966cad6e, c9603fb9, 27cca704, 7b325699, 5e49fdc3, d90dd68c, d618dbf3, 7c109ca2, d934a566, 01bc76e0, e45b61b4, c6a4a779, 17066201 (516cbf08, afbd25f0, 21d23fa7, 106d5318, 8a4d19e0, 3486beaa, 8312a83d, 62319f8a, d56e2633, 32801ad0, 3f2292e5, 63eab891, b141dbc4) | NL-037 partial |
+| SP1-G channel policies | done: `setchannelpolicy`/`getchannelpolicy`, fresh `channel_update` on change, per-channel forwarding checks, effective policy in `listchannels`, replaced policies honoured 10 minutes; Docker `ChannelPolicyFlowTests`, `ChannelPolicyPublicFlowTests` against LND | af9efdd7, 2859dfb1, 24d3a08e (dc390ac2, 7acaeca3, e44a81a3) | — |
+| Integration | registrations, startup ordering, SCID at the lock, anchors on the current funding keys | d778d100, 2ba4fe09, 3660bff2 | NL-470 partial; NL-477, NL-478, NL-482 |
+
+Gates at `3660bff2`:
+- Build: Release and Release.Native, net10.0 only (SDK 10.0.103; **net11.0 not built**, no SDK 11 on the integration machine), 0 errors, only the **5** baseline CS86xx warnings (NL-171). `dotnet format --verify-no-changes` and `scripts/check-sln-configs.py` clean. Schema: `AddSpliceFundings` on all three providers, `HasPendingModelChanges` false (the SQL Server migration was never run).
+- Tests (net10.0): **10404** non-Docker per config, no skips (Domain 3389, Application 2709, Infrastructure.Bitcoin 1348, Integration 908, Daemon 704, Serialization 613, Infrastructure 455, Bolt11 278). Flakes that passed with their class alone: `GossipGraphReloadTests` (NL-466), `PeerManagerConnectTests.Given_TwoNodes_When_OneConnectsToTheOther_*` ("Expected init as the first message", NL-482). Both 10k-seed `Category=Long` simulators (plain and splicing) green.
+- Docker (net10.0, in-container runner with `--network host`, one process at a time, SQL Server skipped): CLN **56** run + 4 `Explicit`: `ClnSpliceTests` (Proof SP1) 5/5 (after failing 5/5 before 2ba4fe09), `ClnDualFundTests` (Proof DF) green, `ClnCloseTests` and `ClnInteropTests.Given_ClnFundsAtItsOwnEstimate_*` failed once and passed on class reruns, **`ClnQuiescenceTests.Given_OurHtlcInFlight_*` fails every run, also on `03b9a664`** (CLN errors "STFU but you still have updates pending?" when its fulfill crosses our `stfu`, NL-477); LND suite **70/70** (Postgres only; incl. `ChannelPolicyFlowTests`, `ChannelPolicyPublicFlowTests`, `PostgresTests` with the `AddSpliceFundings` round trip); `BackupRestoreFlowTests` **6/6**; on-chain legacy + anchors **40/40** (2 `Explicit` not run); gossip **28/28**; ABCD **3 x 10/10**; Docker.Utils **2/2**. Not run: SQL Server tests and the `MultiNodeHarnessTests` server-database theory (NL-429).
+
+### Carried into the next wave (after sp1)
+
+- **Splicing wave SP2** (user priority, `SPLICING_PLAN.md`): reestablish across a splice (SG7, SP-RE, TLV 5 processing, byte-identical retransmission of the splice CS and `tx_signatures`), the full `splice_locked` rules, announcements of a spliced public channel and the old-SCID map (SG10; NL-478 for the funding keys the backup, announcement and signing-info readers still take), BOLT 5 across fundings (SG6 classifier, force close with a pending splice, NL-479 revocation log per funding), `listchannels` fundings, Proof SP2; then wave SPR (splice RBF, NL-481) and D13 (`OptionSplice` + `OptionQuiesce` Optional by default only after Proof SP2).
+- **Splicing follow-ups:** NL-480 (D9/Q3 receive reserve against CLN/Eclair), NL-483 (CS/RAA handlers defer their batch), the SQL Server `AddSpliceFundings` run (NL-429).
+- **Dual funding:** DF3 (`OptionDualFund` out of the experimental set; not scheduled), NL-473, NL-474; a dual-fund RBF of a public channel.
+- **Quiescence:** NL-477 (in-flight case against CLN; ask CLN's splicing lead with NL-467, NL-468), the rest of NL-470 (test routing, `InteractiveTxSessions` cleanup), Proof Q (d) against LND 0.20.
+- **Goal (BOLT 7) and the mainnet gate** (unchanged): NL-417, NL-360, NL-376 (medium), NL-416, NL-418..NL-425, NL-345, NL-346 (partial), NL-357, NL-361.
+- **lh1 follow-ups** (unchanged): NL-461, NL-462, NL-463, NL-460, NL-464, NL-458.
+- **Test and build hygiene:** the net11.0 build of this wave (not run); flakes NL-482 (new), NL-465, NL-466, NL-469, NL-471, NL-472, NL-434, NL-445, NL-382, NL-394; NL-429.
+- **Other open:** NL-285, NL-286; NL-451, NL-452; NL-433, NL-435; NL-446; security NL-224, NL-436..NL-439; NL-440; NL-332; the rest of `REMAINING_WORK.md`.
+
+### Wave qit (quiescence + interactive-tx, `SPLICING_PLAN.md` waves Q and IT): integrated into `wip/fafo` @ `b7d14056` (2026-09-27), gates GREEN
+
+Plan: [`SPLICING_PLAN.md`](SPLICING_PLAN.md) waves Q (Q1-T1..T6, Proof Q) and IT (IT1..IT4), run as one wave of seven lanes on the Q-0/IT-0 contracts (`9355ad92`, from lane `9c0b6f59`), each with a review/fix step; IT-C was the migration owner (`AddInteractiveTxSessions`, all three providers). Lane commits cherry-picked with `-x` in the order IT-C → Q-A → Q-B → IT-A → IT-B → IT-D → Q-C (conflicts only in the Domain/Infrastructure `CLAUDE.md` files and `ChannelManager.cs`, both cases kept). Integrator commits: **ef806980** `AddQuiescenceServices()`, `AddInteractiveTxContributorServices()`, `AddInteractiveTxServices()` in `AddApplicationServices` and `AddInteractiveTxBitcoinServices()` in `AddBitcoinInfrastructure`; orphaned interactive-tx reservations released at startup after the chain monitor (daemon and `NLightningTestNode`); `QuiescenceService` on Q-A's `QuiescenceRules`; a Daemon.Tests composition test. **c502fdb6** `ChannelManager.OnPeerDisconnectedAsync` ends the peer's interactive-tx negotiations under each channel's lock. **b7d14056** `IInteractiveTxDriver.AbortQuiescence` ends a probe we started with our `tx_abort`; a peer `update_*` after its `stfu` gets warning + close (Q-S-04 receive, `ThrowIfUpdateAfterPeerStfu`); Proof Q adapted to CLN (below). `OptionQuiesce` stays No and experimental, no `OptionSplice` yet, `OptionDualFund` stays experimental; no new IPC (next free `ClientCommand` stays **33**).
+
+| Lane | Result | `wip/fafo` SHAs (lane SHAs) | Ledger |
+|---|---|---|---|
+| Q-A wire + rules (Q1-T1, T2) | done: pure `QuiescenceRules` (Q-S-01..04, Q-R-01/02/05, 78 table cases), `stfu` routed by `ChannelManager` to the single `StfuMessageHandler` under the lock behind the B2-RE-07 gate, `PeerService` arm removed | 9303e6d4, 3380b680, 3f230897 (4c02c96e, d405618b, eed92b03) | NL-019 (routing), NL-042 partial; flake NL-471 |
+| Q-B service (Q1-T3..T6) | done: `QuiescenceService` bound to its connection, owed-`stfu` release after the handler's replies (`IStfuReleaseScheduler`), update gate `ChannelQuiescentException`, 60 s / idle `QuiescenceTimeoutMonitor` (a timed-out quiescence keeps blocking until the disconnect), unsolicited `stfu(0)` refused; `QuiescenceHarnessTests` 9 + switch proofs | 6534018d, 5614a07f, 5b9d079e, ac3a1aa8 (5b7869c5, 6dab50ad, 912884bf, cf0fc84a) | NL-042 partial; flake NL-472; seams NL-470 |
+| Q-C Docker Proof Q | done, adapted: CLN v26.06.8 checked empirically (plan §10 Q1, Q7); 5 facts in `ClnQuiescenceTests` | 34664a14, 65a20108 (1b2a685b, 32a5f007) | NL-042 partial; NL-467, NL-468 |
+| IT-A engine (IT1-T1..T4) | done: `InteractiveTxSession` + `InteractiveTxRules`, `TxSignaturesOrder`, `CollaborativeFeeCalculator` (BOLT 3 Appendix F numbers), `InteractiveTxRbfRules` (+25 sat/kw rule of #1327); old validators and service deleted | 081d599f, 8ee516c5, 21be3935 (15bcce9c, 29fe773b, de1e1478) | NL-219, NL-041 fixed; NL-037 partial; NL-473, NL-474; NL-465 seen |
+| IT-B Bitcoin side (IT2-T1..T3) | done: `PrevTxInspector`, `InteractiveTxBuilder` BOLT 3 Appendix G byte-exact, `WalletInteractiveTxContributor` over fee-input reservations with the durable IT-ABT-01 guard and the startup orphan sweep | 8ed3aaa8, acd0f711 (381388b8, bb52cc4f) | NL-041 fixed, NL-037 partial |
+| IT-C wire + schema (IT3, migration owner) | done: `shared_input_txid`/`shared_input_signature` TLVs read strictly; `InteractiveTxSessions` table, repository, `AddInteractiveTxSessions` x3, `HasPendingModelChanges` false x3 | 940baca2, 99be2451, f513a369 (6086a332, f25a85cf, 5816236c) | NL-037 partial |
+| IT-D driver + handlers (IT4-T1..T3) | done: `InteractiveTxDriver` (persist before send, resume, RBF floor, `tx_abort` echo rules), nine `tx_*` handlers and `ChannelManager` cases 66-74, `InteractiveTxHarnessTests` on the reference and the Domain engine | 471d7e6b, 633980df, 65fb5b21, f03470fb (a40202ee, 5ca687d9, 5656d3c2, 21224e62) | NL-037 partial |
+| Integration | registrations, disconnect wiring, probe exit, Q-S-04 receive, Proof Q adaptation | ef806980, c502fdb6, b7d14056 | NL-467..NL-470 |
+
+Proof Q deviations (CLN v26.06.8): `stfu_channels`/`abort_channels` answer error 354 ("Peer does not support splicing") because we advertise no splice bit, so (a) starts CLN's quiescence with `dev-quiesce` and ends it with our `tx_abort` (CLN acks and resumes on the same connection, no reestablish); CLN's `tx_abort` with our echo is proven in-process only (NL-468). In (c), CLN marks a fulfill queued while quiescent as sent after its channeld restart and sends it only after the next reestablish, so the proof reconnects when the payment is still in flight 20 s after `tx_abort` (NL-467). CLN has no idle quiescence timeout.
+
+Gates at `b7d14056`:
+- Build: Release and Release.Native, net10.0 (SDK 10) and net10.0 + net11.0 (SDK 11), 0 errors, only the **5** baseline CS86xx warnings (NL-171). `dotnet format --verify-no-changes` and `scripts/check-sln-configs.py` clean. Schema: `AddInteractiveTxSessions` on all three providers, `HasPendingModelChanges` false.
+- Tests (net10.0): **9884** non-Docker per config, no skips (Domain 3246, Application 2535, Infrastructure.Bitcoin 1317, Integration 891, Daemon 604, Serialization 577, Infrastructure 436, Bolt11 278). Release: one failure, the known flake `GossipIngressTests.Given_AnAnnouncementGivenUpAfterItsRetries_*` (NL-445), 3/3 alone. Release.Native: `GossipGraphReloadTests.Given_ASpentChannel_When_TheNodeRestartsAndBlocksPass_*` failed in both full runs, 11/11 alone (NL-466). Long simulator 1/1.
+- Docker (net10.0, in-container runner with `--network host` except CLN, one suite at a time, SQL Server skipped): CLN **44/44** (incl. `ClnQuiescenceTests` 5, Proof Q), LND suite **73/74** in the full run (incl. `PostgresTests` 16 with the new pre-`AddInteractiveTxSessions` schema case; the miss is `ReestablishFlowTests.Given_OurNodeRestarts_*`, `GetAlice` found no ready alice, the class alone 3/3, NL-469), ABCD **3 x 10/10**, gossip **28/28**, on-chain legacy + anchors **40/40** (2 `Explicit` not run). Not run: the `MultiNodeHarnessTests` server-database theory (NL-429).
+
+### Carried into the next wave (after qit)
+
+- **Splicing** (user priority, `SPLICING_PLAN.md`): wave SP1 (splice wire 77/80/81/127, several fundings in the engine, signer and schema `AddSpliceFundings`, negotiation, `splicein`/`spliceout` IPC, Proof SP1 against CLN), then SP2 (reestablish, `splice_locked`, gossip, BOLT 5 across splices) and SPR; `OptionQuiesce` and the new `OptionSplice` leave the experimental set together after Proof SP2 (D13). Gaps SG3..SG10 of plan §2.2 are still to be filed as NL entries when SP1 starts (NL-021 is the umbrella today).
+- **Quiescence follow-ups:** the seams of NL-470 (call or drop `OnPeerDisconnected`, route `stfu` through `ChannelManager` in `QuiescenceTestPair`, record the uncovered Proof Q cases), CLN findings NL-467 and NL-468 (questions for CLN's splicing lead, §10), Proof Q (d) against LND 0.20 (not attempted).
+- **Interactive-tx follow-ups:** dual funding itself (optional wave DF, NL-037) with an interop proof of the interactive-tx layer; NL-473 (negotiated dust limit), NL-474 (dead constants); `shared_input_signature` validity is SP1's (NL-021).
+- **Goal (BOLT 7) and the mainnet gate** (unchanged): NL-417, NL-360, NL-376 (medium), NL-416, NL-418..NL-425, NL-345, NL-346 (partial), NL-357, NL-361.
+- **lh1 follow-ups** (unchanged): NL-461, NL-462, NL-463, NL-460, NL-464, NL-458.
+- **Test and build hygiene:** flakes NL-465, NL-466 (now also the pruner case on Release.Native), NL-469, NL-471, NL-472, NL-434, NL-445, NL-382, NL-394; NL-429.
+- **Other open:** NL-285, NL-286; NL-451, NL-452; NL-433, NL-435; NL-446; security NL-224, NL-436..NL-439; NL-440; NL-332; the rest of `REMAINING_WORK.md`.
+
+### Wave lh1 (hardening: close and wallet safety, BOLT 12 tidy, keysend, restore, ledger hygiene): integrated into `wip/fafo` @ `a6c633f9` (2026-09-27), gates GREEN
+
+Five lanes, each with a review/fix step; l4 was the migration owner (`AddPeerStorageRetrievals`), and l1 also shipped a migration (`AddShutdownHtlcBoundaryAndAddressReservation`, timestamped before l4's). Lane commits cherry-picked with `-x` in the order l4 → l1 → l2 → l3 → l5 on top of `97453cba`. Integrator commit a6c633f9: `AddKeysendIpcServices()` and `AddPeerStorageIpcServices()` in `AddNltgNodeServices`, `AddExpiredBolt12InvoicePruning()` in `ConfigureNltgServices`; `ClientCommand` Keysend **31**, ListPeerStorage **32** (next free **33**); `InvoiceInfoIpcResponse` keys 10 Kind, 11 OfferId, 12 CustomRecords; `listinvoices` prints BOLT 11, BOLT 12 or keysend; `Node:Keysend` template section; the `AddPeerStorageRetrievals` Designers of all three providers re-synced with l1's columns (`PersistenceConfigurationTests` "DiffingEachDesignerModel" had failed on all three).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| l1 channel safety fixes | done: post-shutdown HTLCs failed back (B2-SHUT-S08) with the boundary lowered on reconnection and no fail-back on chain; reserved upfront shutdown script; forgotten/failed funding releases its UTXO locks; every wallet address handed out once; one penalty destination per channel; `BroadcastRefusalRules` abandonment for wallet-only rows, listed by `pendingsweeps` | 79ea3f92, f365bc13, 5aef7305 | NL-279, NL-045, NL-259, NL-280, NL-294 fixed; new NL-461, NL-462, NL-463 |
+| l2 BOLT 12 and onion-message tidy | done: fresh BIP-340 aux randomness, malformed 513 ignored and counted, expired BOLT 12 invoice pruner with an MPP grace, `Offers` template and `listinvoices` kind/offer, `Bolt12Wire` seams deleted, one onion-message codec/path builder with the ports in Domain, CLN v26.06.8 captured vectors, rate-limit harness race | e767fd30, 8035c63b, b9faac3d, c0587be9, 844318cc, e1693d44, 3295f675, a3db0c0a, 84eef9ed | NL-455, NL-444, NL-448, NL-454, NL-453, NL-442, NL-450 fixed, NL-449 follow-up; NL-447 closed; new NL-464 |
+| l3 keysend | done: send and receive with custom records (even ones only at the final hop), on-chain claim of a keysend the switch never accepted, IPC 31; `KeysendHarnessTests`, Docker `KeysendFlowTests` 2/2 against LND 0.20 both ways | f55366ed, 90aea9f9 | new NL-459 (fixed), NL-460 |
+| l4 restore hardening (migration owner) | done: background search for an old funding spend resumed at every start (pruned blocks reported), every known peer address at restore with a bounded synchronous budget, persisted peer-storage retrievals and `listpeerstorage` (32); Docker `BackupRestoreFlowTests` old-spend case | 098eb58b, bd054cae, cfd71631 | NL-430, NL-431, NL-432 fixed |
+| l5 ledger hygiene | done: stale epics closed with evidence (NL-032, NL-072, NL-099, NL-137), re-scopes (NL-012, NL-178, NL-180, NL-276), NL-376 raised to medium | 8e5911bf, e8555c21 | new NL-457, NL-458 |
+| Integration | registrations, command numbers, IPC keys, migration Designer sync | a6c633f9 | — |
+
+Gates at `a6c633f9`:
+- Build: Release and Release.Native, net10.0 and net11.0 (SDK 11.0.100-rc.1), 0 errors, only the **5** baseline CS86xx warnings (NL-171; the MsgPack017 warnings are gone, NL-456). `dotnet format --verify-no-changes` clean. Schema: two migrations on all three providers, `HasPendingModelChanges` false.
+- Tests (net10.0): Release **9236** non-Docker, all pass, no skips (Domain 2869, Application 2361, Infrastructure.Bitcoin 1265, Integration 871, Daemon 603, Serialization 554, Infrastructure 435, Bolt11 278). Release.Native 9235/9236: `PaymentHarnessTests.Given_ShortTimeout_When_TheOutcomeIsLate_*` failed once under load, 5/5 on rerun (NL-465); `GossipGraphReloadTests.Given_GraphWithKnownFundingTxIds_*` failed once in the first Release run, green on 3 reruns and the final run (NL-466). Long simulator 1/1.
+- Docker (net10.0, in-container runner with `--network host`, one suite at a time, SQL Server skipped): LND suite **66/66** (incl. `KeysendFlowTests` 2, `BackupRestoreFlowTests` 3), `MultiNodeHarnessTests` 5/5 facts, CLN **42/42** (incl. `ClnPeerStorageTests` and the offer/onion-message proofs; the Explicit `ClnBolt12CaptureTests` not run), Docker.Utils 2/2, ABCD **3 x 10/10**, on-chain legacy + anchors **42/42** (`ONCHAIN_SUITE=all`, 2 `Explicit` not run), gossip **28/28**. Not run: the `MultiNodeHarnessTests` server-database theory (its SqlServer row cannot be filtered alone, NL-429).
+
+### Carried into the next wave (after lh1)
+
+- **Goal (BOLT 7, pay and get paid over public channels without hints) and the mainnet gate** (unchanged by lh1): the relay proof from a node with a public channel and the mainnet relay default (NL-417); the outbox relay pause (NL-360); the 24 h Mutinynet and multi-day mainnet soaks (NL-376, medium since lh1-l5); NL-416; d12 follow-ups NL-418..NL-425; earlier BOLT 7 follow-ups NL-345, NL-346 (partial), NL-357, NL-361.
+- **Splicing** (user priority): quiescence, interactive-tx and splicing per [`SPLICING_PLAN.md`](SPLICING_PLAN.md) (dual funding NL-037 and splicing NL-042 build on the same interactive-tx layer). Zero-conf and first-class scid-alias are low priority.
+- **lh1 follow-ups:** NL-461 (forget a funder channel whose funding was abandoned), NL-462 (persist UTXO channel locks), NL-463 (address growth, restore gap limit, anchor sweep/CPFP destination per channel), NL-460 (dedicated custom-records column, needs a migration owner), NL-464 (one onion-message metrics path), NL-458 (the `OptionAttributionData` remark).
+- **Close and BOLT 12 follow-ups:** NL-285 (R09 deviation), NL-286 (Docker restart while closing); NL-451, NL-452 (BOLT 12 reachability).
+- **Test and build hygiene:** flakes NL-465, NL-466, NL-434, NL-445, NL-382, NL-394; NL-429 (server-database theory not run); the root `CLAUDE.md` Docker narrative is long and could be condensed.
+- **Other open:** NL-433, NL-435 (restore at height 0); M6 NL-446; security NL-224, NL-436..NL-439; NL-440; attribution_data out of experimental (NL-332); wallet coin control and consolidation; the rest of `REMAINING_WORK.md`.
+
+### Wave B12 (BOLT 12 offers): integrated into `wip/fafo` @ `a3445f3f` (2026-09-27), gates GREEN
+
+Plan: `BOLT12_PLAN.md` wave B12 (B0-B4, Proof B12; its "Wave B12 record" has the deviations). Five lanes on the B12-0 contracts (6f4bdaad), each with a review/fix step; B12-C was the migration owner (`AddBolt12Offers`, all three providers). Lane commits cherry-picked with `-x` in the order C → A → B → D → E (lane E's merge commits left out). Integrator commit a3445f3f: `ClientCommand` CreateOffer **26**, ListOffers 27, DisableOffer 28, PayOffer 29, FetchInvoice **30** (next free **31**); `AddOffersServices()`/`AddOfferSendServices()` after `AddOnionMessageServices()` (the type-64 `InvoiceRequestHandler` becomes an `IOnionMessageHandler`); `AddOfferIpcServices()`/`AddOfferSendIpcServices()` and `Configure<OfferOptions>` (`Offers`) in `AddNltgNodeServices`; both `Bolt12Wire` seams delegate to lane A's codecs; the BOLT 11 fallback removed; the Docker offer proofs use the composed node. No feature bit (plan F-04).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| B12-A codecs (B0) | done except B0-T4: bech32 string format, TLV stream and typed views, validators (fail-closed amounts, odd signature-range elements ignored), Merkle tree; `format-string-test.json`, `offers-test.json`, `signature-test.json` byte-exact | 95066ae5, b7ac3543 | NL-447 (part); new NL-450, NL-451 |
+| B12-B signer (B1) | done: BIP-340 `IBolt12Signer`, payer id derivation, `SignBolt12` with each tag bound to its key kind, blinded-recipient key (not wired); vector signature byte for byte | 3acf5ca6, 80bd155c | NL-447 (part); new NL-455 |
+| B12-C schema (B2, migration owner) | done: `AddBolt12Offers` x3, `OfferDbRepository`, BOLT 12 invoice/payment persistence, nullable `Bolt11`, SQL-side caps, prune entry point | 03c2bfde, ffc5c62b | NL-447 (part); new NL-448 |
+| B12-D receive (B3) | done: `OfferService`, `InvoiceRequestHandler`, invoices over blinded payment paths, final-hop rule, IPC 26-28; `ClnOfferReceiveTests` 4/4 | 61ea7b02, 883a883f, 16019fb9, bf8da622, 5ec25ce9, f01081a8, 59a0072d, c7f0586d, 1e43d24a | NL-447 (part); new NL-452, NL-449 (seen) |
+| B12-E pay (B4) | done: blinded send with MPP and introduction = us, invoice_request/verify, `OfferPaymentService`, IPC 29-30, three-node offer harness; `ClnOfferPayTests` 4/4 | 9e963b82, bc59fa90, 5a99843b, 4fd7d44e, e6248970, 33e49e03, 8ae4c1b8, b0d3f056, 64f2b1db, 52494429, ba314f36 | NL-447 (part), NL-440 partial |
+| Integration | wiring, command numbers, codec seams | a3445f3f | NL-447; new NL-448, NL-453, NL-454, NL-456 |
+
+Gates at `a3445f3f`:
+- Build: Release and Release.Native on net10.0, 0 errors, the same **5** CS86xx warnings (NL-171) plus three pre-existing MsgPack017 warnings (NL-456, since wave O7b); SDK 11 rc1 net10.0 + net11.0 compile check 0 errors. `dotnet format --verify-no-changes` clean. Schema: `AddBolt12Offers` on all three providers, `HasPendingModelChanges` false.
+- Tests (net10.0, Release and Release.Native): **8985** non-Docker, all pass, no skips (Domain 2830, Application 2263, Infrastructure.Bitcoin 1218, Integration 852, Daemon 559, Serialization 551, Infrastructure 434, Bolt11 278). Long simulator 1/1. `OnionMessageHarnessTests`' rate-limit test fails when run alone (NL-449) but passes in the full run.
+- Docker (net10.0, in-container runner with `--network host`, one suite at a time, SQL Server skipped): CLN **39/39** (+3 `Explicit`; incl. `ClnOfferReceiveTests` 4 and `ClnOfferPayTests` 4), LND suite **62/62** (incl. `PostgresTests`), `MultiNodeHarnessTests` 5/5 facts, gossip **28/28**, on-chain legacy + anchors **40/40** (2 `Explicit` not run), ABCD **3 x 10/10**. Not run: `MultiNodeHarnessTests.Given_ServerDatabase_*` Postgres row (NL-429).
+
+### Carried into the next wave (after B12)
+
+- **Goal (BOLT 7, pay and get paid over public channels without hints) and the mainnet gate** (unchanged by B12): the relay proof from a node with a public channel and the mainnet relay default (NL-417); the outbox relay pause (NL-360); the 24 h Mutinynet and multi-day mainnet soaks (NL-376); NL-416; d12 follow-ups NL-418..NL-425; earlier BOLT 7 follow-ups NL-345, NL-346 (partial), NL-357, NL-361..NL-372, NL-374, NL-375, NL-377, NL-378, NL-407; the `AllowPublicChannelsOnMainnet` decision; BOLT 5 follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336 and anchors NL-384 (partial), NL-386, NL-387, NL-389..NL-391 (none a fund-safety blocker); the canary runbook's accepted gaps (`MAINNET_CANARY_RUNBOOK.md`).
+- **Close the BOLT 12 epic (NL-447):** the expired-invoice prune timer (NL-448, medium: unbounded rows from any onion-message peer), the CLN-captured vectors B0-T4 (NL-450); then the follow-ups NL-451 (report the vector quirk upstream), NL-452 (reachability: public introduction nodes, surface the fallback warning, D2), NL-453 (delete the `Bolt12Wire` seams), NL-454 (template keys, invoice kind in `listinvoices`), NL-455 (BIP-340 aux randomness); NL-440 remainder (BOLT 11 blinded paths, dummy hops).
+- **Test and build hygiene:** NL-449 (onion message harness rate-limit test fails alone), NL-456 (MsgPack017 warnings; count analyzer warnings in the gate), NL-429, flakes NL-434, NL-445, NL-382, NL-394.
+- **M6 follow-ups** (unchanged): NL-442, NL-444, NL-446; an LND 0.21 forward proof once the fixture moves.
+- **rf1 follow-ups** (unchanged): NL-430, NL-431, NL-432, NL-433, NL-435; security NL-224, NL-436..NL-439.
+- **Beyond:** dual funding (NL-037), attribution_data out of experimental (NL-332), wallet coin control and consolidation, the rest of `REMAINING_WORK.md`.
+
+### Wave M6 (onion messages + on-chain withdraw): integrated into `wip/fafo` @ `641a5fff` (2026-09-27), gates GREEN, `option_onion_messages` ON by default
+
+Plan: `BOLT12_PLAN.md` wave M6 (OM0-OM3, Proof M6; its "Wave M6 record" has the deviations). Five M6 lanes on the M6-0 contracts (b4d3eed3), each with a review/fix step, plus lane W1 (on-chain `withdraw`); no migration. Lane commits cherry-picked with `-x` in the order A → B → C → D → W1 → E (one conflict: `src/NLightning.Application/CLAUDE.md`, both sections kept). The M6 commits cite NL-079 (the plan's parent epic); the ledger records the work on NL-080. Integrator commits: fc686ff0 (`IPeerOnionMessageOutbox` and the `PeerManager` factory setting `MaxOutboxOnionMessagesPerPeer` from `OnionMessages:MaxOutboxPerPeer`, `OnionMessageRateLimiter` limits from `OnionMessageOptions`, `Configure<OnionMessageOptions>`, `AddWithdrawIpcServices()`, the startup `ReleaseOrphanedReservationsAsync` in `NltgDaemonService` and `NLightningTestNode`, lane D's codec copy deleted in favour of lane A's Domain codec), 9639b7cf (composition regression test), 5ae1701c (empty `path_id` in the CLN proof, NL-443), 641a5fff (D9: `OptionOnionMessages` Optional by default, out of `ExperimentalFeatures`, after Proof M6 passed).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| M6-A wire + codecs (OM0) | done: 513 serializer in both factories, strict `onionmsg_tlv` codec, `blinded_path`/`sciddir_or_pubkey` codecs (byte-exact against the BOLT 4 message vector and the `bolt12/offers-test.json` offer_paths), message-path rules | a16baab2, 6aea59de, a99af0d2, db29eccd, 47adc130, 3fdf4b00 | NL-080 (part); new NL-444 |
+| M6-B crypto (OM1) | done: message path builder, packet builder, unwrapper; `blinded-onion-message-onion-test.json` byte-exact (generate, route, packet, every decrypt hop) | abd81802, 7f0afe02 | NL-080 (part); new NL-442 |
+| M6-C transport + rate limiter (OM2-T1/T2) | done: `PeerService` 513 arm and gated send, capped low-priority `PeerOutbox` onion class interleaved with gossip, `IPeerOnionMessageOutbox`, per-peer and global token buckets | 413d420b, 3149da79, 76ee51af | NL-080 (part); new NL-445, NL-446 |
+| M6-D service (OM2-T3..T5, OM3) | done: `OnionMessageService` (forward/deliver/reply, sends through the capped outbox, never awaited), path finder, reply paths, options, meter, three-node harness, the vector through four service nodes | e4c10d9c, b81a1fd9 | NL-080 (part); NL-442 |
+| M6-E Docker Proof M6 | done: `ClnOnionMessageTests` 10/10 against CLN v26.06.8 (CLN as prefix hop and introduction node, `injectonionmessage`, `fetchinvoice` answered with `invoice_error`, our forward along an offer path, our reply path through CLN, rate-limit burst, corrupt HMAC, bit 39) | dcd9d5d8, 365e3128 | NL-080 fixed; new NL-443 fixed |
+| W1 on-chain withdraw | done: `withdraw <address> <amount_sat\|all> [--sat-per-vb N]` (ClientCommand **25**; next free **26**), `WalletSpendService` (anchors reserve kept, `WalletSend` broadcast row, orphaned reservations released); Docker `WithdrawFlowTests` 2/2 against LND | 4446f400, d2fdae94, 42011660 | new NL-441 fixed |
+| Integration | wiring, codec swap, CLN proof fix, D9 flip | fc686ff0, 9639b7cf, 5ae1701c, 641a5fff | NL-080, NL-441, NL-443 |
+
+Gates at `641a5fff`:
+- Build: Release and Release.Native on net10.0, 0 errors, the same **5** CS86xx warnings (NL-171); net11.0 compile check (both configs) 0 errors, no new warnings. `dotnet format --verify-no-changes` clean. No schema change.
+- Tests (net10.0, Release and Release.Native, run after the flip): **8332** non-Docker, all pass, no skips (Domain 2557, Application 2072, Infrastructure.Bitcoin 1190, Integration 746, Serialization 551, Daemon 504, Infrastructure 434, Bolt11 278). Long simulator 1/1.
+- Docker (net10.0, in-container runner with `--network host`, one suite at a time, SQL Server skipped): CLN **33/33** (incl. the 10 `ClnOnionMessageTests`), LND suite (Postgres) **66/66** (incl. `WithdrawFlowTests` 2/2), gossip **28/28**, ABCD **3 x 10/10**, on-chain legacy **24** (2 `Explicit` not run), anchors **18/18**. Proof M6 passed before the flip; the full CLN suite and every other suite ran with onion messages on by default. Not run: `MultiNodeHarnessTests.Given_ServerDatabase_*` Postgres row (NL-429).
+
+### Carried into the next wave (after M6)
+
+- **Goal (BOLT 7, pay and get paid over public channels without hints) and the mainnet gate** (unchanged from rf1): the relay proof from a node with a public channel and the mainnet relay default (NL-417); the outbox relay pause (NL-360); the 24 h Mutinynet and multi-day mainnet soaks (NL-376); NL-416; d12 follow-ups NL-418..NL-425; earlier BOLT 7 follow-ups NL-345, NL-346 (partial), NL-357, NL-361..NL-372, NL-374, NL-375, NL-377, NL-378, NL-407; the `AllowPublicChannelsOnMainnet` decision; BOLT 5 follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336 and anchors NL-384 (partial), NL-386, NL-387, NL-389..NL-391 (none a fund-safety blocker); the canary runbook's accepted gaps (`MAINNET_CANARY_RUNBOOK.md`; withdraw is no longer one).
+- **Wave B12 (BOLT 12 offers, NL-447)** per `BOLT12_PLAN.md`: B12-0 contracts, then B12-A codecs, B12-B signer, B12-C schema (migration owner, `AddBolt12Offers`), B12-D receive, B12-E pay; `ClientCommand` values from **26**. Blinded send exists since rf1; introduction = us and MPP over blinded paths (NL-440) belong to B12-E.
+- **M6 follow-ups:** NL-442 (one codec, one path builder, the service on `IOnionMessageUnwrapper`, interfaces to Domain, the harness on the real builder/limiter/outbox), NL-444 (malformed 513 closes the connection), NL-446 (rate-limit tuning, queue gauge); an LND 0.21 forward proof once the fixture moves.
+- **rf1 follow-ups** (unchanged): NL-430, NL-431, NL-432, NL-433, NL-435; security NL-224, NL-436..NL-439; test infra NL-429 and flakes NL-434, NL-445, NL-382, NL-394.
+- **Beyond:** dual funding (NL-037), attribution_data out of experimental (NL-332), wallet coin control and consolidation, the rest of `REMAINING_WORK.md`.
+
+### Wave rf1 (operations before real funds + route blinding M5): integrated into `wip/fafo` @ `be9fd000` (2026-09-27), gates GREEN
+
+Five lanes, each with review/fix steps; R2 was the migration owner (`AddPeerStorage`, all three providers). Lane commits cherry-picked with `-x` onto `88d046c7` in the order R2 → R1 → R3 → R4 → M5; integrator commits aa9d67e0 (wires `AddChannelBackupNodeServices`, `AddChannelBackupFile`, `AddOperatorIpcServices`, `AddPeerStorageServices` + `PeerStorageOptions`; `option_provide_storage` Optional; `IPeerStorageService.StopAsync` after the peers stop; `disconnect` renumbered 21 → **24** because R1 took 21-23, next free ClientCommand **25**; SR-19 startup reconciliation of the channel key index with `GetHighestLocalKeyIndexAsync`; the reserver loop fix NL-427) and be9fd000 (a peer_storage blob sent before the channel exists is held, NL-428).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| R1 static channel backup and restore | done: encrypted SCB, atomic `channel.backup`, IPC `exportchanbackup` 21 / `verifychanbackup` 22 / `restorechanbackup` 23, recovery channels + data-loss reestablish, spend found before restore, to_remote swept; Docker `BackupRestoreFlowTests` 4/4 | 781fe96a, 38742d78, 6fb5326c, 958304ad | new NL-426 fixed (commits cite NL-417, renumbered); new NL-430, NL-431, NL-435 |
+| R2 peer storage (migration owner) | done: messages 7/9, `PeerStorageBlobs`, provider and client sides, data-loss hold; Docker `ClnPeerStorageTests` | 136a4cf5, 2769b615, 34d48a9d, b5dee649, 0b13c1b8, ae5d3389 (+ be9fd000) | NL-010 fixed; new NL-428 fixed, NL-432, NL-433, NL-434 |
+| R3 security review | done: `docs/agents/SECURITY_REVIEW.md`, v3 key files (BIP32 master, node key on its own path), key-file/config permissions, persisted key index, IPC hardening, password over stdin, descriptors | db262e2a, 4a9a6362, d941a084, 65090183, 5cf52897, 7e1a44ae, 3fba3e6c, 9cb306e5, 8c66499b | NL-148, NL-159, NL-212 fixed; NL-224 open; new NL-436, NL-437, NL-438, NL-439 |
+| R4 operator IPC | done: `disconnect` (24), channel/HTLC counts in `listpeers`/`info`, temp-channel cleanup, `not_enough_balance` mapping | bdfc90c0, d60c4be5, c74d3173 | NL-152, NL-392, NL-393 fixed |
+| M5 route blinding | done: crypto + codec byte-exact, blinded forward/receive/send, own blinded paths, `option_route_blinding` Optional; Docker `RouteBlindingFlowTests` 4/4 against LND 0.20 | 6b2c3d61, 5d6e9770, f696e3bd, 01aff502, 8675ca37, 2be510fc, eaeb2797 | NL-079, NL-077, NL-026, NL-339 fixed; new NL-440 |
+| Integration | wiring, renumbering, SR-19, NL-427, NL-428 | aa9d67e0, be9fd000 | new NL-427, NL-428 fixed, NL-429 |
+
+Gates at `be9fd000`:
+- Build: Release and Release.Native, net10.0 and net11.0 (compile check at aa9d67e0; be9fd000 touches Application code and tests only), 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean. Schema: `AddPeerStorage` on all three providers, `HasPendingModelChanges` false.
+- Tests (net10.0, Release and Release.Native): **7889** non-Docker, all pass, no skips (Domain 2431, Application 1963, Integration 726, Serialization 531, Infrastructure 424, Infrastructure.Bitcoin 1066, Bolt11 278, Daemon 470). Long simulator 1/1.
+- Docker (net10.0, in-container runner with `--network host`, SQL Server skipped): LND suite **64/64** (incl. `BackupRestoreFlowTests`, Postgres round trips, `MultiNodeHarness`), CLN **23/23** (incl. `ClnPeerStorageTests`; 1 failure before be9fd000), gossip **28/28** (incl. `RouteBlindingFlowTests`), on-chain legacy **24** (2 `Explicit` not run), anchors **18/18**, ABCD **3 x 10/10**. Not run: `MultiNodeHarnessTests.Given_ServerDatabase_*` Postgres row (NL-429).
+
+### Carried into the next wave (after rf1)
+
+- **Goal (BOLT 7, pay and get paid over public channels without hints) and the mainnet gate:** the relay proof from a node with a public channel and the mainnet relay default (NL-417); the outbox relay pause (NL-360); the 24 h Mutinynet and multi-day mainnet soaks (NL-376); NL-416; d12 follow-ups NL-418..NL-425; earlier BOLT 7 follow-ups NL-345, NL-346 (partial), NL-357, NL-361..NL-372, NL-374, NL-375, NL-377, NL-378, NL-407; `AllowPublicChannelsOnMainnet` decision.
+- **rf1 follow-ups:** restore rescan of an old funding spend (NL-430, medium), graph addresses at restore (NL-431), height-0 data-loss proof (NL-435), peer-storage retrievals over IPC and persisted (NL-432), NL-433; security NL-224 (SR-14), NL-436 (SR-17 BOLT 8 ECDH through `ISecureKeyManager`), NL-437 (SR-09), NL-438, NL-439; blinded-payment limits NL-440; test infra NL-429, flakes NL-434, NL-382, NL-394.
+- **Anchors and BOLT 5 follow-ups** (unchanged): NL-384 (partial), NL-386, NL-387, NL-389..NL-391; NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336.
+- **Beyond:** BOLT 12 (offers use the M5 blinded paths), dual funding (NL-037), attribution_data out of experimental (NL-332), the rest of `REMAINING_WORK.md`.
+
+### Wave d12 (BOLT 7 D12: mainnet gossip gate): integrated into `wip/fafo` @ `aa1cc10` (2026-09-27), gates GREEN, D12 decided
+
+Four lanes (Z1 graph hygiene, Z2 memory budget, Z3 verified-sync efficiency, Z4 pruned funding lookup), each with a review/fix step; no migration. Lane commits cherry-picked with `-x` onto `b1cd9b3` in the order Z2 → Z1 → Z3 → Z4; integrator commits 3736a39 (binds `FundingTxIdSourceOptions`, holds the memory budget at the promotion of a pending announcement, moves Z1's `describegraph` pending count from IPC key 23 to 28, merges the Z3/Z4 `FundingOutputLookup` conflicts), 4dc261f and 8b97462 (probe relay run and samples), 73a1acd (D12 defaults), aa1cc10 (D12 record in `BOLT7_GOSSIP_PLAN.md`, "D12 runs" in `MAINNET_GOSSIP_PROBE.md`).
+
+| Lane | Result | `wip/fafo` SHAs (lane) | Ledger |
+|---|---|---|---|
+| Z1 graph hygiene | done: `PendingAnnouncementIndex` (announcements without an update outside the graph, up to 4 candidates per scid, 50,000 cap with per-sender eviction, 14-day TTL, chain lookup at promotion), scid-partitioned ingress queues | ab55e29, 4a48443 (0afbba5, 6024598) | NL-406, NL-408 fixed; new NL-418, NL-425 |
+| Z2 memory budget | done: `Gossip:MaxMemoryMb` 1,024 MB against the process RSS, no new channels/nodes over it, resume below 90 %, metrics, `describegraph` keys 23-27; interning dropped by owner decision | 60d1fca, cdaf2fa (9777f5d, 43a4f6e) | NL-373 fixed; new NL-419 |
+| Z3 verified-sync efficiency | done: `gettxout` height from `bestblock`, mempool-spent answers kept per block, `QueriedChannelTracker` + `IGossipPendingChannels` in the re-diff, outbox gossip cap (ships off) | 8c64733, a0561db, 59b1e16, acb7e4d, 55c0645, 69dcecf, 8c98b15, 2bd6764, 1e386db | NL-413, NL-414, NL-415 fixed; NL-360 partial; new NL-420, NL-421 |
+| Z4 pruned funding lookup | done: `Gossip:FundingTxIdSource=Esplora` (txid from an Esplora index, proven against our node's header merkle root; output from our `gettxout`), one-time pruned-node hint | 0fa7cf3, c0a71af (eb6b1b8, 29f696d) | NL-346 partial; new NL-422, NL-423, NL-424 |
+| Integration + proofs | D12 defaults, probe relay run, verified mainnet run | 3736a39, 4dc261f, 8b97462, 73a1acd, aa1cc10 | NL-099 partial; new NL-417 |
+
+Gates at `aa1cc10`:
+- Build: Release and Release.Native, 0 errors, the same **5** CS86xx warnings (NL-171); net11.0 compile check green. `dotnet format --verify-no-changes` clean. No schema change.
+- Tests (net10.0, Release and Release.Native): **7540** non-Docker, all pass, no skips (Domain 2419, Application 1776, Integration 713, Serialization 520, Infrastructure 405, Infrastructure.Bitcoin 1028, Bolt11 278, Daemon 401). Long simulator 1/1.
+- Docker (net10.0, in-container runner with `--network host`, one process at a time, SQL Server skipped; run before the D12 default commit, which changes mainnet defaults only): gossip **24/24**, CLN **22/22**, LND suite (Postgres) **59/59**, ABCD **3 x 10/10**, on-chain legacy **24** (2 `Explicit` not run), anchors **18/18**. Not run: `MultiNodeHarnessTests.Given_ServerDatabase_*` (its SQL Server row cannot be dropped alone).
+- Mainnet (probe, read-only RPC): verified run 30 min, fresh database, five peers: 99 % of the graph in 13 min (was 19), RSS peak 610 MB of the 1,024 MB budget, 0 refusals, 179,210 RPCs (5.8 per lookup), download 2.3x (was 3.6x), 30,537 channels all with a policy, 0 disconnects, bans or warnings. Relay run 20 min toward Blockstream Store: clean, but nothing relayed (no peer subscribes to a channel-less node, NL-417).
+
+Decision (`BOLT7_GOSSIP_PLAN.md` "D12 wave record"): **graph and gossip sync on by default on mainnet; relay of other nodes' gossip stays off on mainnet; `AllowPublicChannelsOnMainnet` stays false.**
+
+### Carried into the next wave (after d12)
+
+- **BOLT 7 mainnet follow-ups:** a relay proof from a node with a public channel, then the mainnet relay default (NL-417); the relay pause on a full outbox (NL-360) is done in lane nl360 (`Gossip:MaxOutboxGossipPerPeer` 10,000 on by default); the 24 h Mutinynet and multi-day mainnet soaks (NL-376); verified-sync garbage (NL-416); d12 follow-ups NL-418 (pending-candidate sybil limit), NL-419 (re-query after a budget refusal), NL-420 (ingress as `IGossipPendingChannels`), NL-421 (lookup counter), NL-422..NL-424 (Esplora live proof, speed, wrong-network check), NL-425 (node announcements of pending-only nodes).
+- **Earlier BOLT 7 follow-ups:** NL-345, NL-346 (partial), NL-357, NL-361..NL-372, NL-374, NL-375, NL-377, NL-378, NL-407; B7-CU-01b; flakes NL-382, NL-394.
+- **Anchors and BOLT 5 follow-ups** (unchanged from O7b): NL-384 (partial), NL-386, NL-387, NL-389..NL-393; NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336.
+- **Beyond:** operations before real funds (backup and restore, a security review of key files and the IPC cookie), route blinding (M5, NL-079) then BOLT 12, dual funding (NL-037), the rest of `REMAINING_WORK.md`.
+
+### Wave O7b (BOLT 5 anchors gaps and O7-T4): integrated into `wip/fafo` @ `c16d6e1` (2026-09-26), gates GREEN, `option_anchors` ON by default
+
+Three lanes (Y1 anchors on-chain reserve and funding selection, Y2 package relay and the peer-anchor bump, Y3 anchors gap Docker proofs), each with a review/fix step; no migration. Lane commits cherry-picked with `-x` onto `897f032` in the order Y1 → Y2 → Y3 (conflicts: the Infrastructure.Bitcoin `CLAUDE.md` wallet paragraph, both kept; Y1 and Y3 both added `AnchorsReserveTests.cs`, Y3's file is now `AnchorsReserveGapTests.cs`). No hub registration was needed (Y1 registered in `AddBitcoinInfrastructure`, Y2 uses optional lookups). Integrator commits:
+- d4cc3f8 (from the scratch worktree `.claude/worktrees/o7b-flip`, branch `wip/fafo-o7b-integrator-flip`, ad25b6e; left in place): O7-T4 flip, `FeatureOptions.OptionAnchors` Optional by default and out of `ExperimentalFeatures`; Docker fixtures follow (legacy on-chain, non-anchor `update_fee` and the CLN fee-floor proofs pin `option_static_remotekey` via `Docker/Onchain/LegacyChannelOptions`; fundees of anchors opens fund the reserve first; LND balance checks add the funder's anchors, `LndTestHelpers.FunderAnchorsSat`; the trimmed-HTLC proof uses zero-fee HTLC thresholds; ABCD asserts every hop is anchors).
+- c16d6e1: the O7b record and the O7-T4 decision in `BOLT5_ONCHAIN_PLAN.md`; root, Domain and test `CLAUDE.md`.
+
+Gates at `c16d6e1`:
+- Build: Release and Release.Native, net10.0 and net11.0, 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean. No schema change.
+- Tests (net10.0, Release and Release.Native): **7371** non-Docker, all pass, no skips (Domain 2415, Application 1691, Integration 713, Serialization 520, Infrastructure 401, Infrastructure.Bitcoin 965, Bolt11 278, Daemon 388). Long simulator 1/1.
+- Docker (net10.0, host-built dll in `sdk:10.0` with `--network host`, one process at a time, SQL Server skipped), before the flip on `2b20449` and final on `d4cc3f8`, identical: anchors **18/18**; on-chain (static_remotekey pinned) with `-explicit on` **24/24**; LND suite **59/59**; CLN **22/22**; ABCD **3 x 10/10**; gossip **24/24**. The first flip run before the fixture changes failed 11 LND, 8 CLN and 1 gossip tests, all fixture assumptions (fundee reserve, the funder's 660 sat of anchors, non-anchor expectations).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| Y1 anchors reserve + funding selection | done: `IAnchorReserveService` → `AnchorReserveService` (`Node:Anchors` 10,000 sat per channel, cap 100,000, `PendingOpenTimeout`), opener and fundee refusal, atomic reserve in the 6-arg `LockUtxosToSpendOnChannel` incl. the funding fee, backed only by fee-selector-spendable outputs, in-flight opens counted under one semaphore, `walletbalance` keys 2-5; funding selection skips outputs of pending broadcasts; Docker `AnchorsReserveTests` against LND as opener and fundee | 41ce320, 083424e, db1afdb | NL-379 fixed, NL-385 fixed, NL-384 partial; new NL-392, NL-393 |
+| Y2 package relay + peer anchor | done: `IBitcoinChainService.SubmitPackageAsync` (1p1c, feature-detected), commitment + child as a package on refusal or when missing from the mempool, also after a restart; CPFP of the peer's commitment through our anchor (`AnchorCpfpService.Peer.cs`, O8 hand-over or txid lookup, RBF, shared reservation, 16-block sweep); review: persisted peer children kept after a restart, crash-orphaned reservation released, CPFP target floored at `mempoolminfee` | 4219c6c, 8e75a13, 50f005a | NL-380 fixed, NL-381 fixed, NL-388 fixed; new NL-389, NL-390, NL-391, NL-394; NL-384/NL-386 not attempted |
+| Y3 anchors gap Docker proofs | done: `AnchorsPackageRelayTests` (second bitcoind with a full 5 MB mempool, `RelayBitcoind`), `AnchorsPeerCommitmentBumpTests` (LND wallet leased, bump before the fulfillment deadline), `AnchorsReserveGapTests`; shared `AnchorsHarness.PayUntilSentAsync` | 2a086bb, 2b20449 | proofs for NL-379..NL-381; deviation recorded under NL-380 (`-minrelaytxfee` cannot prove package relay on Core 28+) |
+| Integration | O7-T4 flip and fixture changes, O7b record | d4cc3f8, c16d6e1 | NL-067 and NL-314 notes |
+
+Decision: **O7-T4 flipped, `option_anchors` is advertised Optional by default** (`BOLT5_ONCHAIN_PLAN.md` "O7b wave record and O7-T4 decision"). Operators need confirmed on-chain funds of at least 10,000 sat per anchors channel (up to 100,000); without them anchors opens and accepts are refused and the peer sees the error. `Node:Features:OptionAnchors=No` keeps a node on `option_static_remotekey`.
+
+### Carried into the next wave (after O7b)
+
+- **Close BOLT 7 G5 and decide D12 on mainnet** (unchanged): NL-373 (interned node ids, `Gossip:MaxMemoryMb`), NL-376 (24 h soak evaluation, second sync peer), NL-360 remainder, NL-374, NL-366; G5 follow-ups NL-370, NL-371, NL-372, NL-375, NL-377, NL-378; flakes NL-382, NL-394.
+- **Anchors follow-ups (none a fund-safety blocker):** NL-384 (partial: re-create the reservation of a reorged child, reorg proof), NL-386 (double-spend a stale child's inputs back to the wallet; since O7b those inputs also shrink the reserve's backing), NL-389 (package the peer's commitment below our mempool minimum from the hand-over bytes), NL-390 (persist the peer-commitment hand-over), NL-391, NL-392 (temporary channels of failed opens leak), NL-393, NL-387, NL-383; NL-280 (change-address reuse). Daemon template has no `Node:Anchors` section (code defaults apply).
+- **Earlier BOLT 7 follow-ups:** NL-345, NL-346, NL-357, NL-361..NL-365, NL-367, NL-368, NL-369; B7-CU-01b.
+- **BOLT 5 follow-ups:** NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336.
+- **Tooling:** NL-276, NL-347.
+- **Beyond:** route blinding (NL-079), dual funding (NL-037), the remaining items in `REMAINING_WORK.md`.
+
+### Wave O7 (BOLT 5 anchors): integrated into `wip/fafo` @ `8364a01` (2026-09-26), gates GREEN, O7-T4 held
+
+BOLT 5 plan O7 (anchors). Five lanes (X1 wallet signing and fee-input reservations (migration owner, `AddFeeInputReservations` for Postgres, SQLite and SQL Server), X2 anchor CPFP, X3 anchors HTLC resolution and penalties, X4 anchors Docker proofs, X5 small fixes), X1-X3 each with a review/fix step; lane commits cherry-picked with `-x` onto `26af95a` in the order X1 → X3 → X2 → X5 → X4 (two per-project `CLAUDE.md` conflicts, both sides kept). Integrator commits:
+- 658e086: wallet adapters `Application/Onchain/Wallet/` (`WalletAnchorFeeInputSource` for the CPFP port, `WalletAnchorFeeInputProvider` for the anchors HTLC port, over X1's persisted reservations), `AddAnchorWalletServices`/`AddAnchorCpfpServices` in `AddApplicationServices`, `AnchorCpfpOptions` from `Node:Onchain:Anchors`, the signer seam (`SignLocalHtlcTransaction` signs input 0 of a combined anchors HTLC tx), P2TR prevouts passed to `SignWalletTransaction`.
+- b76d661: from the first anchors Docker run (10/12): a deadline CPFP child is RBF-bumped every `RbfIntervalBlocks`; the mempool penalty of a revoked anchors commitment leaves out the CSV-1 `to_remote` (`non-BIP68-final`).
+- 8364a01: the O7 record and the O7-T4 decision in `BOLT5_ONCHAIN_PLAN.md`, `test/CLAUDE.md` note.
+
+Gates at `8364a01`:
+- Build: Release and Release.Native, net10.0 and net11.0, 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean, `check-sln-configs` OK. Schema: `AddFeeInputReservations` (all three providers, `HasPendingModelChanges` false).
+- Tests (net10.0, Release and Release.Native): **7282** non-Docker, no skips (Domain 2392, Application 1662, Integration 697, Serialization 520, Infrastructure 401, Infrastructure.Bitcoin 947, Bolt11 278, Daemon 385); one failure of `GossipFloodTests` in the final Release run that passed 5 times alone and in 2 full project reruns (NL-382, flake). Long simulator 1/1.
+- Docker (net10.0, host-built dll in `sdk:10.0` with `--network host`, one process at a time, SQL Server skipped; on `b76d661`): anchors `ONCHAIN_SUITE=anchors scripts/run-onchain.sh` **12/12**; on-chain with `-explicit on` **24/24**; LND suite **59/59** (G-D's 58 + the Postgres fee-reservation round trip); CLN **22/22**; ABCD **3 x 10/10**; gossip **24/24** (one run).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| X1 wallet signing + fee inputs (migration owner) | done: `SignWalletTransaction` (P2WPKH, P2TR key path, reserved inputs only, bound to a reservation, derived key checked against the UTXO address), `IFeeInputSelector` → `FeeInputSelector` with persisted outpoint-keyed reservations restored at startup; review: pending-broadcast outputs excluded, confirm only after the monitor's spend, startup sweep, Postgres round trip | 5c9a8c9, 9e75a2b, a56a013 | NL-067 fixed; NL-280 note; new NL-384, NL-385 |
+| X3 anchors HTLC resolution + penalties | done: `HtlcTransactionBuilder.AddFeeInputs` (Appendix F byte-exact alone, script-valid combined), `LocalCommitResolver` anchors HTLC txs through `IAnchorFeeInputProvider` (owner-keyed persistent reservations, conflict rebuild, RBF), our offered revoked HTLC penalized alone from the first round | 7b6b703, 91e35d2, 7947b63, 8363358 | NL-314 (fixed with X2 + integration); new NL-387 |
+| X2 anchor CPFP | done: `AnchorChildTransactionBuilder`, `SignAnchorInput`, `AnchorCpfpService` (CPFP through `to_local_anchor`, RBF, release, 16-block anchor sweep, confirmed commitment's child kept until its anchor is spent, fee cap by untrimmed stake, failure-path round scheduled) | d399ecb, 2ab70dc, d7d9efc | NL-314; new NL-380, NL-381, NL-386 |
+| X5 small fixes | done: CLI prints txids and block hashes in display order; soak script fixes | 83d48c6, ddcc598, c2b36a0 | NL-303 fixed; NL-376 note |
+| X4 anchors Docker proofs | done: `Docker/Onchain/Anchors/` (channel 2, O3 3, O4 3, O5 1, CPFP 2, mempool penalty 1), all green after the integration | 2bd830b, ddbb2a9, 1a740f3, 3d3b115 | O7-T4 evidence |
+| Integration | adapters, registrations, signer seam, P2TR prevouts, deadline RBF of the child, CSV-1 `to_remote` out of the mempool penalty, O7-T4 decision | 658e086, b76d661, 8364a01 | new NL-379, NL-382, NL-383 |
+
+Decision: **O7-T4 held, `option_anchors` stays experimental** although its gate (anchors O3-O5 + CPFP green against LND, full regression green) is met: NL-379 (no on-chain wallet reserve for anchors channels, high), NL-380 (no package relay) and NL-381 (the peer's commitment is never bumped through our anchor) are fund-safety gaps no proof covers. Deviation accepted: our offered revoked HTLC on an anchors channel is penalized alone from the first round (stricter than BOLT 5's split at `security_delay`).
+
+### Carried into the next wave (after O7; superseded by the list after O7b above)
+
+- **Anchors O7-T4:** the per-channel on-chain reserve (NL-379), `submitpackage` for a parent below the mempool minimum (NL-380), CPFP and sweep through our anchor on the peer's commitment (NL-381); then re-run `ONCHAIN_SUITE=anchors` and decide the flip. O7 follow-ups: NL-384, NL-385 (funding coin selection vs pending broadcasts, medium), NL-386, NL-387, NL-383; NL-280 (change-address reuse).
+- **Close BOLT 7 G5 and decide D12 on mainnet** (unchanged from G-D): NL-373 (interned node ids, `Gossip:MaxMemoryMb`), NL-376 (24 h soak evaluation, second sync peer), NL-360 remainder, NL-374, NL-366; G5 follow-ups NL-370, NL-371, NL-372, NL-375, NL-377, NL-378; NL-382 (gossip flood test flake).
+- **Earlier BOLT 7 follow-ups:** NL-345, NL-346, NL-357, NL-361..NL-365, NL-367, NL-368, NL-369; B7-CU-01b.
+- **BOLT 5 follow-ups:** NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336.
+- **Tooling:** NL-276, NL-347.
+- **Beyond:** route blinding (NL-079), dual funding (NL-037), the remaining items in `REMAINING_WORK.md`.
+
+### Gossip wave G-D: integrated into `wip/fafo` @ `48a8951` (2026-09-26), gates GREEN
+
+Fourth wave of the BOLT 7 plan (G5 hardening) plus the BOLT 5 O6-T4 mainnet HTLC gate. Four lanes (D1 limits/spam/metrics, D2 persistence performance + `describegraph`, D3 mainnet gossip gate + soak + runner scripts, M4 O6-T4), each with a review/fix step; the 14 lane commits were cherry-picked with `-x` onto `55c0abc` in the order D2 → D1 → M4 → D3 (conflicts: `GraphTestKit.cs` constructor parameters, root `CLAUDE.md`). No migration. Integrator commits:
+- d31cd2f: `GraphStore` records its load/flush durations (`nlightning.gossip.store.duration`) and write-behind depth (`graph_write_behind`) in the gossip meter (the D1/D2 seam).
+- 48a8951: keeps the O6-T4 flip after the full Docker matrix, records the evidence in `BOLT5_ONCHAIN_PLAN.md` ("O6-T4 integration record"), documents the container runner scripts in root `CLAUDE.md`.
+
+Gates at `48a8951`:
+- Build: Release and Release.Native, SDK 10 (net10.0) and SDK 11 (net10.0 + net11.0), 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean. No schema change.
+- Tests (net10.0, Release and Release.Native): **7104** non-Docker, 0 failures, 0 skips (Domain 2392, Application 1598, Integration 668, Serialization 520, Infrastructure 401, Infrastructure.Bitcoin 871, Bolt11 278, Daemon 376). Long simulator 1/1.
+- Docker (net10.0, host-built dll in `sdk:10.0` with `--network host`, one process at a time, SQL Server skipped): gossip `scripts/run-gossip.sh 3` **3 x 24/24**; on-chain with `-explicit on` **24/24** (both `Explicit` O5 variants); ABCD `scripts/run-abcd.sh 3` **3 x 10/10**; LND suite (`Docker`, `Docker.Utils`, `Docker.Mock`) **58/58** incl. N9 `ChannelSafetyFlowTests`; CLN **22/22**. Not run: `SqlServerTests` and the multi-node server-database theory (its Postgres row too, NL-347).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| D2 perf + `describegraph` | done: batched write-behind (5,000 rows per save, bulk reads), streamed bulk load (200k channels in 1.55 s on SQLite), O(1) memory estimate, 200k measurement (475 MiB store + 39 MiB per snapshot), `describegraph` = `ClientCommand` 20; no `AddGossipIndexes`. Review: capacity counts only unspent verified/own channels, one `--offset` for both listings refused, load-between-batches test | 66b4dbc, 4860494, 2abbec2 | NL-099 progress (G5-T3, G5-T4 IPC); new NL-373, NL-374, NL-375, NL-377 |
+| D1 limits/spam/metrics | done: rate limits and keep-alive rule, misbehaviour score and 1 h ban, `MaxChannels`/`MaxNodes`, future timestamps, relay backlog bound, `Meter("NLightning.Gossip")`, `GossipFloodTests`. Review: bans bounded and persisted only for graph nodes, the ban warning carries the offence, rate-limited gossip kept and replayed, backlog evicted by channel group | 97cdc27, b77d1c1, ff09f96 | NL-099 progress (G5-T1 caps, G5-T2, G5-T4 metrics); NL-360 partial; new NL-370, NL-371, NL-372 |
+| M4 O6-T4 mainnet HTLC gate | done: HTLCs on for every network by default (`Node:EnableHtlcs=false` turns them off); evidence on-chain 24/24 + N9 2/2 before the flip; NL-315 fixed (spend read from its block, alert once after a successful save); the Explicit O5 cheater variant without the mempool reaction | a140940, 04aab92, 6de56ad, 44767d3 | NL-094 fixed, NL-315 fixed |
+| D3 gate + soak + scripts | done except the 24 h soak evaluation: the template writes the D12 gossip gate per network and `EnableHtlcs: null` on mainnet/testnet, `run-onchain.sh`/`run-abcd.sh` in the container runner, per-process test ports, `soak-gossip.sh` and the first 20 min of the Mutinynet soak | 1d561f2, 70411ac, e7c628e, aadb9d4 | NL-358, NL-359 fixed; NL-276 partial; new NL-376 |
+| Integration | metrics seam in `GraphStore`, O6-T4 integration record, docs | d31cd2f, 48a8951 | new NL-378 |
+
+Deviations accepted in wave G-D:
+- The config template keeps `"EnableHtlcs": null` on mainnet and testnet (M4 proposed `true`): `null` binds as unset, so HTLCs follow the code default (on) and the switch stays visible in the file.
+- Funding-output mismatches count toward the misbehaviour ban as §3.8 says; whether that is too strict for relayers that do not check funding outputs is left to the soak (NL-371).
+- The misbehaviour ban is persisted only for graph nodes (throwaway node ids cost no rows); the peer-level door ban is memory only (NL-370).
+- No `AddGossipIndexes` migration: the measurements showed no need.
+- `Gossip:MaxMemoryMb` is not enforced yet: the measured store exceeds the planned 512 MiB at the 200k cap (NL-373).
+
+### Carried into the next wave (after G-D)
+
+- **Close BOLT 7 G5 and decide D12 on mainnet:** intern node ids and enforce `Gossip:MaxMemoryMb` with a re-measured default (NL-373, G5-T1); evaluate the 24 h Mutinynet soak (RSS, WAL, RPC rate) and repeat it with a second sync peer (NL-376, G5-T5); bound the `PeerOutbox` gossip share (NL-360 remainder, hub files `PeerManager`/`PeerOutbox`); snapshot build outside the writer lock (NL-374) and the relay's full diff (NL-366).
+- **G5 follow-ups:** NL-370, NL-371, NL-372, NL-375, NL-377 (SQL Server bulk graph paths), NL-378 (runner output).
+- **Earlier BOLT 7 follow-ups:** NL-345, NL-346, NL-357, NL-361..NL-365, NL-367 (Proof G4 (b)/(c)), NL-368, NL-369; B7-CU-01b.
+- **BOLT 5:** O7 anchors with `SignWalletTransaction` (NL-314, NL-067 second half); follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336 (none a mainnet fund-safety blocker, `BOLT5_ONCHAIN_PLAN.md` "O6-T4 decision").
+- **Tooling:** NL-276 host route (scripts use the container runner), NL-347 (multi-node Postgres case never runs).
+- **Beyond:** route blinding (NL-079), dual funding (NL-037), the remaining items in `REMAINING_WORK.md`.
+
+### Gossip wave G-C: integrated into `wip/fafo` @ `4dc0f77` (2026-09-26), gates GREEN
+
+Third wave of the BOLT 7 plan: G3 sync and relay, G4 graph routing in `PaymentService` and `getroute`, the Docker goal proofs (pay and get paid over public channels without route hints against LND 0.20 and CLN v26.06.8), plus the G-B follow-ups. Four lanes (C1 sync/relay, C2 routing, C3 Docker proofs, M3 follow-ups as migration owner for `AddGraphFundingTxId`), each with a review/fix step (C3's agent died on a network outage after committing; its review/fix ran as a separate agent); the 24 lane commits were cherry-picked with `-x` in the order M3 → C1 → C2 → C3. Integrator commits:
+- b5de7be: `GossipSyncScidRefresher` (G3-T5 over `IGossipSyncManager.QueryScidAsync`) replaces the null refresher; `PeerManager` implements and registers `IPeerGossipOutbox`, so own and relayed gossip go through the `PeerOutbox` (NL-351).
+- 0325ef3: `GetRouteProbe` calls `getroute` through its typed client handler.
+- b334442, 485a9aa: goal proofs (c) and (e) wait out C2's `Node:Invoices:PublicChannelGracePeriod` (5 s on those nodes); CLN v26.06.8 has no `dev-query-scids`, so Proof G3 (d) checks CLN's own seeker's queries on N1's recorded wire.
+- 4dc0f77: N1 nudges CLN's seeker with an unknown-SCID `channel_update` every 30 s; the G-C proofs documented in `test/CLAUDE.md`.
+
+Gates at `4dc0f77`:
+- Build: Release and Release.Native under SDK 10.0.103 (net10.0) and SDK 11.0.100-rc.1 (net10.0 + net11.0), 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean. Migration `AddGraphFundingTxId` on all three providers (`HasPendingModelChanges` false x3; SQLite and Postgres seeded upgrade).
+- Tests (net10.0, Release and Release.Native): **7000** non-Docker, 0 failures, 0 skips (Domain 2388, Application 1536, Infrastructure.Bitcoin 871, Integration 648, Serialization 520, Infrastructure 401, Daemon 358, Bolt11 278). Long simulator 1/1.
+- Docker (net10.0, in-container runner, SQL Server skipped): gossip (`scripts/run-gossip.sh`) **24/24** on the second run (the first failed only goal proof (c), fixed by b334442), CLN **22/22** (`ClnGossipTests` 5/5 = Proof G3 (d) + goal proof (e)), LND suite 55/56 in a run parallel with CLN (the failure, `CooperativeCloseFlowTests` simple close, was "Address already in use" from the shared `PortPoolUtil` range, NL-359; the class passed 7/7 alone), `Docker.Utils` 2/2, on-chain 22/22 (2 `Explicit` not run), ABCD **3 × 10/10**.
+
+Goal proofs (all green): (a) LND's graph shows our public channel and our node_announcement (Proof G1 (a), wave G-B: alice's `GetChanInfo` has both policies, bob's `DescribeGraph` the channel and `GetNodeInfo` our alias and color); (b) we pay carol's hint-free invoice over alice's public channels at the announced fees; (c) carol, with no channel to us, pays our hint-free invoice; (d) our `getroute` equals LND's `QueryRoutes` and `payinvoice` pays that fee, and after a restart we re-sync carol's changed policy; (e) through and from CLN without hints.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| M3 G-B follow-ups (migration owner) | done: NL-348 real SCID unless option_scid_alias is in the channel type, NL-354 `GraphPolicy` value equality, NL-352 `AddGraphFundingTxId`, NL-355 harness restart fields, NL-350 SCID move resets the announcement (`FundingReconfirmationHandler`), NL-349 offline disable. Review: the disable re-checked under the channel lock, re-enable only once the link is up | bca66aa, 12d3e74, 016a523, b9314d3, 7a4ef7f, 833e8e6, 80fd35f | NL-348..NL-350, NL-352, NL-354, NL-355 fixed; new NL-362, NL-364, NL-369 |
+| C1 sync/relay | done: strict query codec, CRC32C, timestamp filter (G3-T1/T4), `QueryResponder` from the graph and `GossipSyncManager` (G3-T1/T2, NL-205, NL-353), relay of others' gossip with filters, staggered flushes, origin suppression and a paced backlog (G3-T3), checksums equal to CLN's and `gossip_queries_ex` advertised Optional (G3-T4). Review: 256/258 across flush windows, a timed-out query ends querying on the connection, batches sized to the ingress, a stalled peer no longer stops the relay, a failed sync peer still gets a filter | 7b21464, c16edf0, 607a91f, 89110b9, 4b4f7b6 | NL-205, NL-353 fixed, NL-351 (with b5de7be); new NL-360, NL-361, NL-363, NL-365, NL-366, NL-368 |
+| C2 routing | done: `MissionControl` (G4-T2), graph paths in `PaymentRoutePlanner` with MPP and shadow CLTV (G4-T3), refresh on UPDATE failures (G3-T5), invoice hint policy (`Node:Invoices:RouteHints`, grace period), `getroute` = `ClientCommand` 19 (G4-T4), `GraphPaymentHarnessTests`. Review: graph also when direct/hint paths cannot carry the amount, no node penalty on our own peers, hints kept for a grace period, direction-less overrides on hint paths only | a34c9b5, e08e20b, 5673e78, 91cde4c, a70d6c0, f27340c, 2638eff | NL-245 updated; NL-099 progress |
+| C3 Docker proofs | done except Proof G4 (b)/(c): goal proofs (b)-(d) (`PublicPaymentFlowTests`), G3 (a)-(c) (`GossipSyncFlowTests`), G1 (d), G2 (d), `ClnGossipTests` (G3 (d), goal (e)) | 072be5a, 3dbc8be, 7399b83, 412f1d5, deda1a5 | NL-255, NL-356 fixed; new NL-357, NL-367 |
+| Integration | seams, typed `getroute` probe, grace-period and CLN seeker fixes in the proofs, guides | b5de7be, 0325ef3, b334442, 485a9aa, 4dc0f77 | NL-351 fixed; new NL-358, NL-359 |
+
+Deviations accepted in wave G-C:
+- After a sync with `gossip_queries_ex` timestamps our `gossip_timestamp_filter` starts at the sync's start less 600 s, not now - 2 weeks (plan §3.7).
+- The graph is a third candidate source: direct and hint paths are tried first; the graph comes in when none carries the amount alone, and a split may combine all three.
+- `Auto` invoices keep their route hints until the announced channel has been in our graph with both policies for `Node:Invoices:PublicChannelGracePeriod` (10 min).
+- A reorg that moves an announced SCID is handled in `FundingReconfirmationHandler`.
+- CLN v26.06.8 has no `dev-query-scids`: Proof G3 (d) relies on CLN's own seeker (NL-357).
+- `Docker/PaymentRetryFlowTests` runs with `Node:Payments:UseGraph=false` (its proofs are about hints).
+
+### Carried into wave G-D (superseded by the list above)
+
+- **BOLT 7 G-D (G5):** D1 memory limits and accounting (G5-T1: NL-360 outbox backlog, NL-366 relay diff, a signet-sized sync for NL-353/NL-365) and spam protection (G5-T2); D2 persistence performance (G5-T3, `AddGossipIndexes` only if needed) and `describegraph` (`ClientCommand` 20) + metrics (G5-T4); D3 mainnet defaults and the 24 h signet/Mutinynet soak (G5-T5, D12).
+- **G-C follow-ups:** NL-357, NL-358, NL-359, NL-361..NL-365, NL-367 (Proof G4 (b)/(c)), NL-368, NL-369; B7-CU-01b (accept the previous fee for 10 min); still NL-345, NL-346, NL-347.
+- **Mainnet gate (NL-094 O6-T4):** the G-D integrator decides after re-running N9 `ChannelSafetyFlowTests`, ABCD and the LND/CLN normal-operation suites (evidence in `BOLT5_ONCHAIN_PLAN.md`). Then O7 anchors with `SignWalletTransaction` (NL-314, NL-067 second half).
+- Still open from wave 7: NL-335, NL-336, NL-333, NL-334, NL-340, NL-332, NL-339, NL-321/NL-137.
+
+### Gossip wave G-B: integrated into `wip/fafo` @ `5bbfbb5` (2026-09-26), gates GREEN (net11.0 not built)
+
+Second wave of the BOLT 7 plan (G1 public channels, G2 graph, Docker Proofs G0-G2) plus the BOLT 5 O6-T4 blocker lane toward the mainnet gate. Four lanes (B1, B2, M2 with review/fix steps; B3 Docker), no migration owner; the 28 lane commits were cherry-picked with `-x` in the order B1 → B2 → M2 → B3. Integrator commits:
+- 00f6bcf: drops the never-set `PreferredHost`/`PreferredPort` from `IPeerService`/`PeerService` and their dead branches in `PeerManager` (NL-344).
+- 66e773c: `NLightningTestNode` starts the graph like the daemon's `GossipGraphHostedService` (ingress and `GraphPruner` before `PeerManager`, stopped after the chain monitor); the daemon composition test expects `GossipIngress` as `IOwnGossipSink`; B3's `TODO(G-B integrator)` markers resolved (`request.IsPublic`, real option names `Gossip:Enabled`/`Gossip:AcceptPublicChannels`/`Node:Alias`/`Node:Color`, `GossipGraphProbe` reads IPC 17/18).
+- 717bd97: `NLightningTestNode.BeforePeersStart` hook, so Proof G2 (b) reads the graph before `PeerManager` reconnects to stored peers.
+- 5bbfbb5: root and `test/CLAUDE.md` (G-B features, IPC 17/18, next free 19, `--public` as key 4, baselines).
+- Conflicts resolved: `IOwnGossipSink.cs` (both lanes; B2's last commit made it identical to B1's), `NodeServiceExtensions` (both `GossipOptions` and `GossipGraphOptions` bound), the Application/Daemon `CLAUDE.md` files, usings in `NodeServiceExtensionsTests`.
+
+Gates at `5bbfbb5`:
+- Build: Release and Release.Native under SDK 10.0.103 (net10.0), 0 errors, the same **5** CS86xx warnings (NL-171). **net11.0 not built** (SDK 11 not installed on the integration machine; CI covers it). `dotnet format --verify-no-changes` clean; `check-sln-configs.py` OK. No schema change.
+- Tests (net10.0, Release and Release.Native): **6780** non-Docker, 0 failures, 0 skips (Domain 2349, Application 1362, Integration 646, Serialization 520, Infrastructure 406, Infrastructure.Bitcoin 871, Bolt11 278, Daemon 348). Long simulator 1/1.
+- Docker (net10.0; in-container runner with `--network host` except CLN, which runs from the host; SQL Server skipped): LND suite **57/57** (incl. `Docker.Utils` and Postgres 8/8; without `SqlServerTests` and the whole `MultiNodeHarnessTests` server-database theory, NL-347), CLN **15/15**, ABCD **3 × 10/10**, on-chain **22/22** + 2 `Explicit` not run (incl. M2's `OnchainWatchCatchUpTests`), gossip (`scripts/run-gossip.sh`) **16/16** on the final run (G2 (b) failed on the first run and was fixed by 717bd97; the G2 class then passed 3/3 alone). **139** Docker tests listed.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| B1 public channels | done except G1-T5's offline-disable policy: `openchannel --public` (IPC key 4), fundee flag, `Gossip:AcceptPublicChannels`, public opens refused on mainnet unless allowed (G1-T1); `AnnouncementSignaturesMessageHandler` + 259 case (G1-T3); our half at depth and after reestablish (G1-T4, extra mainnet gate); public `channel_update` (G1-T5 partial); `NodeAnnouncementService` (G1-T6); `GossipRelayScheduler` own 256 → 258 → 257 (G1-T7); NL-343. Review: stale peer half forgotten and persisted, 257 held until a 256 went out, mainnet refusal. Proof: `AnnouncementHarnessTests` (identical 256 at both ends) | 4115b34, f6e76c2, 2555443, 7fdc993, 2cc2ee0, d77de7f, dd5c4a1, 367fdda | NL-341, NL-342, NL-343, NL-236 fixed; NL-099, NL-255 progress; new NL-348, NL-349, NL-350, NL-351, NL-355 |
+| B2 graph | done: `GossipIngress` + write-behind `GraphStore` + orphan/duplicate caches (G2-T4), `PeerService` 256/257/258 arms and the post-init `gossip_timestamp_filter`, `GraphPruner` via `OnBlockInputs` (G2-T5), IPC `listnodes` 17 / `listgraphchannels` 18 (G2-T6), `GossipGraphHostedService`, D12 mainnet default. Review: B1's sink contract, startup height 0, reorged funding blocks, spend race, one writer for our node row, banned nodes' channels forgotten, receive depth clamped, missed SCIDs recorded | 7501ad6, 2635956, 675f54c, f252d68, d3dda72, 0e0f85c, 9d288bf | NL-344 fixed; NL-099 progress, NL-009 progress; new NL-352, NL-353, NL-354 |
+| M2 O6-T4 blockers | done: NL-337 final-hop preimage-known test, NL-320 upstream fails on future/unknown closes (payment kept in flight to +100, forwards over a Closed channel failed back), NL-311 startup catch-up of saved watches (one shared scan after the time-critical rounds) with Docker `OnchainWatchCatchUpTests`; evidence section in the BOLT 5 plan. The gate itself is unchanged | c4fab04, 6ea8b1c, eff0196, 1902bb5, e0b3421, 8db8d02, 7e96e28, e3023b8, 9b4e4c7, 58a0e46 | NL-311, NL-320, NL-337 fixed; NL-094 progress |
+| B3 Docker | done: `Docker/Gossip/` fixture and collection, `scripts/run-gossip.sh`, Proofs G0, G1 (a)-(c), G2 (a)-(c); G1 (d) and G2 (d) not written | 8ecbb2e, 27f8822, fd71c07 | NL-099 progress; new NL-356 |
+| Integration | peer-service cleanup, test node graph start and pre-peer hook, B3 seams, guides | 00f6bcf, 66e773c, 717bd97, 5bbfbb5 | NL-344 fixed |
+
+Deviations accepted in wave G-B:
+- ClientCommand numbers are 17/18 (the plan said 16/17; 16 is `chainstatus`).
+- Extra mainnet gate on announcing (`CanSendAnnouncementSignatures`) besides the open-time refusal (D12).
+- Stale deletion uses the newest update of either direction and `DeleteStaleAfter` (28 d); routing exclusion at 14 d stays in `GraphChannel.IsStale`.
+- Own gossip goes through `IPeerService.SendGossipMessageAsync`, not the `PeerOutbox` (NL-351), because `PeerManager` was not in B1's lane.
+
+### Carried into wave G-C (from G-B; superseded by the list above)
+
+- **First: NL-348** (high): `HtlcSwitch.ResolveOutgoingChannel` must accept the real SCID unless `UseScidAlias == Compulsory`; it blocks routing through our public channels when the peer negotiated option_scid_alias (LND does by default) and so G4 Proof (a) through us.
+- **BOLT 7 G-C:** C1 sync/relay (G3-T1 `QueryResponder`, G3-T2 `GossipSyncManager`, G3-T3 relay of others' gossip with filters, moving own gossip onto the outbox NL-351, G3-T4 `gossip_queries_ex`; re-query dropped SCIDs from `GossipIngress.TakeMissedShortChannelIds`, NL-353); C2 routing (G4-T2 `MissionControl`, G4-T3 graph paths in `PaymentRoutePlanner`, G4-T4 `getroute` = `ClientCommand` 19, G3-T5 failure-triggered refresh); C3 Proofs G3/G4, `ClnGossipTests`, plus G1 (d) (NL-255) and G2 (d) (NL-356).
+- **G-B follow-ups:** NL-349 (disabled update after the peer is offline > `Gossip:DisableAfter`), NL-350 (reorg moving an announced SCID; needs `FundingReconfirmationHandler`), NL-352 (persist graph funding txids; migration owner), NL-354 (`GraphPolicy` equality), NL-355 (harness restart with announcement fields); still NL-345, NL-346, NL-347.
+- **Mainnet gate (NL-094 O6-T4):** the blockers are fixed; the G-D integrator decides after re-running N9 `ChannelSafetyFlowTests`, ABCD and the LND/CLN normal-operation suites (evidence and risks in `BOLT5_ONCHAIN_PLAN.md`). Then O7 anchors with `SignWalletTransaction` (NL-314, NL-067 second half).
+- **Platform:** build net11.0 on a machine with SDK 11 (not done at this integration).
+- Still open from wave 7: NL-335, NL-336, NL-333, NL-334, NL-340, NL-332, NL-339, NL-321/NL-137.
+
+### Gossip wave G-A: integrated into `wip/fafo` @ `164289a` (2026-09-26), gates GREEN
+
+First wave of the BOLT 7 plan (`BOLT7_GOSSIP_PLAN.md`, goal: pay and get paid over public channels without route hints) plus the BOLT 5 O8 lane toward the mainnet gate. Five lanes, each with a review/fix step; the 18 lane commits were cherry-picked with `-x` in the order A2 → A1 → A3 → A4 → M1. Integrator commits:
+- b515155: `AddGossipBitcoinServices()` in `AddBitcoinInfrastructure`, `FundingOutputLookupOptions` bound to the `Gossip` section in `AddNltgNodeServices`, and the seam fix in `Domain/Gossip/GossipFeatures.cs` (`using Enums;` resolved to A2's new `Domain.Gossip.Enums`; now `using Domain.Enums;`).
+- 2138eae: `OnchainO6Tests` (b) timed out because O8 now penalizes the revoked commitment from the mempool (no `Pending` penalty left for the restart); `NLightningTestNode.WatchMempool` (default true, `Bitcoin:WatchMempool`) and the O6 (b) victim runs with it off.
+- 164289a: root `CLAUDE.md` and `test/CLAUDE.md` (typed 256/257/259, `ChainStatus` = 16 (next free 17), O8, baselines).
+- Conflicts resolved: `LocalLightningSigner.cs` (A2's `SignChannelAnnouncement` + A3's `VerifyNodeMessage` delegation), the Domain and Infrastructure.Bitcoin `CLAUDE.md` files.
+
+Gates at `164289a`:
+- Build: Release and Release.Native under SDK 10.0.103 and SDK 11 rc.1 (net10.0 + net11.0), 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean; `check-sln-configs.py` OK.
+- Tests (net10.0, Release and Release.Native): **6522** non-Docker, 0 failures, 0 skips (Domain 2321, Application 1176, Integration 644, Serialization 518, Infrastructure 395, Infrastructure.Bitcoin 870, Bolt11 278, Daemon 320). Long simulator 1/1. `HasPendingModelChanges()` false for all three providers after `AddGossipGraph`.
+- Docker (in-container runner, `--network host`, net10.0, SQL Server skipped): gossip capture 4/4 (`-explicit on`), on-chain 21/21 after the O6 fix (2 `Explicit` not run; `OnchainMempoolTests` 2/2), LND suite 57/57 (without `SqlServerTests` and the whole `MultiNodeHarnessTests` server-database theory, NL-347), CLN 17/17, ABCD **3 × 10/10**. Postgres seeded upgrade 9/9 (lane A2). **120** Docker tests in total.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| A2 schema + signer (migration owner) | done: migration `AddGossipGraph` (3 providers; `GraphNodes`, `GraphChannels`, `GraphChannelPolicies`, `GraphBannedNodes`; `IGraphDbRepository`), announce flag and announcement-signature columns (G1-T1 storage), signer loads channels from the DB (`ChannelSigningInfoSource`), `SignChannelAnnouncement` (G1-T2). Review: private channels refused, mismatched registration throws before any guard moves, Closed/Stale not loaded | a49e166, 709030c, 910d085 | NL-067 partial, NL-341 partial, NL-099 partial; new NL-343 |
+| A1 wire | done: G0-T1 typed 256/257 codecs, G0-T2 259 as a channel message, G0-T5 LND 0.20 + CLN v26.06.8 captures byte-exact with verified signatures. Review: interim `ChannelManager` 259 outcome pinned | 57bb15b, 7d318b5, 0c6a9c3 | NL-342 partial, NL-099 partial |
+| A3 crypto + chain | done: G0-T3 `GossipSignatureVerifier`, G2-T2 `FundingOutputLookup` (LRU, rate limit, reorg-safe). Review: transient `BlockNotFound`/`OutputSpentInMempool`, block recheck after `gettxout`, only "pruned" -1 errors read as pruned | c5c7b5d, 79debc3, c1bb630 | NL-099 partial; new NL-345, NL-346 |
+| A4 addresses + pure | done: G0-T4 address descriptors, G2-T1 graph model + `GossipValidator`, G4-T1 `GraphPathfinder`. Review: blacklist only after signature verification, stale own first hop, limit-ordered reruns, LDH DNS, trailing-field compare, 50 ms budget | 70744d6, 78e5b23, fd92d5d, caf8ee7, 0bf7baf | NL-008 fixed, NL-099 partial; new NL-344 |
+| M1 chain safety | done: `chainstatus` (IPC 16) and the halt gate, ZMQ `rawtx`, `MempoolReactor` (preimage + penalty from the mempool), Docker `OnchainMempoolTests` | 567197f, 7fde9bf, d51f6ec, 99ba3ac | NL-098 fixed, NL-216 fixed |
+| Integration | DI registration, `Gossip` options, enum seam, O6 (b) `WatchMempool = false`, guides | b515155, 2138eae, 164289a | new NL-347 |
+
+Deviations accepted in wave G-A:
+- G1-T2 landed in lane A2 (the plan's waves table had A3); `SignChannelAnnouncement` returns a `ChannelAnnouncementSignatures` record.
+- `GossipValidator` accepts a 256 with unknown even features as not routable (BOLT 7), not ignored as plan §1.2 said; a malformed addrlen in 257 gives Warn without close.
+- Address vectors are inline in the tests (no LND `lnwire` hex); `Domain/Gossip` uses subfolders `Addresses`, `Graph`, `Validation`, `Persistence`, `Interfaces`.
+- The pathfinder's `HintRouteBuilder.BuildAlong` cross-check moves to G4-T3.
+- Out-of-lane touch: A3 edited `LocalLightningSigner.VerifyNodeMessage` (3-line delegation).
+
+### Carried into wave G-B (from G-A; superseded by the list above)
+
+- **BOLT 7 G-B:** B1 public channels (G1-T1 handlers, IPC `--public`, `Gossip:AcceptPublicChannels`, NL-341; G1-T3 `AnnouncementSignaturesMessageHandler` + `ChannelManager` case, NL-342; G1-T4..T7 announcement, public `channel_update`, `node_announcement`, own-gossip relay); B2 graph (G2-T4 ingress + `GraphStore` using `IFundingOutputLookup` with 6-confirmation depth and transient requeue, G2-T5 pruner, G2-T6 IPC from `ClientCommand` 17); B3 Docker proofs G0/G1/G2 and `scripts/run-gossip.sh`.
+- **G-A follow-ups:** NL-343 (drop `ChannelManager`'s hand signer registration; whoever owns `ChannelManager` in B1), NL-344 (remote_addr stored as the peer's address, undecodable one fails init), NL-345 (captured vectors in the signed-range tests), NL-346 (per-RPC rate limit, pruned path), NL-347 (split the multi-node server-database theory).
+- **Mainnet gate (NL-094 O6-T4):** NL-311, NL-320, NL-337; then O7 anchors with `SignWalletTransaction` (NL-314, NL-067 second half).
+- Still open from wave 7 (below): NL-335, NL-336, NL-333, NL-334, NL-340, NL-332, NL-339, NL-321/NL-137.
+
+### Wave 7: integrated into `wip/fafo` @ `4c37998` (2026-09-26), gates GREEN
+
+Wave 7 wired attribution_data end to end, made final-hop HTLCs of our invoices claimable on chain (the last blockers of the O6-T4 gate on the switch side) and cleared the chain-monitor test flake. Three lanes, each with a review step: W7-A attribution_data wiring (migration owner), W7-B final-hop on-chain claims and HTLC-set commitment, W7-C flakes and gates. All 11 lane commits were cherry-picked with `-x` without conflicts (W7-A first). Integrator commits:
+- 4751a26: the W7-A hold-time test (99 ms, expected 0) was flaky because `SteppedTimeProvider` added wall-clock time on top of the step; it now uses a manual clock.
+- 672ed61: `HtlcSwitch` takes an optional `IAttributionDataService` and uses W7-A's seam (erring and final-node failures, final-hop and set fulfills with the settle still in the fulfill's save, wrapped downstream failures incl. malformed and on-chain timeout, forwarded fulfills via `WrapFulfillment`) only when `NodeOptions.Features.OptionAttributionData` is not No and the incoming add had no `path_key`; `AddOnionReplayBlockPruner()` in `AddNltgNodeServices`, started after and stopped before the chain monitor by `NltgDaemonService` and `NLightningTestNode`; 3 `HtlcSwitchTests`, a Daemon composition check; guides.
+- 4c37998: Docker `AttributionFlowTests.Given_ThreeNodesAdvertisingAttribution_…`: three NLightning nodes with the feature on forward through the production switch; both fulfills carry TLV 1 and the payer records both hops' hold times.
+
+Gates at `4c37998` (the ledger agent re-ran the net10.0 Release non-Docker tests at `4c37998`: 6097/6097):
+- Build: Release and Release.Native under SDK 10 and SDK 11, 0 errors, the same **5** CS86xx warning sites (NL-171).
+- `dotnet format --verify-no-changes` clean under SDK 10 and SDK 11.
+- Tests: **6097** non-Docker tests per config and framework, 0 failures, 0 skips (Domain 2142, Application 1148, Integration 573, Serialization 487, Infrastructure 380, Infrastructure.Bitcoin 777, Bolt11 278, Daemon 312): net10.0 on the host and net11.0 in the sdk:11.0 container, Release and Release.Native. The Long simulator passes. `HasPendingModelChanges()` false for all three providers after `AddAttributionData` (Integration tests).
+- Docker (in-container runner, `--network host`): LND suite **64/64** (incl. Postgres 8, SqlServer 8, `AttributionFlowTests` 5; on net10.0 63/63 before the new proof, then `AttributionFlowTests` 5/5 separately), `Docker.Utils` 2/2, CLN interop **17/17**, ABCD **3 × 10/10**, `Docker.Onchain` **19/19** incl. `OnchainFinalHopTests` (2 `Explicit` not run); identical on net10.0 and net11.0. **114** Docker tests in total (LND 64, Utils 2, CLN 17, ABCD 10, Onchain 21).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W7-A attribution wiring (migration owner) | done: migration `AddAttributionData` (3 providers: `Htlcs.AttributionData`/`FulfillmentPayload`/`AddedAt`, `PaymentHops.HoldTimeMs`; no data step; seeded round trip on SQLite, Postgres, SQL Server); engine, `IChannelOperations` (`FailHtlcAsync(AttributedErrorPacket)`, `FulfillHtlcAsync(AttributedFulfillment, ...)`, `GetHoldTimeAsync`), handlers, retransmission, `MessageFactory` TLV 1/3; origin verification and hold times in `PaymentService`; `AttributionHarnessTests`; Docker `AttributionFlowTests` (LND 0.20 lacks the feature). Review: a valid preimage is committed before the channel fails over an oversized payload; fulfill hold times only on the matching route. Skipped: taking `OptionAttributionData` out of `ExperimentalFeatures` | 3a54e11, 06b906c, e64da4e | NL-022, NL-325 fixed; NL-326 fixed with integration; NL-072 partial; new NL-332, NL-333, NL-334 |
+| W7-B final hop on chain | done: the switch accepts a final-hop HTLC of a Failed/OnchainResolving channel and commits it with the preimage on the incoming `HtlcRecord.KnownPreimage` in the settle's save; `FinalHopClaims.GetAcceptedPreimageAsync` for both resolvers (Settled invoice with that preimage, no fail removal); every part of a set committed before the settle, marks taken back when a set is not settled, a failed settle retried by the timer; 0x400F for HTLCs outside a Settled set; Docker `Onchain/OnchainFinalHopTests` | 7ca5c60, db00321, 72e7f49, a3cf0ce | NL-316, NL-322, NL-323 fixed; new NL-335, NL-336, NL-337 |
+| W7-C flakes and gates | done: NL-310 root cause (a local Mutinynet bitcoind publishing on the tests' ZMQ port) fixed with serialized `ProcessNewBlockAsync`, blocks above the tip dropped and `SilentZmqEndpoint` (stress 252/252); `OnionReplayBlockPruner` (coalesced, retries after a failure); `PaymentModel` doc. Partial: NativeAOT publish on SDK 11 reported, not fixed | 548ba85, aa41f2b, ef03b12, 368a057 | NL-310, NL-327 (with integration), NL-328 fixed; NL-300 note; new NL-338, NL-340 |
+| Integration | test clock fix, switch attribution seam, pruner wiring, three-node attribution proof, guides | 4751a26, 672ed61, 4c37998 | NL-326, NL-327 fixed; new NL-339 |
+
+Ledger note: the lanes' proposed IDs collided (W7-B suggested NL-331/NL-332; NL-331 already existed); the wave's new items are NL-332..NL-340. The hold times of in-memory MPP parts (W7-A) are a note under NL-321; the pre-NL-323 upgrade limit is a note under NL-323; the stale `IOnionReplayStore` remark is NL-340. NL-072 stays **open (partial)**: everything is wired, but `OptionAttributionData` stays experimental until an interop proof beyond NLightning exists (NL-332).
+
+Deviations accepted in wave 7:
+- `OptionAttributionData` stays in `ExperimentalFeatures` and default No: LND 0.20 does not implement it (proven by `AttributionFlowTests`), so the planned LND interop gate cannot pass (NL-332).
+- A fulfill refused because the peer is away now commits the set and settles the invoice at once (the part carries the preimage and is fulfilled on replay or claimed on chain); before, the invoice stayed Open until the replay.
+- A crash between the set's marks and the settle leaves the invoice Open with marked parts; the marks are honored only once the invoice is Settled, and replay normally completes the set.
+- Pre-NL-323 settled sets are failed with 0x400F on replay after an upgrade (no reconciliation; HTLCs are regtest-only).
+- A blinded forward drops the downstream fulfillment_payload (NL-339, left for M5).
+- Out-of-lane touches: `PaymentHop.HoldTime`/`PaymentModel.RecordHoldTimes` (Domain), `NLightningTestNode.ConfigureServices` hook, `PaymentSchemaRoundTrip.SeedAsync` internal (W7-A).
+
+### Carried into wave 8
+
+- **Mainnet gate (NL-094 O6-T4):** NL-311 (untracked resolution watches after a crash), NL-320 (upstream HTLCs of future/unknown closes), NL-337 (`HtlcExpiryMonitor` final-hop PreimageKnown from the record's mark); then open the HTLC gate on every network (template and default together).
+- **Wave 7 follow-ups:** NL-335 (expired invoice at the on-chain decision), NL-336 (`DustExposureHtlcSwitch` swallows the on-chain decision), NL-333 (retry policy ignores the attribution blame), NL-334 (reverted fulfill loses attribution), NL-340 (replay store doc), a three-node harness test of the forward-then-fail case of NL-325.
+- **attribution_data gating:** decide on NL-332 (un-gate on the NLightning proof plus CLN/Eclair, or wait for LND); NL-339 with M5.
+- **Payments persistence:** per-part MPP send rows (NL-321, also for hold times), forward failure reasons and an SCID map (NL-137).
+- **BOLT 5 follow-ups:** NL-307..NL-309, NL-312..NL-315, NL-318, NL-329, NL-330, refused-broadcast abandonment for funding txs (NL-294, NL-259); O7 anchors (NL-314, `OptionAnchors`), O8 mempool (NL-098).
+- **Close follow-ups:** decide the `OptionSimpleClose` default (NL-285), NL-279, NL-286, NL-045, NL-277, wallet address reuse (NL-280).
+- **Switch/monitor:** NL-265, NL-266, NL-267, NL-268, NL-273, NL-274, NL-290, NL-216, NL-298.
+- **Not started:** route blinding (M5, NL-079), BOLT 7 graph and pathfinding (NL-099), dual funding (NL-037).
+- **Test infra and platform:** NativeAOT publish (NL-338; SDK 10 comparison, Wasm on SDK 11, NL-300), NL-276 (host route), NL-319, NL-331, NL-295, NL-262, NL-261.
+- **Mutinynet / ops:** NL-303, NL-306, a longer live run with a force close; carried from earlier waves: NL-152 (disconnect IPC), NL-269, NL-260, NL-138, the Wasm risk.
+
+### Wave 6: integrated into `wip/fafo` @ `3ce3cad` (2026-09-26), gates GREEN
+
+Wave 6 finished the payment side of the node (persistent replay set, basic_mpp receive, retries/fee limit/MPP send), added `option_simple_close` and BOLT 5 O6 (fee bumping and reorg re-resolution), and built the attribution_data library. Six lanes: W6-A persistent onion replay set (migration owner), W6-B basic_mpp receive, W6-C payment retries and MPP send, W6-D attribution_data (M3b library), W6-E option_simple_close (N11), W6-F BOLT 5 O6; each lane had a review step. All 35 lane commits were cherry-picked with `-x` (none skipped). Merge conflicts were in docs, `ThreeNodeHarness` (both properties kept) and `FeatureOptions`/`FeatureOptionsTests` (both BasicMpp and OptionSimpleClose out of the experimental set). ba3db36 was committed with conflict markers in `src/NLightning.Application/CLAUDE.md`; 78a3beb removes them (history left as is). Integrator commits:
+- 9692ba4: the daemon binds `Node:Switch` to `HtlcSwitchOptions`; `AddBitcoinInfrastructure` calls `AddOnionAttributionServices()`; `HtlcSwitchTests` moved to `IOnionReplayStore` (W6-A/W6-B seam); `PaymentHarnessTests` expects the split-failure reason now that invoices offer basic_mpp (W6-B/W6-C seam); a Daemon test for the binding and the registration.
+- e8841d6: O5 (a) retries LND's force close while its restarted server is still starting (NL-319).
+- a45d290: `ThreeNodeHarness.LockAudit` tracks locks per async flow (sibling tasks forked from one context were reported as one flow holding two locks; about half the runs of `Given_BobRestartsAfterDownstreamFulfill` on net11.0 Release.Native in Linux); regression test added, the nested-lock test still catches real nesting.
+- 3ce3cad: root and `test/` CLAUDE.md for wave 6.
+- Not taken: W6-A's optional block-driven replay prune (the store prunes lazily, NL-327). Kept: W6-F's final regtest-only HTLC default (O6-T4 gate closed, NL-316), W6-E's `--protocol.rbf-coop-close` fixture flag.
+
+Gates at `3ce3cad`:
+- Build: Release and Release.Native under SDK 10 and SDK 11 rc.1, 0 errors, the same **5** CS86xx warning sites (NL-171).
+- `dotnet format --verify-no-changes` clean under SDK 10 (under SDK 11 clean before the last two test-only integrate commits, not re-run after them); `scripts/check-sln-configs.py` OK.
+- Tests: **6009** non-Docker tests per config and framework, 0 failures, 0 skips (Domain 2135, Application 1081, Integration 566, Serialization 487, Infrastructure 380, Infrastructure.Bitcoin 770, Bolt11 278, Daemon 312): net10.0 on the host in both configs, net11.0 in the sdk:11.0 container in both configs. The Long simulator passes. One full run failed one `ChainMonitorPersistenceTests` test per config, not reproduced in 20 reruns (NL-310).
+- `HasPendingModelChanges()` false for all three providers after `AddOnionReplaySet` (W6-A).
+- Docker (in-container runner, `--network host`; sdk:10.0 for net10.0, sdk:11.0 for net11.0), identical on both frameworks: LND suite **57/57** (incl. Postgres 7, SqlServer 7, `MppFlowTests` 1, `PaymentRetryFlowTests` 3, `CooperativeCloseFlowTests` 5 with the simple-close proofs, Reestablish 3, NormalOperation 8, MultiNodeHarness 6), `Docker.Utils` 2/2, CLN interop **17/17**, ABCD **3 × 10/10**, `Docker.Onchain` **18/18** (O0 2, O2 2, O3 4, O4 5, O5 2, O6 3; the 2 `Explicit` O5 by-hand variants not run). 106 Docker tests in total. O5 (a) failed once on net10.0 before e8841d6; the suite then re-ran green.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W6-A replay store (migration owner) | done: `PersistentOnionReplayStore` over `OnionReplayEntries` (migration `AddOnionReplaySet`, 3 providers, no data step), owned by the incoming HTLC and pruned past its cltv_expiry; `IOnionReplayCache` removed; `IncomingOnionProcessor.ProcessAsync(..., OnionReplayOwner? replayOwner, ...)` (owner required, null = no check); proofs: SQLite restart replay with a real onion, pruning, seeded-upgrade round trips on SQLite/Postgres/SQL Server, crash between the HMAC and secret saves; ABCD 10/10 with the store in the node. Partial: no Docker replay through LND (LND cannot re-send an onion) | a2b57ff, 53c038c | NL-078 fixed; NL-137 partial; new NL-327 |
+| W6-B mpp receive | done: `HtlcSet` per payment hash (memory, rebuilt by replays), `mpp_timeout` after 60 s, whole-set failure on a `total_msat` mismatch, invoice settled in the first fulfill's save, `BasicMpp` Optional in init and invoices; Docker `MppFlowTests`; review fixes (settled-set parts at any replay height, hash-lock re-check, AmountReceived, switch disposal) | ba3db36, 451aa79, 78a3beb | NL-081 fixed; NL-109 note; new NL-322, NL-323 |
+| W6-C send retries + mpp | done: per-call `PayInvoiceOptions` (fee limit, parts, timeout), retries by `PaymentRetryPolicy`/`PaymentRoutePlanner`, MPP split over direct channels and hints, `payinvoice --max-fee-msat/--max-parts/--timeout` (optional keys, no new `ClientCommand`); Docker `PaymentRetryFlowTests` (3); review fixes (row fee/route/HTLC of the settled parts, refusal classification, hint bounds with in-flight parts) | 7024f57, 703d83b, 74c9014 | NL-270 fixed; new NL-321, NL-328, NL-331 |
+| W6-D attribution | partial: wire TLVs (attribution_data 920 bytes, fulfillment_payload) read strictly; `IAttributionDataService` create/wrap/verify for fail and fulfill, byte-exact at every hop against both inline BOLT 4 traces; not wired into the switch (out of lane) | 6d7e480, d5866a6 | NL-022, NL-072 partial; new NL-324 (fixed), NL-325, NL-326 |
+| W6-E simple close | done: `closing_complete`/`closing_sig` (N11-T1), `SimpleCloseCoordinator` with the closer/closee rules and RBF (N11-T2), `ChannelManager` routing, Docker proof against LND 0.20 `--protocol.rbf-coop-close`; review fixes (recognise earlier simple-close txs after a script change, refuse an unsendable bump). `OptionSimpleClose` defaults to No | aa569c8, b67e065, a2331b8, 5b9ce68, d8dd76c, 7ebc93c | NL-020 fixed; NL-034 note; NL-285 partial |
+| W6-F BOLT 5 O6 | done: per-target fee estimates, `SweepScheduler` RBF (O6-T1), rewind of watches and wallet UTXOs and re-resolution after reorgs, SCID move with a new channel_update (O6-T3), Docker O6 (a)-(c), stale-SCID reproducer regular; O6-T4 gate opened and reverted (NL-316) | 6a4eb7d, 7c437b3, e8bb45b, b330d8c, d3dfff8, fdd2d0a, 09052d0, 7dcf472, cde5ebb, 8fcea62, 0c0d5c8, 30584cf, 70cbd33, 6d4b625, 1530dfb | NL-292, NL-293, NL-296, NL-317, NL-096 fixed; NL-094, NL-294 partial; new NL-329, NL-330 |
+| Integration | option binding and attribution registration, test seams, O5 (a) retry, lock audit per flow, guides | 9692ba4, e8841d6, a45d290, 3ce3cad | NL-310, NL-319 notes |
+
+Ledger note: the lanes proposed colliding IDs (W6-B, W6-C and W6-D each suggested NL-321); they were renumbered NL-321..NL-331. W6-C's "NL-321 fixed" (the payment row's fee after a re-sent part) is recorded in NL-270's evidence; its remaining per-part persistence is NL-321. The W6-D review, W6-E and W6-F lane results reached the ledger agent truncated; their items were taken from their commits and the per-project CLAUDE.md files. NL-292 is marked fixed; its residue (a funding tx that never reconfirms keeps its SCID) is NL-329.
+
+Deviations accepted in wave 6:
+- `OptionSimpleClose` defaults to No although the Docker proof passed (N11-T2 said Optional after a proof); the legacy close stays the default path (NL-285).
+- HTLC sets and MPP send parts are memory-only (no schema change): a duplicate HTLC with the right secret for a Settled invoice is fulfilled (BOLT 4 MAY, NL-323); send parts added in flight cannot be decrypted after a restart (NL-321).
+- The replay store assumes one node process per database and prunes lazily; a replayed onion always fails (no MAY-redeem).
+- The attribution_data library is registered but unused; `OptionAttributionData` stays experimental.
+- HTLCs stay regtest-only by default (O6-T4 gate closed until NL-316).
+- Out-of-lane touches accepted: `HtlcSwitch` owner argument and seven Application test files (W6-A); `FeatureOptions`, `InvoiceService`, `ThreeNodeHarness` hooks (W6-B); `IPaymentService` overload and new Domain models (W6-C); the test fakes `CrashingUnitOfWork`/`HookedUnitOfWork` (W6-A).
+
+### Carried into wave 7
+
+- **Mainnet gate and final-hop on-chain claims (NL-094 O6-T4):** claim our invoice's HTLCs on chain after the peer's force close (NL-316) and the held parts of a settled MPP set (NL-322), then open the HTLC gate on every network (template and default together); NL-311, NL-320.
+- **attribution_data in the switch (M3b, NL-072):** migration owner: persist attribution_data (and fulfillment_payload) with HTLC removals and an add-received timestamp for hold times (NL-326); wire `IAttributionDataService` into `HtlcSwitch`/`PaymentService`; enforce the 32 KiB fulfillment_payload MUST (NL-325); then take `OptionAttributionData` out of `ExperimentalFeatures`.
+- **Payments persistence:** per-part MPP send rows (NL-321), HTLC set membership (NL-323), block-driven replay pruning (NL-327), forward failure reasons and an SCID map (NL-137), PaymentModel docs (NL-328).
+- **BOLT 5 follow-ups:** NL-307..NL-309, NL-312..NL-315, NL-318, NL-329, NL-330, refused-broadcast abandonment for funding txs (NL-294, NL-259); later O7 anchors (NL-314, `OptionAnchors`), O8 mempool (NL-098).
+- **Close follow-ups:** decide the `OptionSimpleClose` default (NL-285), NL-279, NL-286, NL-045, NL-277, wallet address reuse (NL-280).
+- **Switch/monitor:** NL-265, NL-266, NL-267, NL-268, NL-273, NL-274, NL-290, NL-216, NL-298.
+- **Not started:** route blinding (M5, NL-079), BOLT 7 graph and pathfinding (NL-099), dual funding (NL-037).
+- **Test infra and platform:** NL-276 (host route), NativeAOT and Wasm on SDK 11 (NL-300), NL-310 (chain-monitor test race), NL-319 (move the LND retry helpers to shared utils), NL-331, NL-295, NL-262, NL-261.
+- **Mutinynet / ops:** NL-303, NL-306, a longer live run with a force close; carried from earlier waves: NL-152 (disconnect IPC), NL-269, NL-260, NL-138, the Wasm risk.
+
+### Wave 5: integrated into `wip/fafo` @ `1a5ab49` (2026-09-26), gates GREEN
+
+Wave 5 wired BOLT 5 end to end: every force-closed channel is now detected and resolved on chain, penalties included, and proven against LND. Five lanes: W5-A funding-spend watcher + resolution executor (migration owner; three steps incl. a review), W5-B local commitment resolution, W5-C remote commitment resolution, W5-D revoked commitment penalties, W5-E Mutinynet live smoke. 25 lane commits were cherry-picked with `-x` in the order w5a, w5b, w5c, w5d, w5e. Not picked (identical to W5-A's port commit dabbd72 or its format fix): W5-B 7c16f07 and 86805dd (empty), W5-C d59308c and 44f7c0c, W5-D 92ee2c8. Conflicts, all resolved by keeping both sides: `src/NLightning.Application/CLAUDE.md`, `test/CLAUDE.md` (twice), `src/NLightning.Client/CLAUDE.md`, `ClientAppTests` InlineData rows. Three `integrate:` commits:
+- dd2d64f: `AddApplicationServices` calls `AddLocalCommitResolutionServices()`, `AddRemoteCommitResolutionServices()` and `AddRevokedCommitResolver()` right after `AddOnchainServices()`; the daemon binds `LocalCommitResolverOptions`, `RemoteResolutionOptions` and `RevokedCommitResolverOptions` from `Node:Onchain`; the `(HtlcRemovalKind)4` casts in `OnchainHtlcRemovals`/`RemoteHtlcSwitchEvents` became `HtlcRemovalKind.OnchainTimeout`; W5-C's test `InMemoryOnchainStore` got W5-A's new repository members; `OnchainClientHandlerTests` checks the composed graph (exactly one resolver per commitment kind, none for Mutual/Unknown) and the option binding.
+- a5b24e3: the end-to-end O5 (a) and (b) proofs are regular tests; O4 (b) retries LND's payment while LND's router lacks the fresh private edge (`PayUntilSentAsync`, NL-319).
+- 1a5ab49: root, `test/` and `src/NLightning.Application` CLAUDE.md for wave 5.
+
+Gates at `1a5ab49`:
+- Build: Release and Release.Native under SDK 10 and SDK 11, 0 errors, the same **5** CS86xx warning sites (NL-171).
+- `dotnet format --verify-no-changes` clean under SDK 10 and 11; `scripts/check-sln-configs.py` OK.
+- Tests: **5718** non-Docker tests per framework and config, 0 failures, 0 skips (Domain 2110, Application 932, Integration 544, Serialization 466, Infrastructure 372, Infrastructure.Bitcoin 722, Bolt11 278, Daemon 294), green for Release and Release.Native on net10.0 and net11.0. The Long simulator passes.
+- `HasPendingModelChanges()` false for all three providers after `AddBroadcastCommitmentNumber` (W5-A).
+- Docker (in-container runner, `--network host`; sdk:10.0 for net10.0, sdk:11.0 for net11.0), identical on both frameworks: LND suite incl. Postgres/SqlServer **48/48**, `Docker.Utils` 2/2, CLN interop **17/17**, ABCD **10/10** (three runs in a row on net10.0), `Docker.Onchain` **14/14** (O0 smoke 1, O2 2, O3 4, O4 5, O5 2 end to end; 3 `Explicit` not run in the suite: the two O5 by-hand variants, which passed when run, and the stale-SCID reorg reproducer, which fails as expected, NL-292). The Docker suite now runs on net11.0 too (NL-300 partial).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W5-A watcher + executor (migration owner) | done: `IOutputResolver` port + action model; migration `AddBroadcastCommitmentNumber` (3 providers); the commitment broadcast row in the Failed save and the handler path under the manager's lock; S1 at registration; `OnchainChannelWatcher` (O2-T5); `OnchainResolutionExecutor` with the 100-block rule and Closed (O6-T2); `forceclosechannel` (14) / `pendingsweeps` (15) IPC (O3-T6); Docker O2; review fixes (catch-up of spends mined before a watch, reorged funding spend height, unmapped-vout alerts, Closed staged on the DB copy, Closing never force-failed) | 152144c, d040654, 41f5fc2, c2ae40a, 567a3c1, 7f6ebd9, cbd99c6 | NL-271, NL-272, NL-297 fixed; NL-094, NL-294 partial; new NL-307, NL-308, NL-309, NL-310, NL-311, NL-312, NL-313, NL-320 |
+| W5-B local resolution | done: `LocalCommitResolver` (to_local after CSV, HTLC-timeout/success, second-level sweeps; O3-T3), `HtlcRemovalKind.OnchainTimeout` + switch and `PaymentService` mapping (O3-T4); Docker O3 (a)-(d); review fixes (preimage read back from the spender, dust-floor sweeps, switch replay of a refused on-chain fail) | 5af263f, 7d3a6b3, cc207a8, 037c04b | NL-094 partial; new NL-314, NL-315; NL-280 note |
+| W5-C remote resolution | done: `RemoteCommitResolver` on the shared port (to_remote, timeout and preimage claims incl. a forward's downstream preimage, remote-next and future commitments, events re-raised until the upstream has its removal; O4-T1..T3); Docker O4 (a)-(e) | 3794c0d, 6bd3645, 202341b | NL-094 partial; new NL-316, NL-317; NL-292 note |
+| W5-D revoked resolution | done: `RevokedCommitResolver` + `PenaltyTransactionComposer` (batched/single/split penalties, second-level penalties, upstream resolution; O5-T2/T3); Docker O5 (a) LND channel.db rollback and (b) deterministic NLightning cheater; review fixes | e5a556d, bbc51b4, f4b83ff, aee5aed, 7189b71, d1f1721 | NL-094 partial; new NL-318; NL-294 note |
+| W5-E Mutinynet smoke | done: `openchannel` push over IPC, UTXO wallet addresses loaded at startup, signer names an unsignable input, 21M BTC cap, `scripts/mutinynet/`, live smoke recorded in `MUTINYNET.md` (open with push, pay, receive, restart + reestablish, cooperative close) | d363373, 9a8a0f0, fefdce3, 5f4e0df, ce091a1 | NL-301, NL-302, NL-304 fixed; NL-306 partial; new NL-303; NL-305 duplicate of NL-280 |
+| Integration | resolver registration and options, O5 proofs regular, O4 (b) LND retry, guides | dd2d64f, a5b24e3, 1a5ab49 | NL-300 partial (Docker on net11.0); new NL-319 |
+
+Ledger note: NL-272 is marked **fixed** (detection and resolution are both wired and proven by Docker O2-O5); W5-A's own step 2 said "fixed/partial" only because the resolvers were in other lanes. NL-094 stays **open (partial)** for O6-O8. NL-301..NL-306 were cited by W5-E's commits and `MUTINYNET.md` before they had ledger entries; they keep those IDs, and the lanes' proposed new items were numbered NL-307..NL-320. The W5-C, W5-D and W5-E lane results reached the ledger agent truncated; their items were taken from their commits and the per-project CLAUDE.md files.
+
+Deviations accepted in wave 5 (details in `BOLT5_ONCHAIN_PLAN.md` "ABCD wave 5 record"):
+- An Unknown funding spend goes to `OnchainResolving` with no outputs instead of Failed (NL-308).
+- HTLCs without an output are re-derived from the snapshot every round instead of being persisted; upstream switch events repeat every round (the switch is idempotent).
+- One tx per resolved output and no fee bumping yet (NL-317); a revoked commitment without a log entry is mapped by script only (NL-309).
+- Out-of-lane touches: `PaymentService.InterpretFailure` + a `PaymentServiceTests` case (W5-B), `ChannelSafetyFlowTests` now expects `OnchainResolving` after our commitment confirms and `ChainWatchSchemaRoundTrip` asserts `CommitmentNumber` (W5-A).
+
+### Carried into wave 6
+
+- **BOLT 5 O6 (NL-094):** `SweepScheduler` with fee bumping and a per-target estimate (NL-317, NL-296), reorg re-resolution and wallet rollback (O6-T3: NL-292, NL-293; drop the stale-SCID reproducer's `Explicit`), Proof O6 (a)-(c), the mainnet gate O6-T4; broadcast abandonment for refused rows (NL-294, NL-259).
+- **Wave 5 follow-ups:** startup catch-up of untracked resolution watches (NL-311), upstream HTLCs of future/unknown closes (NL-320), our invoice's HTLC claimed on chain after the peer's force close (NL-316), pre-log revoked HTLC outputs (NL-309), the revoked resolver's preimage persistence (NL-318), the watcher's model-before-save (NL-307, with NL-282), a Failed channel whose mutual close confirms (NL-312), NL-308, NL-313, NL-315.
+- **Later BOLT 5:** O7 anchors (NL-314, then `OptionAnchors`), O8 mempool (NL-098).
+- **Close follow-ups:** `option_simple_close` (N11, NL-020), NL-279, NL-285, NL-286, NL-045, NL-277, wallet address reuse (NL-280, also for sweep destinations).
+- **Switch/monitor:** NL-078, NL-265, NL-266, NL-267, NL-268, NL-273, NL-274, NL-290, NL-216, NL-298.
+- **Mutinynet / ops:** display byte order (NL-303), daemon-anchored relative paths (NL-306), a longer live run with a force close on Mutinynet.
+- **Test infra and platform:** NL-276 (host route), NativeAOT and Wasm on SDK 11 (NL-300), the LND fresh-edge retry for other tests (NL-319), the reorg test flake watch (NL-310), NL-295, NL-262, NL-261.
+- **Carried from earlier waves:** NL-152 (disconnect IPC), NL-269, NL-260, NL-270, NL-138, the Wasm risk.
+
+### Wave 4: integrated into `wip/fafo` @ `6b5d50e` (2026-09-26), gates GREEN
+
+Wave 4 started BOLT 5 and cleared the wave-3 interop bugs. Five lanes: W4-A BOLT 5 plumbing (migration owner; O0 + O1 + review fixes, three steps), W4-B BOLT 5 builders (O2-O6 pure pieces + review fixes, three steps), W4-C net11 multi-targeting, W4-D signet/Mutinynet and wallet fixes, W4-E interop follow-ups (fees, closing timeouts, NL-271). 33 lane commits were cherry-picked with `-x` in the order w4a, w4b, w4d, w4e, w4c. Conflicts resolved by the integrator: `OutputDescriptorKind` (W4-A's persisted 1-9 kept, W4-B's `Unknown = 0`, `PeerOutput = 10`, `OurAnchor = 11`, `PeerAnchor = 12` appended), `OutputResolutionState` (both lanes used the name; the persisted workflow enum stays, W4-B's planner enum became `PlannedResolutionState`), W4-E's `RateMultiplier = 250` dropped for W4-D's `FeeRateConverter`, `Daemon.csproj` package versions, and the CLAUDE.md files. Five `integrate:` commits:
+- 53accb1: restores `BitcoinChainService.GetBlockHashAsync` (lost in the W4-D merge; the reorg rewind needs it) and resolves the monitor's network through `ToNBitcoinNetwork()`.
+- 960cf05: hub registrations: `AddFeeServices()` (replaces the typed HttpClient), `AddOnchainBitcoinServices()`, an explicit `AddLogging()` (10 Daemon tests failed without it); `CustomSignet?.Register()` and `BitcoinNetwork.Resolve` in PostConfigure; signet/mutinynet in the usage text; the test node uses `AddFeeServices(_ => CreateFixedFeeHandler())`.
+- 1161213: root, Repositories and test CLAUDE.md for wave 4; `scripts/run-onchain.sh` pinned to one framework (`ONCHAIN_FRAMEWORK`).
+- 5cc32ba: **NL-263 fixed** (reproduced at integration): the UTXO locks move to the real channel id before `UpgradeChannel` raises `OnChannelUpgraded`; regression test `Given_ValidAcceptChannel_When_ChannelIsUpgraded_Then_UtxoLocksAlreadyCarryTheNewChannelId`.
+- 6b5d50e: test baselines and the in-container Docker runner with `--network host` (test/CLAUDE.md).
+
+Gates at `6b5d50e`:
+- Build: Release and Release.Native, 0 errors, the same **5** CS86xx warning sites (NL-171). Same under SDK 11 rc.1 for both configs (each warning once per framework).
+- `dotnet format --verify-no-changes` clean under SDK 10 and 11; `scripts/check-sln-configs.py` OK.
+- Tests: **5561** non-Docker tests per config and framework, 0 skips (Domain 2107, Application 815, Integration 538, Serialization 466, Infrastructure 372, Infrastructure.Bitcoin 721, Bolt11 278, Daemon 264); under SDK 11 they pass on net10.0 and net11.0 in both configs (the full SDK 11 run was before 5cc32ba; Application re-run on both after it). The Long simulator passes.
+- `HasPendingModelChanges()` false for all three providers after `AddChainWatchAndBroadcasts` and `AddOnchainResolution` (W4-A).
+- Docker: **77 tests, all green** (from an SDK container, NL-276). LND suite 48 in one bridge-network run: 32 passed first time, and the 16 environment failures (database round trips on 127.0.0.1, the connect-back and server-database cases) passed on rerun with `--network host` (Postgres 6/6, SqlServer 6/6, `MultiNodeHarness` server-database 2/2, `AbcNetworkTests` + `ChannelOpeningFlowTests` 8/8). `CooperativeCloseFlowTests` 4/4, `ChannelSafetyFlowTests` 2/2 and `FeeUpdateFlowTests` 3/3 (LND-funded case no longer skipped) are now verified on `wip/fafo`. CLN interop 15/15 + `ClnChannelSessionTests` 2/2. **ABCD `scripts/run-abcd.sh 3`: 3 × 10/10** (fresh process and fixture each). BOLT 5 O0 smoke `Docker.Onchain` 1/1 (the stale-SCID reproducer is `Explicit`, NL-292). All on net10.0 only (NL-300).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W4-A BOLT 5 plumbing (migration owner) | done: EF 10.0.12 bump; O0-T1..T4 (persisted broadcasts + rebroadcast, persisted outpoint watches, one unit of work per block, tip at start, halt flag, reorg header ring + rewind), migration `AddChainWatchAndBroadcasts`; O1-T1..T3 (revocation log in the RAA save, `ChannelCloses`/`OutputResolutions`, `OnchainResolving = 37`, stubs deleted), migration `AddOnchainResolution`; Docker O0 smoke; review fixes (rebroadcast while halted, late orphans dropped, fork search from our tip, periodic refusal warning) | 2bfaaf9, 7b4a173, f251dde, ba406bd, 5bedf44, 4fd3617, a9e33a7 | NL-095, NL-214, NL-215, NL-258 fixed; NL-096, NL-216, NL-272, NL-094 partial; new NL-292, NL-293, NL-294, NL-295 |
+| W4-B BOLT 5 builders | done (pure, not wired): O2-T1 S1 (partial: restart), O2-T3 classifier + `CommitmentNumber.Decode`, O2-T4 output mapper, O3-T5 preimage extraction, O3-T1 `SignSweepInput` + `SweepTransactionBuilder`, O4-T1/T2 claims, O5-T1 `PenaltyTransactionBuilder`, O3-T2/O4-T2/O5-T2 `OutputResolutionPlanner`, O6-T1 `SweepFeePolicy`; review fixes (batching rules, S1 atomic, Appendix F claims executed) | dbe4cc8, 5926d0c, 263ab8f, d7a4c73, 0b3dda5, 369314d, 7394f19, 0df889a, 36e8797, 9dbbabc, ff7f6cc, 0761773 | NL-094 partial; new NL-296, NL-297, NL-299 (wontfix) |
+| W4-C net11 | done: net10.0 + net11.0 gated on SDK 11, net9.0 dropped, LangVersion 14, Microsoft.Extensions 10.0.12, CI installs SDK 10 and 11, `-f net10.0` in scripts and docs (`NET11_PLAN.md`) | d35784f, 9e6f5ef, 07b383e | NL-155 fixed; new NL-300 |
+| W4-D signet | done: signet and custom signet (Mutinynet) networks, fail-fast network resolution, testnet chain hash fixed, signet/Mutinynet defaults (`MUTINYNET.md`), wallet index fix and address-generation lock, configurable fee source, shared started fee service that never reports 0 | e7d9037, 3350020, 959f310, 803df11 | NL-283, NL-288 fixed (with W4-E); new NL-291 (fixed), NL-298 |
+| W4-E interop follow-ups | done: sat/vB → sat/kw with a 253 floor, fundee accepts from the relay floor, CLN reproducers regular; watch in the Failed save + precondition; closing timeouts; shutdown address reservation; close fee estimate via the fee service; CLN close proofs with `fee_range`; review fixes | 1036dfe, eb38c26, d8680cd, 10b39e7, 8096700, 8249044, a38c999 | NL-284, NL-288, NL-289, NL-275 fixed; NL-271, NL-280, NL-285, NL-286 partial |
+| Integration | seams, hub registrations, NL-263, guides | 53accb1, 960cf05, 1161213, 5cc32ba, 6b5d50e | NL-263 fixed; NL-034 closed (Docker close proof on `wip/fafo`); NL-276 workaround documented |
+
+Ledger note: NL-034 is **closed** (the legacy close epic): `CooperativeCloseFlowTests` passed on `wip/fafo` and every remaining item has its own entry. The integrator listed NL-285 and NL-286 as fixed; the ledger keeps both **open (partial)**: the R09 deviation is unchanged (only its CLN risk is refuted), and there is still no Docker restart while ShuttingDown/Negotiating/Closing. The integrator listed NL-096 and NL-216 as fixed by W4-A; the lane itself reported both partial, and the ledger agrees (NL-292, NL-293; no halt IPC or gate). NL-291 was cited by W4-D's commits before it had a ledger entry; W4-A's proposed new IDs were renumbered to NL-292..NL-294. The `OutputDescriptorKind`/`OutputResolutionState` reconciliation was done at integration and gets no entry. The W4-C, W4-D and W4-E lane results reached the ledger agent truncated; their items were taken from their commits, `NET11_PLAN.md`, `MUTINYNET.md` and the per-project CLAUDE.md files.
+
+Deviations accepted in wave 4 (details in `BOLT5_ONCHAIN_PLAN.md` "ABCD wave 4 record" and the BOLT2 plan "ABCD wave 4 record"):
+- O0 tests live in `IT/Persistence/ChainMonitorPersistenceTests` (real SQLite), the Docker proof is `Docker/Onchain/OnchainSmokeTests`; no Domain `ChainTx` on the outpoint-spent event.
+- The O1 "simulator invariant" is proven in the real-crypto `TwoNodeHarness`.
+- The signer's Revocation-key check is script-based, not number-based (§3.5); BOLT 5 witness weights computed exactly (NL-299).
+- A reorg does not undo completed confirmations or wallet UTXOs (NL-292, NL-293); the halt flag has no IPC (NL-216).
+- Out-of-lane touches accepted: `CrashingUnitOfWork`, `ThreeNodeHarness` and `HookedUnitOfWork` (`IUnitOfWork` forwarders), new `test/NLightning.Tests.Utils/Mocks/FakeBitcoinChain.cs`, `TwoNodeHarness` `InMemoryChannelStateStore` (revocation log), the Application FundingSigned/FunderRememberRule tests (W4-A); new `Builders/Interfaces/{ISweep,IPenalty}TransactionBuilder.cs` and the Bitcoin.Tests csproj linking the Integration BOLT 3 harness (W4-B); `Daemon.csproj` package bump (W4-A).
+
+### Carried into wave 5
+
+- **BOLT 5 wiring (the next critical step, NL-094):** O2-T5 `OnchainChannelWatcher` + `forceclosechannel` IPC (classify every funding spend, persist `ChannelCloses`/`OutputResolutions`, state 37; NL-272), the NL-271 remainder (the handler `MustBroadcast` path through `ChannelManager`, a `BroadcastTransactions` row for the commitment) and S1 at registration (NL-297); then O3-T3/T4 (local resolution, switch integration, `HtlcRemovalKind.OnchainTimeout`), O3-T6 `PendingSweeps` IPC, O4-T3, O5-T2/T3 (penalty execution), O6 (`SweepScheduler`, per-target estimate NL-296, 100-block completion, reorg re-resolution NL-292, mainnet gate); Docker Proofs O2-O6 through `scripts/run-onchain.sh`.
+- **Chain monitor:** wallet rollback on reorg (NL-293, needs a spent-at height: migration owner), broadcast abandonment (NL-294, with NL-259 UTXO locks), halt flag over IPC and as a channel-operation gate (NL-216), unified network resolution (NL-298).
+- **Close follow-ups:** `option_simple_close` (N11, NL-020), B2-SHUT-S08 (NL-279), R09 (NL-285), Docker restart while closing (NL-286), local upfront script (NL-045), wallet address reservation (NL-280), `MessageFactory.CreateClosingSignedMessage` (NL-277), in-memory model before save (NL-282).
+- **Switch/monitor:** wire and persist `IOnionReplayStore` (NL-078), NL-265, NL-266, NL-267, NL-268, NL-273, NL-274, NL-290.
+- **Test infra and platform:** NL-276 (host route; the in-container runner is the workaround), Docker on net11.0 plus NativeAOT/Wasm on SDK 11 (NL-300), the open-subscription race (NL-295), NL-262, NL-261, the live Mutinynet smoke (`MUTINYNET.md`), and the per-wave refresh of the root/`test` CLAUDE.md counts.
+- **Carried from earlier waves:** NL-152 (disconnect IPC), NL-269, NL-260, NL-270, NL-138, the Wasm risk.
+
+### Wave 3: integrated into `wip/fafo` @ `c92d837` (2026-09-25), gates PARTIAL
+
+Wave 3 moved from "make ABCD green" to BOLT 2 completion and hardening. Six lanes: W3-A N9 safety, W3-B N10 close (migration owner), W3-C N9 fees, W3-D replay and debt, W3-E CLN interop, W3-F BOLT 5 plan (docs only). 30 lane commits were cherry-picked with `-x` in the order w3b, w3a, w3c, w3d, w3e, w3f; the only conflict was doc text in `src/NLightning.Application/CLAUDE.md` (both kept). Two `integrate:` commits:
+- 983b2b4: `AddApplicationServices` calls `AddChannelSafetyServices()` after `AddPaymentSendServices()` and `AddChannelFeeServices()` last (it wraps `IHtlcSwitch` in `DustExposureHtlcSwitch`); `Node:Safety` binds `ChannelSafetyOptions`; `NltgDaemonService` and `NLightningTestNode` start `IChannelFailureService`, `IHtlcExpiryMonitor` and `IFeeUpdateScheduler` after `PeerManager.StartAsync` and the payment reconcile and stop them before the chain monitor (the test node sets `Node:FeeUpdates:Enabled=false`); `ChannelManager` hands a `MustBroadcast` `ChannelFailedException` to `IChannelFailureService` after the lock; the reestablish handler calls `ILightningSigner.MarkDataLoss` after the data-loss save; `ChannelSafetyFlowTests` resolves its services from DI. Tests: ChannelManager theory (failure service only with MustBroadcast, never under the lock), MarkDataLoss assertions, DI resolution of the new services.
+- c92d837: root `CLAUDE.md` for wave 3.
+
+Gates at `c92d837`:
+- Build: Release and Release.Native, 0 errors, the same **5** CS86xx warning sites (NL-171).
+- `dotnet format --verify-no-changes` clean; `scripts/check-sln-configs.py` OK.
+- Tests: **4879** non-Docker tests pass in both configs, 0 skips (Domain 1899, Application 782, Integration 512, Serialization 466, Infrastructure 372, Infrastructure.Bitcoin 323, Bolt11 275, Daemon 250). The 10k-seed Long simulator passes.
+- `HasPendingModelChanges()` is false for all three providers after `AddShutdownState` (W3-B).
+- Docker (67 tests): 23 passed (Postgres 4/4, SqlServer 4/4, CLN interop 9/9, `ClnChannelSessionTests` 2/2, `OnceOnlyBuildTests` 2/2, `PollTests` 2/2); the 2 `Explicit` CLN reproducers were not run; **44 LND-based tests failed at fixture setup** ("No route to host" from the host process to the container IPs, NL-276), before any test code ran. So the ABCD 3-run gate (`scripts/run-abcd.sh 3 Release`) and the N9/N10 LND proofs are **not verified at `c92d837`**. In the lanes: `ChannelSafetyFlowTests` 2/2 (several runs, from an SDK container), `CooperativeCloseFlowTests` 4/4 at 287a956 (not re-run after 8e0e154), ABCD `scripts/run-abcd.sh 1` 10/10 plus `ReestablishFlowTests` 3/3 and `NormalOperationFlowTests` 8/8 during W3-B step 2.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W3-A N9 safety | done: N9-T2 `HtlcDeadlinePolicy` + `HtlcExpiryMonitor`, N9-T4 `ChannelFailureService`, signer broadcast signing + data-loss lock; review fixes (retry refused publishes, resume at start, final-hop deadline); Docker proofs (offered HTLC force close; forwarded HTLC failed back upstream before its deadline) | 36d2270, 684bc1e, 02b12f7, a681dad, 06da54b | NL-094 partial; new NL-271, NL-272, NL-273, NL-274, NL-275, NL-276 |
+| W3-B N10 close (migration owner) | done: N10-T1..T3, `AddShutdownState` (3 providers), `closechannel` (ClientCommand 13), LND interop fixes, crash/chain safety (closing watch in the Closing save, funding-spend watch, startup and per-block completion, reestablish in closing states); Docker close proof 4/4 at step 2 | 34757a3, b38ce86, 6d81ecd, b41e925, 9733937, 287a956, 5d0aafc, 8e0e154 | NL-036, NL-065 fixed; NL-034, NL-045, NL-152 partial; new NL-277..NL-287 (NL-278, NL-281, NL-287 fixed in the wave) |
+| W3-C N9 fees | done: N9-T1 `FeeUpdatePolicy`/`FeeUpdateScheduler`, N9-T3 `max_dust_htlc_exposure_msat` + `DustExposureHtlcSwitch`; Docker `FeeUpdateFlowTests` with the LND-funded case skipped | 1dbbc1f, 45cc1b9, 525973a, 9bfa09d, 533330f | NL-254 fixed; new NL-288, NL-290 |
+| W3-D replay and debt | done: NL-247, NL-249, NL-251 (real ping before commit), NL-264; `IOnionReplayStore` (not wired); NL-246 documented as unfixable | 03a19fa, c53afa2, 82b7dcc, d7f09a9, eb597d7, 813fc85, c84f81a, 9762e28 | NL-247, NL-249, NL-251, NL-264 fixed; NL-078 partial; NL-246 wontfix |
+| W3-E CLN interop | done: `ClnFixture` (own bitcoind + CLN v26.06.8, fee limits on), connect both ways, channels both directions, payments both ways, reestablish after disconnect and restart; two `Explicit` reproducers | 7c7c8c5, 8427c87 | new NL-288 (shared with W3-C), NL-289 |
+| W3-F BOLT 5 plan | done: `docs/agents/BOLT5_ONCHAIN_PLAN.md` (spec summary, verified gaps, design, milestones O0-O8, Docker proofs against LND) and its review revision | 3b02972, 6290443 | NL-094 plan ref |
+| Integration | wiring, root guide | 983b2b4, c92d837 | NL-094 partial (wired) |
+
+Ledger note: NL-034 stays **open (partial)** until `CooperativeCloseFlowTests` passes on `wip/fafo` (W3-B step 2 said fixed, step 3 changed the close path afterwards and could not re-run Docker). NL-094 stays open: only the broadcast of our own commitment exists. The W3-C lane result reached the ledger agent truncated; its items were taken from its commits and `src/NLightning.Application/CLAUDE.md`.
+
+Deviations accepted in wave 3 (details in the BOLT2 plan "ABCD wave 3 record"):
+- B2-CLS-R09: we re-send our closing fee limit to a peer seen converging (LND 0.20 lowers 10 % per round, about 19 rounds) instead of failing; NL-285.
+- The closing timeouts B2-CLS-03/R04 are not implemented (NL-284); B2-SHUT-S08 (fail HTLCs added after our shutdown) is not implemented (NL-279).
+- `HtlcDeadlinePolicyTests` live in Application.Tests, not Domain.Tests.
+- A Closing channel is never turned Failed.
+- Out-of-lane touches: `IBlockchainMonitor` (W3-B: `TrackWatchedTransaction`, `PublishTransactionAsync`, `WatchOutpointSpend`, `StopWatchingOutpointSpend`, `OnWatchedOutpointSpent`), `IPeerService` (W3-D: `LastMessageReceivedAt`, `PingAsync`), `TwoNodeHarness` (W3-B).
+
+### Carried into wave 4
+
+- **Gate first:** fix the host-to-container route (NL-276: Local Network permission or OrbStack restart, or run from the SDK container), then run the full Docker suite and `scripts/run-abcd.sh 3 Release`. Close NL-034 when `CooperativeCloseFlowTests` passes; confirm `ChannelSafetyFlowTests` and `FeeUpdateFlowTests` through DI.
+- **Interop bugs (high):** fee estimate unit (NL-288; then un-skip the LND-funded `FeeUpdateFlowTests` case and drop the CLN `Explicit`), fundee feerate floor (NL-289), wallet address generation off-by-one (NL-283) and address reuse (NL-280).
+- **BOLT 5** (`BOLT5_ONCHAIN_PLAN.md` O0-O8): detect the peer's commitment and any funding spend (NL-272), persisted broadcast intent (NL-271, migration owner), sweeps and HTLC resolution, penalty (NL-095).
+- **Close follow-ups:** closing timeouts via `IChannelFailureService` (NL-284), fail back HTLCs added after our shutdown (NL-279), `option_simple_close` (N11, NL-020), local upfront script (NL-045), Docker restart-while-ShuttingDown and CLN close cases (NL-286), R09 (NL-285), `MessageFactory.CreateClosingSignedMessage` (NL-277), in-memory model before save (NL-282).
+- **Switch/monitor:** wire `IOnionReplayStore` into the switch and persist it (NL-078), HTLCs from older builds without an origin (NL-265), alias scids in UPDATE failures (NL-266), forward checks at height 0 (NL-267), fee-aware liquidity pre-check (NL-268), per-invoice preimage check in the monitor (NL-274), error through the outbox (NL-273), pre-wave-3 dust limit backfill (NL-290).
+- **Carried from wave 2:** NL-258 (funding rebroadcast), NL-259 (UTXO locks), NL-263 (flake), NL-262, NL-261, NL-269, NL-260, NL-270, NL-152 (disconnect), NL-138, the Wasm risk, and the per-wave refresh of the root/`test` CLAUDE.md counts.
+
+### Wave 2: integrated into `wip/fafo` @ `a5675cb` (2026-09-25)
+
+All four lanes are done: W2-A in three steps (base, N7-T5/T6 and the full-suite LND restart, review fixes), W2-B with a review-fix step, W2-C with a review-fix step, and W2-D. 19 lane commits were cherry-picked with `-x` in the order w2b, w2a, w2c, w2d. The only conflicts were doc text in `src/NLightning.Application/CLAUDE.md` and `test/CLAUDE.md`; both sides were kept. No lane touched migrations, and no schema change was needed. Two `integrate:` commits:
+- f2f1ef6: `AddApplicationServices` calls `AddHtlcSwitchServices()` and then `AddPaymentSendServices()`. New `Payments/Send/PaymentOutcomeSwitchHandler` bridges `ILocalPaymentHtlcHandler` to `IPaymentOutcomeHandler`. `ReconcileInFlightPaymentsAsync` runs after `PeerManager.StartAsync` in `NltgDaemonService` and in `NLightningTestNode`. `ListChannelsClientHandler` reads `IsReestablished` from `IReestablishTracker`. The daemon binds `Node:Payments` to `PaymentSendOptions`. Daemon DI (ValidateOnBuild) and listchannels tests were added. A CS8602/CS8629 warning from W2-A was fixed. The harness has a `HarnessStateStore.DropOrigins` switch, so the two W2-C "no origin" tests still test that case now that W2-B stores origins.
+- a5675cb: the N6/N7 Docker probe payments from LND now carry the MPP record on the last hop. The real final hop rejects a payload without `total_msat` as `invalid_onion_payload` (BOLT 4), and LND's BuildRoute won't attach a payment address for a node outside its graph. Test-only change.
+
+Gates at `a5675cb`:
+- Build: Release and Release.Native have 0 errors and the same **5** CS86xx warning sites as wave 1.
+- `dotnet format --verify-no-changes` is clean.
+- Tests: **3934** non-Docker tests pass in both configs with 0 skips (Domain 1236, Application 563, Integration 512, Serialization 466, Infrastructure 342, Infrastructure.Bitcoin 305, Bolt11 275, Daemon 235). The ledger agent re-ran the Release set and got the same counts.
+- The 10k-seed Long simulator passes.
+- Docker on OrbStack: **47/47** after a5675cb. Run 1, before a5675cb, was 43/47; the four failures were the LND probe payments without `payment_data`.
+- The ABCD suite (`Docker/Abcd/`) passed in both full-suite runs and in `scripts/run-abcd.sh 1` (10/10). That is three green runs so far, which meets the §2 wave-3 bar of 3 in a row. Re-confirm with a single `scripts/run-abcd.sh 3` loop.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W2-A Reestablish | done: N7-T1..T6 (T5 for every existing state; ShuttingDown/Negotiating are N10), N6-T3 rest, NL-234; I11 harness and Docker Proof N7 (a)(b)(c) in the full suite | 4620895, 4ec83d3, 1ad14ce, a4e95d7, 77c69a2, 82c4c37, 30c1bb8, 22c29ae | NL-035, NL-200, NL-234, NL-252 fixed; NL-036 partial; NL-048 wontfix pinned by test; new NL-258, NL-259, NL-260, NL-261, NL-262, NL-263, NL-269 |
+| W2-B HTLC switch | done: M4-T2 wiring, T3 atomic accept, T4 forward, T5 propagation, T7 replay; `ThreeNodeHarness` on SQLite | 4ca9b56, ca87313, c4ad8e9, 5a254c2, d1476a4 | NL-250, NL-253, NL-243 fixed; NL-137 partial; new NL-256 (fixed in d1476a4), NL-257 (not reproduced, wontfix), NL-266, NL-267, NL-268 |
+| W2-C Send | done: N8-T3 + M4-T6 `PaymentService` (direct and hinted), origin decrypt, startup reconciliation; invoice route hints | 0870ab1, 6cb279f, 083a726 | NL-245 fixed; NL-114 and NL-073 fixed after integration; new NL-270 |
+| W2-D Docker proofs + ABCD | done: Proof N8 (LND pays our invoice, trimmed, we pay LND, 10 concurrent each way, in-flight restart); ABCD suite (reestablish, happy path, a, b1, b2 stop/crash, c-send, c-receive) and `scripts/run-abcd.sh` | fdc80af, 1980a00, 421f1e5 | NL-099 unchanged (route hints, decision B) |
+| Integration | wiring and Docker probe fix | f2f1ef6, a5675cb | NL-031, NL-073, NL-114 fixed (epics); NL-152 partial; new NL-264, NL-265 |
+
+Ledger note: the integrator's summary listed NL-243 as fixed, and the ledger agrees. The leftover is that existence checks still use `GetByIdAsync`, which is noted but not tracked. NL-031, NL-073 and NL-114 are closed as epics: every remaining item has its own entry (NL-078 replay set, NL-094/N9-T4 broadcast, NL-266..NL-270). NL-257 was proposed by W2-B ("LocalAliases are not persisted") but is refuted: `ChannelLocalAliases` is persisted and reloaded (NL-103).
+
+Deviations accepted in wave 2 (details in the BOLT2 plan "ABCD wave 2 record" and the ONION plan status):
+- The reestablish secret is checked against our secret Y-1 (spec), not L-1 (plan §3.11). Planner tests live in Application.Tests, and the funder rule test is `FunderRememberRuleTests`.
+- `channel_reestablish` is sent at connect for V1FundingSigned/ReadyForThem/ReadyForUs/Open. A peer's reestablish that arrives after channel_ready is answered.
+- The invoice is Settled in the fulfill's own save (Accept and Settle are staged together), not when the removal is irrevocable. This is safe because both commit atomically with the fulfill.
+- Pending events are replayed twice after a reestablish; harmless (NL-264).
+- The LND-restart proof holds the free addresses below alice's with idle containers, because OrbStack gives a restarted container the lowest free address (NL-262).
+- Route hints carry the **peer's** `channel_update` policy (BOLT 11), not ours.
+- Payments use a node-wide fee limit of max(0.5 %, 5000 msat) with no retries (NL-270).
+- Shared-file touches accepted: `IPeerService`/`PeerService`/`PeerOutbox` (W2-A); `IChannelOperations`, `ChannelOperationsService`, `ChannelStateTransitionService` and the Domain `IncomingHtlcSettled` event (W2-B); `test/NLightning.Application.Tests.csproj` references Infrastructure.Repositories and Persistence.Sqlite (W2-B harness); `Daemon.Tests/Ipc/Handlers/PaymentSendIpcTests.cs` (W2-C).
+
+### Carried into wave 3
+
+The ABCD goal test is **green** at `a5675cb`, one wave early. Wave 3 therefore changes from "make ABCD green" to "keep it green and harden":
+- **W3-A ABCD stabilization:** run `scripts/run-abcd.sh 3` (3 in a row, fresh fixture each) and fix any flake. Watch the known flake NL-263 and the reconnect race tolerated in `AbcdReestablishTests`. Resolve the double replay (NL-264), the no-origin handler gap (NL-265) and forward checks at height 0 (NL-267).
+- **W3-B Provider matrix:** the ABCD happy path with Bob on Postgres and Carol on SqlServer; the container tests stay green.
+- **W3-C Hardening:**
+  - Signed `channel_update` for alias scids in UPDATE failures (NL-266). Variant a2 (`fee_insufficient` → LND retries) is not yet authored.
+  - N9-T2 `HtlcExpiryMonitor`: a forwarding node without it can lose funds, so it gates any non-regtest use.
+  - Fee-aware liquidity pre-check (NL-268).
+  - Optional LND-funded channel proof (receive `update_fee`).
+- **Next milestones outside ABCD:**
+  - N9-T4 fail-the-channel broadcast and signer refusal after data loss (NL-094).
+  - N10 close with Closing/Negotiating resumption and shutdown re-send (NL-034, NL-036, B2-RE-28).
+  - Funding tx rebroadcast (NL-258) and UTXO locks of a forgotten funder channel (NL-259).
+  - An unverified LND sync edge on a reconnect before channel_ready (NL-269).
+- **Test infra:** SendErrorAsync unit test (NL-261); LNUnit restart address fix upstream (NL-262).
+- **Carried tech debt:** NL-246, NL-247, NL-249, NL-251, NL-254, NL-138, NL-078 (persistent replay set), NL-260, NL-270, the wave-1 Wasm risk (still unverified on macOS), and the root/`test` CLAUDE.md test counts, which must be refreshed each wave.
+
+### Wave 1: integrated into `wip/fafo` @ `342d22e` (2026-09-25)
+
+All five lanes are done (W1-A and W1-B with review-fix steps). 28 lane commits were cherry-picked with `-x` in the order w1c, w1a, w1b, w1d, w1e; the only conflicts were doc text in `src/NLightning.Application/CLAUDE.md` and `test/CLAUDE.md` (both lanes' text merged). Two `integrate:` commits: 4ae2eb3 (`AddApplicationServices` calls `AddGossipServices()` and `AddPaymentsServices()`; scoped `IInvoiceDbRepository`/`IPaymentDbRepository`/`IForwardCircuitDbRepository` resolve to the scope's `IUnitOfWork` properties; the harness store implements the new origin methods; two Daemon DI tests) and 342d22e (`ChannelUpdateExchangeTests` counts only its own channel's ignored updates, because the shared alice relays other tests' channels; test only).
+
+Gates at `342d22e`: Release and Release.Native build with 0 errors and **5** CS86xx warning sites (each printed twice; the two `PeerService` ones went away with df4ca92, NL-171); `dotnet format --verify-no-changes` clean; **3747** non-Docker tests pass in both configs, 0 skips (Domain 1235, Integration 512, Serialization 466, Application 382, Infrastructure 342, Infrastructure.Bitcoin 305, Bolt11 275, Daemon 230); 10k-seed Long simulator passes; Docker **29/29** on OrbStack after 342d22e (integrator run; `HasPendingModelChanges` false on all three providers).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W1-A Channel wiring | done: N6-T1, T2, T4, T5; N6-T3 partial | 1de15f9, a604dff, 1392489, f5315c0, a02afa7, a388fc4, 3f7b8bf, aac5f60, e5f7312 | NL-232, NL-235, NL-244 fixed; NL-136 call sites (a604dff); NL-031, NL-200, NL-243 partial; NL-199 receiver needs no code; NL-234 open (moves to W2-A); new NL-246, NL-247, NL-248, NL-249, NL-250, NL-251, NL-252, NL-254 |
+| W1-B Payment core | done: M4-T2 processor, M4-T3, M4-T4 policy, M4-T6 build, `InvoiceService` | 6156173, d27adb4, 234607e | NL-073, NL-114 partial; new NL-245, NL-253 |
+| W1-C Payment schema (migration owner) | done: `AddInvoicesPaymentsAndCircuits` (3 providers), repositories, HTLC origins, stored dust policy | 899e36b, 2f25527, 98d19e6 | NL-242 fixed, NL-248 fixed; NL-137, NL-243 partial |
+| W1-D IPC / CLI | done: CreateInvoice/PayInvoice/ListInvoices/ListPayments IPC + CLI, `RoutingOptions` bound, `EnableHtlcs` in the default config | e30a845, 6cfbcd1, c10a78e, c50fc7b | NL-241 fixed; NL-152 partial |
+| W1-E Direct `channel_update` exchange | done; also fixed the NLightning-to-NLightning connect bugs and dropped the harness tolerance | df4ca92, b93dd05, 38d2f5e, f9c54cc, 7c1ed4c, b681f8a, 9ce68e0, 5d1a9ed, 5f2a3ee | NL-239, NL-240 fixed; NL-099 partial; new NL-255 |
+
+Ledger note: the integrator's summary listed NL-137, NL-243 and NL-114 as fixed; the ledger keeps them **open (partial)** because the lanes reported remaining work (replay set and SCID map; the W2-B switch must keep pruning; pay/receive are W2-B/W2-C). NL-242's remaining piece (no node option sets a policy) is tracked as NL-254.
+
+Deviations accepted in wave 1 (details in the BOLT2 plan "ABCD wave 1 record" and the ONION plan status):
+- A normal-operation message on a channel that is not Open gets warning + close, not a channel error (no fail-the-channel broadcast yet).
+- `LocalOnlyHtlcSwitch` fails a final-hop HTLC with `incorrect_or_unknown_payment_details` (height from the monitor; `temporary_node_failure` while unknown) and non-final onions with `temporary_node_failure`; the N6-T5 proof uses `SendToRouteV2` with a route that has no `payment_addr` (LND refuses to attach one for a node it knows no features for).
+- Ping-before-commit is a connection check only (NL-251). Each channel's link is pinned to the connection it turned Open on, so channels loaded at startup never send updates until N7 marks the link (NL-252).
+- `FinalHopProcessor` reports 0x0013/0x0012 before the 0x400F invoice checks (as LND/CLN); a replayed onion is failed with `temporary_node_failure`. `HintRouteBuilder.Build` takes a mandatory `maxFee`.
+- W1-E: LND never hints through us in `addinvoice --private` (needs node_announcement, NL-255); decision B (explicit `route_hints`) is unaffected. The roadmap's W1-E proof item "addinvoice --private contains the C→D hint" is therefore not met.
+- Shared-file touch accepted: `test/NLightning.Application.Tests/NLightning.Application.Tests.csproj` references `NLightning.Infrastructure.Serialization` (W1-B, for the real hop-payload and failure serializers in tests).
+
+### Carried into wave 2
+
+- **W2-A (reestablish; owns `ChannelManager.cs`, `IChannelManager.cs`, `PeerManager.cs`, `Application/DependencyInjection.cs`):** N7-T1..T6; after reestablish call `IPeerLivenessProbe.MarkLinkUp(channelId, peer)` and replay pending events (`QueuePendingDomainEventsAsync` + `RaiseDomainEventsAsync`) (NL-252); retransmit persisted unsigned updates and the stored `SentCommitDiff`, forget the ones BOLT 2 says to; reuse `ChannelStateTransitionService.LoadRemoteShachainAsync`, `SentCommitDiffCodec`, `CreateRevokeAndAck`; re-send `ChannelModel.ErrorSent` on reconnect and send an error without disconnecting (N6-T3 rest, B2-RE-05, NL-200); `IChannelManager.HandleChannelMessageAsync` returns `Task` (NL-234); add a Domain flag so `listchannels` `IsReestablished` becomes true; optionally a real ping (NL-251, needs `IPeerService.LastMessageReceivedAt`).
+- **W2-B (HTLC switch):** `services.Replace(ServiceDescriptor.Singleton<IHtlcSwitch, HtlcSwitch>())`; wire `IncomingOnionProcessor` → `HtlcForwardingPolicy`/`FinalHopProcessor` → `IChannelOperations`; final-hop accept as an atomic check-and-mark under a per-payment-hash lock in the fulfill's unit of work (NL-253); on restart act on persisted HTLC state (`ProcessAsync(checkReplay: false)`, since W6-A `replayOwner: null`); persist `HtlcOrigin` with the add via `SetHtlcOriginAsync` (NL-250); `FindHtlcsByOriginAsync` returns archived rows of failed attempts too (retry-aware replay); keep pruning settled rows after their settle event (NL-243); never hold two channel locks.
+- **W2-C (send):** `PaymentService` (`PaymentTarget.FromInvoice` → `HintRouteBuilder` with the caller's fee limit → `PaymentOnionFactory` → `OfferHtlcAsync` with `HtlcOrigin.Local`), stores hops' shared secrets, decrypts failures with `FailureInterpreter`; registering `IPaymentService` turns on `payinvoice`/`listpayments`. Optional: a node-level default fee limit in `RoutingOptions`.
+- **W2-D (Docker proofs):** N8 proofs; B–C hop can rely on NLightning-to-NLightning connects (NL-239/NL-240 fixed, no retry tolerance).
+- Open tech debt to schedule: NL-247 (stateful `ISha256` singleton), NL-246 (pre-wave-1 channels without a snapshot), NL-254 (dust-exposure option), NL-245 (invoice route hints), NL-249 (test `FakeServiceProvider`), NL-138.
+- Wasm risk (unverified on macOS): Application now references Bolt11, whose Wasm build uses the renamed `Bolt11.Blazor` assembly; CI's Wasm job builds only BlazorTests, which does not reference Application.
+
+### Wave 0: integrated into `wip/fafo` @ `0b7e617` (2026-09-25)
+
+All six lanes are done; their commits were cherry-picked with `-x` with no conflicts (order w0b, w0a, w0c, w0d, w0e, w0f) and two `integrate:` commits fixed the seams. Gates at `0b7e617`: Release and Release.Native build with 0 errors and the 7 baseline CS warnings; `dotnet format --verify-no-changes` clean; 3367 non-Docker tests pass in both configs, 0 skips (Domain 1232, Integration 492, Serialization 466, Infrastructure 326, Infrastructure.Bitcoin 305, Bolt11 275, Application 147, Daemon 124); 10k-seed Long simulator passes; Docker 24/24 on OrbStack (integrator run).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W0-A Engine seam + events | done | 192e212, 2fa8cf4, b166ea0, 7ba115f (+ c68a34d integrate) | NL-230, NL-231 fixed; N4-T4 done; NL-194 follow-up (`HasInferredLimits`); new NL-244 |
+| W0-B Persistence (migration owner) | done; shachain runtime calls left to W1-A (Application) | 4472a8b, bb2731a, f2e1a4a, a8d1381, 79f7657 | NL-025, NL-232 (partial: first-snapshot wiring), NL-237, NL-238 fixed; NL-137 partial; new NL-241, NL-242, NL-243 |
+| W0-C Contracts | done | 2ede2ee, 1390027 (+ 0b7e617 integrate: options validation, `PeerManager` backoff from `NodeOptions`) | NL-200, NL-152, NL-137 partial (contracts) |
+| W0-D Bolt11 for the node | done | 2d8a9fe, 2c9f812, f93d059 | NL-120 fixed |
+| W0-E `channel_update` wire + signing | done | e7b5269, 3ba2e4f | NL-099 partial |
+| W0-F Multi-node test infra | done; tolerates two known connect bugs | 6f1a316, cb06e60 (+ 0b7e617 integrate) | new NL-239, NL-240 |
+
+Deviations accepted in wave 0 (details in the BOLT2 plan "ABCD wave 0 record"): `CommitmentsResult.Transition` keeps its name (plan said `Persist`); `IHtlcSwitch` has one `HandleAsync(IChannelDomainEvent)`; the `Commitments` table is keyed by slot, not `(Side, Number)`, and has no txid; `IChannelOperations` has no shutdown until N10; `CommitmentSigningService` is a concrete class; `ErrorSent`/`DataLossDetected` columns shipped early.
+
+### Carried into wave 1
+
+- **W1-A (channel wiring)** must also: create the first snapshot with `IChannelStateDbRepository.InitializeAsync` with both remote points before `ChannelReadyMessageHandler` overwrites the key set's first point (NL-232 rest); per transition `ApplyAsync` + one `SaveChangesAsync`, then `ChannelModel.UpdateCommitments`, then send; call shachain `Export` on RAA and `Load` at startup (NL-136); after a restart `RevertUncommitted` and persist it before reestablish; replay `ChannelDomainEvents.DerivePending` per channel inside a try/catch (legacy states throw) into an idempotent switch; pass the dust policy on reload (NL-242); plan pruning (NL-243); NL-234, NL-235, NL-199, NL-138. Keep `services.AddCommitmentEngineServices()` in `Application/DependencyInjection.cs` (W0-A put it there).
+- **W1-C (payment schema)** implements the W0-C ports (`IInvoiceDbRepository`, `IPaymentDbRepository`, `IForwardCircuitDbRepository`); the W0-B migration chain is the base (build the provider projects in Debug first, NL-233).
+- **W1-D (IPC)** fixes NL-241 (listchannels pending-HTLC counts) and binds `RoutingOptions` (validation already runs at startup since 0b7e617).
+- **W1-E** builds on the typed, signed `channel_update` (send after channel_ready, store the peer's).
+- **Test infra:** NL-239 and NL-240 (NLightning-to-NLightning connect bugs) are tolerated by `NLightningTestNode.ConnectToAsync` retries; fix them before the B–C hop is relied on (W1 or W2 owner of `PeerManager`/`PeerService`), then drop the tolerance.
+- Tech debt: NL-244 (`Htlc.AddMessage` null in the engine adapter).
+
+# Roadmap: `wip/fafo` @ `3c625e1` to a green ABCD Docker e2e test (LND Alice → NLightning Bob → NLightning Carol → LND David)
+
+I only read files; nothing was changed. The working tree has uncommitted doc edits from the integrating agent (CLAUDE.md files, plans, ISSUES.md), so I checked every code claim against source files.
+
+## 0. Where things stand (checked in code)
+
+- **Done and on the branch:**
+  - N0–N3: ordered inbound loop, `PeerOutbox`, `ChannelLockProvider`, per-side params, msat balances and SCID, commitment numbers, the BOLT 3 HTLC txs and signer, and the persisted shachain.
+  - N4 pure engine: `src/NLightning.Domain/Channels/Commitments/ChannelCommitments.cs` has `SendAdd/ReceiveAdd/…/SendCommit/ReceiveCommit/ReceiveRevoke/RevertUncommitted/ReceiveFee`, plus the simulator.
+  - ONION M1–M3: `ISphinxService`, `IHopPayloadSerializer` (already moved to `src/NLightning.Domain/Serialization/Interfaces/`, so N8-T1/NL-075 is effectively done), `IFailureOnionService`, `FailureInterpreter`, `FailureChannelUpdateFactory`.
+- **The engine is not usable yet:**
+  - There are two signer-port families: `Domain/Channels/Interfaces/ICommitmentSigner.cs` and `Domain/Channels/Commitments/Interfaces/ICommitmentSigner.cs` (NL-230).
+  - There are two fee calculators (NL-231).
+  - The engine emits no lock-in or irrevocable-removal events; N4-T4 is only partly done.
+- **Wire handling:** `ChannelManager.DispatchChannelMessageAsync` only handles the open flow. Every HTLC message, reestablish and close falls to `default`, which sends a warning.
+- **Missing entirely:**
+  - `NodeOptions.EnableHtlcs`, forwarding fee/CLTV policy options, invoice/payment/circuit storage, and `ClientCommand` values after `ListChannels = 8` (`src/NLightning.Domain/Client/Enums/ClientCommand.cs`).
+  - Nothing in `src/` references Bolt11. `Invoice.Encode(Key)` exists; NL-120 (no validation on encode) is still open.
+- **Channels are always private:** `OpenChannelClientHandler.cs:112` sends `ChannelFlags(None)`. `FeatureOptions.ScidAlias = No` by default, so channels use the real SCID (NL-225 persists it).
+- **Docker infra:**
+  - `Fixtures/LightningRegtestNetworkFixture.cs` starts miner, LND alice/bob/carol (LND 0.20.0-beta from `test/Docker/custom_lnd`, LNUnit 3.0.4) with LND–LND channels, in collection `"regtest"`.
+  - Our node runs **in-process**: `Docker/Utils/NLightningTestNode.cs` builds `AddNltgNodeServices`, uses SQLite hard-coded, listens on `127.0.0.1:{port}`, and restarts with the same key manager and DB file. It can only connect to an `LNDNodeConnection`.
+  - LNUnit exposes `RouterClient`, `AddInvoiceAsync`, `LookupInvoice`, `RestartByAlias`, `WaitUntilSyncedToChain` and interceptors.
+  - The Docker tests pass locally because the Docker context is **OrbStack**, which routes container bridge IPs to the Mac. `PostgresFixture`/`SqlServerFixture` connect to the bridge IP, which fails on Docker Desktop.
+  - I found no process-wide mutable statics in `src/`, so **two NLightning nodes in one test process is viable**.
+
+---
+
+## 1. Gap analysis for the ABCD goal
+
+### 1.1 Route discovery: the key decision
+
+There is no BOLT 7 gossip, so Alice's LND cannot see B–C or C–D in its graph. Three options:
+
+| Option | What it needs | Verdict |
+|---|---|---|
+| **A. Public channels plus minimal BOLT 7** | We send and relay `announcement_signatures`, `channel_announcement`, `channel_update` and `node_announcement`. David's C–D announcement must be relayed Carol → Bob → Alice, which means a graph store, signature checks, relay and throttling, honouring `gossip_timestamp_filter`, and real `query_channel_range` replies (we advertise `gossip_queries`; today replies are empty with `full_information=0`). Also 6-conf announce depth and NL-236 (public/private option). | Legitimate but large: 2–3 more waves on NL-099. **Not on the critical path.** |
+| **B. Invoice route hints (recommended)** | David's invoice is made with LND `AddInvoice` and explicit `route_hints` (the `lnrpc.Invoice.route_hints` field accepts caller hints): `[{node=Bob, chan_id=scid(B–C), Bob's fee/cltv}, {node=Carol, chan_id=scid(C–D), Carol's fee/cltv}]`. Alice pays the real BOLT11 with `routerrpc.SendPaymentV2`, so LND does the pathfinding (its own A–B channel plus hint edges), computes fees and CLTVs, and builds the onion. | This is how private channels are reached in production. It checks our forwarding, policy enforcement, onion peel/forward, final hop and error wrapping against LND's own maths. It needs **zero** BOLT 7. |
+| C. `SendToRouteV2` with a hand-built route | The test builds the hops. | Fallback only if B hits an LND pathfinding quirk. It is weaker: the test, not LND, computes the fees. |
+
+What LND needs for private-channel forwarding under Option B:
+- The first hop is Alice's own channel, so she needs no policy from Bob.
+- LND treats hint nodes it does not know as TLV-onion capable.
+- The scids must be the real SCIDs. There is no scid_alias because `ScidAlias` is No, so nothing is negotiated.
+- The only point where `channel_update` matters is **UPDATE-class failures** (`temporary_channel_failure`, `fee_insufficient`, …). BOLT 4 now allows `len=0`, but whether LND 0.20 accepts an empty update is **unverified**.
+- LND builds **automatic** private hints (`addinvoice --private`) only when it holds the peer's `channel_update`. So David can only auto-hint C→D if Carol sends her `channel_update` directly after `channel_ready` (BOLT 7 allows this for unannounced channels).
+
+Recommendation:
+- B for the main test and variants (a), (b) and (c).
+- A small BOLT 7 subset, typed `channel_update` (258) with node-key signing plus direct peer exchange, as a hardening lane. It makes UPDATE failures carry a real, signed update and enables David's auto hints.
+
+### 1.2 Per-component gaps (R = required for the goal; S = strongly recommended; D = defer)
+
+| Component | Gap | Plan IDs / NL | Need |
+|---|---|---|---|
+| Engine ↔ builder seam | Engine ports not implemented over `CommitmentSigningService`/`PerCommitmentSecretVerifier`; `CommitmentSpec`→`CommitmentTxSpec` adapter; one fee calculator | NL-230, NL-231 ("Remaining before N5" §1) | R |
+| Engine events | `IncomingHtlcLockedIn`, `OutgoingHtlcFulfilled` (immediate), `OutgoingHtlcFailed` (only when irrevocable), `OutgoingHtlcSettled`; must be re-derivable from persisted states | N4-T4, B2-NO-03, B2-FWD-01/02/05 | R |
+| Commitment persistence | Migration `AddCommitmentState` (HTLC state 10–39, `KnownPreimage`, fee updates, `RemoteNextCommit`, `SentCommitDiff` wire bytes, remote current and next points, `OnionSharedSecret`); `ChannelStateDbRepository.ApplyAsync`; shachain save/load at runtime; SQLite `synchronous=FULL`; crash injection | N5-T1..T3, NL-232, NL-238, NL-025, NL-192 (done), NL-237 | R |
+| HTLC wire handlers | 128–135 plus `update_fee` handler and `ChannelManager` cases; state guard (Open and reestablished) | N6-T1, NL-031 | R |
+| Operations / scheduler / switch seam | `IChannelOperations` (Offer/Fulfill/Fail/FailMalformed, persist-before-send), `CommitScheduler` (debounce; never sign while `RemoteNextCommit` exists), `IHtlcSwitch`, `EnableHtlcs` (default on regtest only) | N6-T2 | R |
+| Failed-channel path | `ChannelState.Failed = 35`, persisted `ErrorSent`, refuse updates | N6-T3, NL-200 | S (keeps a violation from turning into a silent split-brain) |
+| Reestablish | `ReestablishPlanner`, lifecycle hooks in `PeerManager`, gating, `RevertUncommitted` on disconnect, retransmit (`SentCommitDiff` verbatim, RAA regenerated, `LastSentOrder`, `channel_ready` when both numbers are 1) | N7-T1..T3, NL-035 | R |
+| Data-loss detection | `DataLossDetected` flag | N7-T4 | S (cheap once the planner exists; LND treats data_loss_protect as required) |
+| Other N7 | Non-Open startup states (T5); funder remember rule (T6: wontfix plus a test) | N7-T5/T6 | D / trivial |
+| Final hop and invoices | Invoice store, preimage/secret generation, BOLT11 encode with the node key (features 9/14 compulsory, `s`, `c`; no `basic_mpp`), `FinalHopProcessor` (0x400F with (htlc_msat, height), 0x0012, 0x0013), settle when removal is irrevocable | N8-T2, ONION M4-T2/T3, NL-114, NL-120 | R |
+| Forwarding | `HtlcForwardingPolicy` (BOLT 7 fee `base + amt*ppm/1e6`, `cltv_expiry - outgoing ≥ delta`, `expiry_too_far`, amount ≥ htlc_min, outgoing liquidity → `temporary_channel_failure`), scid (real or alias) → channel via `IChannelMemoryRepository`, offer only after incoming lock-in, never hold two channel locks | ONION M4-T4, B2-FWD-01/04 | R |
+| Upstream propagation | Fulfill upstream immediately on downstream preimage; fail upstream only when the downstream removal is irrevocable; wrap with the stored incoming shared secret; convert malformed (M3-T3 helper exists) | ONION M4-T5, B2-FWD-02/05 | R |
+| Forwarding persistence | Circuit table in→out (channel, htlc id, amounts, CLTVs, shared secret) plus startup replay, so variant (b) works | ONION M4-T7, NL-137 | R |
+| Send side | `PaymentService`: decode BOLT11, route = direct peer, or our channel to `hint[0].node` then the hint hops; multi-hop onion via `ConstructWithSharedSecrets`; final CLTV = height + `c` + 3; CSPRNG session key; `PaymentEntity`; origin decrypt plus `FailureInterpreter` | N8-T3 + M4-T6 (multi-hop via hints) | R for variant (c) |
+| IPC | `CreateInvoice` (9), `PayInvoice` (10), plus `ListInvoices`/`ListPayments` and a `ListChannels` "reestablished/usable" flag (next free values); client handlers the Docker test calls in-process; CLI output | §3.9, NL-152 | R (client handlers) |
+| Fee/policy config | `RoutingOptions`: `FeeBaseMsat`, `FeeProportionalMillionths`, `CltvExpiryDelta` (≥34, default 40), `MaxCltvExpiryDistance` (2016), `InvoiceMinFinalCltvExpiry` (default 40), HTLC min/max; bound from config | B2-CLTV-07 (part) | R |
+| N9 | T1 fee scheduler: D (all test channels are NLightning-funded, so we never receive `update_fee`, and we never send one). T2: forward-time CLTV checks are R (they live in the M4 policy); the block-driven `HtlcExpiryMonitor` (fail incoming before expiry, offerer deadline) is S for safety, not needed for the test. T3 dust exposure: D. T4 `ChannelFailureService` broadcast: D (regtest; `EnableHtlcs` gate). **`update_fee` receive handler: include in N6-T1 anyway** (the engine already has `ReceiveFee`), so a later LND-funded channel does not break. | N9 | see cell |
+| BOLT 7 subset | Typed `ChannelUpdateMessage` (258) plus signing with the node key, embedded in UPDATE failures, sent directly to the peer after `channel_ready`/reestablish, peer's update stored | NL-099 (sub), NL-236 | S |
+| attribution_data | We don't advertise it. Ignore incoming TLV 1 on fail/fulfill (odd, so the strict reader drops it) and do not relay it upstream. | M3b, NL-072, NL-022 | D |
+| Replay cache | Stays in-memory (NL-078); lost on Bob's restart | NL-078 | D (decision) |
+| Test infra | 4th LND `david` in the shared fixture; `NLightningTestNode`: node name/log prefix, DB provider parameter, `ConnectToAsync(NLightningTestNode)`, fast reconnect backoff knob; chain-sync barrier; LND helpers (hint invoices, hold invoices, `SendPaymentV2`, `ResetMissionControl`); Postgres/SqlServer fixtures publish `127.0.0.1` ports so they don't depend on OrbStack | NL-156 follow-up, NL-237 | R |
+
+---
+
+## 2. Waves and lanes
+
+Rules for every wave:
+- (i) Lanes own **disjoint** file sets.
+- (ii) Exactly one lane per wave may touch `Entities/`, `EntityConfiguration/`, `NLightningDbContext.cs`, `Domain/Persistence/Interfaces/IUnitOfWork.cs`, the `UnitOfWork` implementation, and migrations for all three providers.
+- (iii) Shared hub files are owned by one lane per wave, named below: `src/NLightning.Application/DependencyInjection.cs`, `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`, `Serialization/Factories/{MessageTypeSerializerFactory,PayloadSerializerFactory}.cs`, `ChannelManager.cs`, `PeerManager.cs`. Other lanes put their registrations in an `Add<Area>Services` extension inside their own folder, and the integrator adds the one-line call.
+- (iv) Lanes do **not** edit `docs/agents/ISSUES.md` or the plans. Each lane reports its ledger deltas and the integrator applies them. This avoids merge conflicts on the summary table.
+- (v) Every lane ends green on: Release and Release.Native build, `dotnet format --verify-no-changes`, `!~Docker` tests, and the invariant simulator.
+
+### Wave 0: seams, contracts, schema for the commitment state, test infra (6 parallel lanes)
+
+| Lane | Scope | Files owned | Proof |
+|---|---|---|---|
+| **W0-A Engine seam + events** | NL-230, NL-231, N4-T4 | `src/NLightning.Domain/Channels/Commitments/**` (keep the `ChannelTransition` persistence fields **frozen**; add `Events` to `CommitmentsResult`); new `Domain/Channels/Commitments/Events/*` (`IChannelDomainEvent`, the 4 events); new `Domain/Channels/Interfaces/IHtlcSwitch.cs`; `Domain/Channels/Interfaces/ICommitment{Signer,Verifier}.cs` (merge or delete the duplicates); `Domain/Bitcoin/Transactions/Factories/CommitmentFeeCalculator.cs`; `Application/Channels/Services/CommitmentSigningService.cs` plus new `Application/Channels/Services/Engine*Port.cs` adapters; tests under `test/NLightning.Domain.Tests/Channels/Commitments/**` and `test/NLightning.Application.Tests/Channels/Services/**` | Two-engine test with **real** signatures (txids equal on both sides after add/CS/RAA/fulfill/fail/fee); `…Given_IncomingAdd_When_BothRevoked_Then_IncomingHtlcLockedInOnce`; `…Given_DownstreamFail_Then_OutgoingHtlcFailedOnlyWhenIrrevocable`; 500-seed simulator green |
+| **W0-B Persistence (migration owner)** | N5-T1, N5-T2, N5-T3; NL-232, NL-238, NL-025; `HtlcEntity.OnionSharedSecret` now | `src/NLightning.Infrastructure.Persistence/**` (entities, configurations, `NLightningDbContext`, `DependencyInjection.cs` for `synchronous=FULL`), 3 provider projects' `Migrations/**`, `src/NLightning.Infrastructure.Repositories/**` (new `ChannelStateDbRepository`, `ChannelDbRepository.UpdateAsync` stops writing HTLCs, `UnitOfWork`), `Domain/Persistence/Interfaces/IUnitOfWork.cs`, new `Domain/Channels/Interfaces/IChannelStateDbRepository.cs`, `Domain/Channels/Models/ChannelModel.cs` (holds the `ChannelCommitments` snapshot), `test/NLightning.Tests.Utils/Mocks/CrashingUnitOfWork.cs`, `test/NLightning.Integration.Tests/Persistence/**`, `Docker/PostgresTests.cs`, `Docker/SqlServerTests.cs` | SQLite: 50 simulator transitions, reload, equal; reload mid-dance identical; k-th save crash leaves no partial rows; Postgres and SQL Server container tests migrate **seeded pre-migration rows** forward (NL-237) and round-trip the commitment state |
+| **W0-C Contracts** | N6-T2 interface part, payments contracts, options, IPC Domain types | New `Domain/Channels/Interfaces/IChannelOperations.cs`; `Domain/Channels/Enums/ChannelState.cs` (`Failed = 35`); new `Domain/Exceptions/ChannelFailedException.cs`; `Domain/Node/Options/NodeOptions.cs` (`EnableHtlcs`); new `Domain/Node/Options/RoutingOptions.cs`; new `Domain/Payments/**` (Invoice/Payment/ForwardCircuit models, `IInvoiceDbRepository`, `IPaymentDbRepository`, `IForwardCircuitDbRepository`, `IInvoiceService`, `IPaymentService`, `IForwardingPolicy`); `Domain/Client/Enums/ClientCommand.cs` (9 CreateInvoice, 10 PayInvoice, 11 ListInvoices, 12 ListPayments; `CloseChannel` gets the next free value later); `Domain/Client/{Requests,Responses}/*Invoice*|*Payment*`; `ChannelInfoClientResponse.cs` (`IsReestablished`, `FeeBaseMsat/FeePpm`) | Build; `RoutingOptions` validation tests (delta ≥ 34); BOLT 7 fee-formula table tests; options binding test |
+| **W0-D Bolt11 for the node** | NL-120, encode path used by the node | `src/NLightning.Bolt11/**`, `test/NLightning.Bolt11.Tests/**` | Encode with node key → decode → validate; features 9/14 compulsory, no 17; multiple `r` round-trip; decode 3 real LND 0.20 invoice strings (plain, with custom hints, hold) as fixtures |
+| **W0-E BOLT 7 `channel_update` wire + signing** (S) | NL-099 subset | New `Domain/Protocol/Messages/ChannelUpdateMessage.cs` + payload; `Infrastructure.Serialization/Payloads|Messages/Types/ChannelUpdate*`; **hub:** both serializer factories (258 stops being raw `GossipMessage`); `ILightningSigner.cs`/`LocalLightningSigner.cs` (`SignNodeMessage(hash)`); new `Domain/Protocol/Onion/Factories/` overload so `FailureChannelUpdateFactory` takes the typed update; tests in Serialization.Tests / Bitcoin.Tests | Round trip; signature verifies with the node id; an LND-captured 258 parses and verifies |
+| **W0-F Multi-node test infra** | Docker harness | `test/NLightning.Integration.Tests/Fixtures/**` (add `david` via `AddPolarLNDNode("david", [])`; Postgres/SqlServer publish ports on `127.0.0.1`), `TestCollections/**`, `Docker/Utils/**` (`NLightningTestNode`: name/log prefix, provider parameter {Sqlite, Postgres, SqlServer}, `ConnectToAsync(NLightningTestNode)`, `ReconnectBackoffInitial` override hook, `CrashAsync()`; new `ChainSync.cs` barrier; new `LndTestHelpers.cs`), `Docker/AbcNetworkTests.cs` (expects 4 LND nodes) | The 12 existing Docker tests still pass; new smoke test: Bob and Carol (in-process) connect to each other and to alice/david, all at the same block height after mining 3 |
+
+W0-A and W0-B only share `ChannelTransition`, which is frozen. W0-B builds `ApplyAsync` against its current shape. The `NodeOptions` reconnect-backoff knob, if needed, belongs to W0-C, and W0-F consumes it after merge.
+
+### Wave 1: HTLC dance on the wire, payment core, payment schema, IPC (5 lanes)
+
+| Lane | Scope | Files owned | Proof |
+|---|---|---|---|
+| **W1-A Channel wiring** | N6-T1 (+ `update_fee` receive), N6-T2 (`ChannelOperationsService`, `CommitScheduler` with ping-before-commit, `LocalOnlyHtlcSwitch`, `EnableHtlcs` gate), N6-T3, N6-T4; NL-234, NL-235 | `src/NLightning.Application/Channels/**` (new handlers, `Managers/ChannelManager.cs`, `Services/*`), `Application/Node/Managers/PeerManager.cs` (failed-channel error path), **hub:** `Application/DependencyInjection.cs`; `test/NLightning.Application.Tests/Channels/**` including `Harness/TwoNodeHarness.cs` | Handler tests (`Given_PersistFails_Then_NoRevokeSent`, …); harness: 30 HTLCs each way, fee round, txids identical every step (I7); **Docker N6-T5** after merge with W0-B: Alice `SendToRouteV2` to Bob with a random hash, Bob fails back `temporary_node_failure`, channel stays Active, commitment numbers 2/2 |
+| **W1-B Payment core (pure/app)** | ONION M4-T2 processor, M4-T3, M4-T4 policy, M4-T6 onion/route build (no channel calls) | New `src/NLightning.Application/Payments/{Onion,FinalHop,Policy,Routing,Invoices}/**` (`IncomingOnionProcessor`, `FinalHopProcessor`, `HtlcForwardingPolicy`, `HintRouteBuilder`, `PaymentOnionFactory`, `InvoiceService`), `Application/NLightning.Application.csproj` (reference Bolt11), `Payments/PaymentsServiceCollectionExtensions.cs`; `test/NLightning.Application.Tests/Payments/**` | Build a 3-hop onion and peel it at each hop with our processor (real Sphinx); final-hop codes 0x400F/0x0012/0x0013; policy table (fee ±1 msat, delta, too-far, below-min); `InvoiceService` produces a BOLT11 that W0-D decodes, and (fixture) LND decodes |
+| **W1-C Payment schema (migration owner)** | `AddInvoicesPaymentsAndCircuits` (N8 + M4-T7), NL-137 | Persistence, provider-migration and Repositories trees as in W0-B, plus `IUnitOfWork` | SQLite round trip for each table; container round trips (Postgres/SqlServer) |
+| **W1-D IPC / CLI** | §3.9 commands, NL-152 | `src/NLightning.Transport.Ipc/**`, `src/NLightning.Daemon/{Ipc,Handlers,Services}/**`, **hub:** `Daemon/Extensions/NodeServiceExtensions.cs` (+ `RoutingOptions` config binding), `src/NLightning.Client/**`, `test/NLightning.Daemon.Tests/**` | MessagePack round trips; client/IPC handlers with mocked `IInvoiceService`/`IPaymentService`; CLI output snapshot |
+| **W1-E Direct `channel_update` exchange** (S) | NL-099 subset, NL-236 half | New `Application/Gossip/ChannelUpdateService.cs` (subscribes to `IChannelMemoryRepository.OnChannelUpdated` → Open), `Domain/Node/Interfaces/IPeerService.cs` + `Infrastructure/Node/Services/PeerService.cs` (send a non-channel message; route inbound 258 to an event; store the peer's update in memory) | Unit tests; Docker: after opening C–D, David `GetChanInfo(scid)` shows Carol's policy, and `addinvoice --private` contains the C→D hint |
+
+### Wave 2: reestablish, forwarding switch, send, single-hop Docker proofs (4 lanes)
+
+| Lane | Scope | Files owned | Proof |
+|---|---|---|---|
+| **W2-A Reestablish** | N7-T1..T5 (T6 test) | New `Domain/Channels/Reestablish/**`, `Application/Channels/Reestablish/**`, `ChannelReestablishMessageHandler`, **hubs:** `ChannelManager.cs`, `IChannelManager.cs`, `PeerManager.cs`, `Application/DependencyInjection.cs` | Exhaustive planner table; harness disconnect at every message boundary plus crash at every persist point → convergence (I11); **Docker Proof N7** (a) restart us, (b) `RestartByAlias("alice")`, (c) crash after CS persist |
+| **W2-B HTLC switch** | M4-T2 wiring, T4 forward, T5 propagation, T7 replay; N8-T2 settle | New `Application/Payments/Switch/**` (`HtlcSwitch` replacing `LocalOnlyHtlcSwitch` through its own extension), `test/NLightning.Application.Tests/Payments/Switch/**`, new `…/Harness/ThreeNodeHarness.cs` | In-process A→B→C: forward, fulfill propagation, final failure decoded at origin with the right source index, malformed conversion, **restart B mid-forward on SQLite** (circuit replay), never two locks held |
+| **W2-C Send** | N8-T3 + M4-T6 multi-hop via hints; origin decrypt | New `Application/Payments/Send/**` (`PaymentService`) | Harness: B pays C directly and pays D through C via a hint; failure → `FailureInterpreter` result stored on the payment |
+| **W2-D Docker proofs + ABCD authoring** | N8 proofs; ABCD test code | `Docker/NormalOperationFlowTests.cs` (N8: LND pays our invoice; we pay an LND invoice; 10 concurrent payments each way; trimmed HTLC), new `Docker/Abcd/**` | N8 proofs green at wave end; ABCD compiles and runs (expected to go green in Wave 3) |
+
+### Wave 3: ABCD green, provider matrix, hardening (3 lanes)
+
+| Lane | Scope | Files owned | Proof |
+|---|---|---|---|
+| **W3-A ABCD stabilization** | Fix what the e2e test finds. This lane is **serial and exclusive** across `src/NLightning.Application/**`; other Wave-3 lanes stay out of Application | `src/NLightning.Application/**`, `Docker/Abcd/**` | ABCD suite passes **3 runs in a row** (script loop, fresh fixture each run) |
+| **W3-B Provider matrix** | Full-stack runs on real DBs | `Docker/Utils/NLightningTestNode.cs` provider wiring, new `Docker/Abcd/AbcdProviderMatrixTests.cs`, Postgres/SqlServer container tests; migration owner **only if** a schema fix is needed | ABCD happy path with Bob=Postgres and Carol=SqlServer; SQLite and Postgres/SqlServer container tests green |
+| **W3-C Hardening** | Signed `channel_update` inside UPDATE failures; `HtlcExpiryMonitor` subset (N9-T2: fail incoming at or before `cltv_expiry - delta`); optional LND-funded channel proof (receive `update_fee`) | `Infrastructure`/`Domain` files only (failure factory, `Domain/Channels/Policies/HtlcDeadlinePolicy.cs`, monitor in `Infrastructure.Bitcoin` or a new Application folder coordinated with W3-A) | Variant a2 (below) green; deadline table tests |
+
+Final gate after Wave 3: Release and Release.Native builds, format, all `!~Docker` tests, the 10k-seed Long simulator, all Docker tests (existing 12 + N6/N7/N8 proofs + ABCD + provider matrix), each ABCD run 3× in a row.
+
+---
+
+## 3. The ABCD test design
+
+**Location:** `test/NLightning.Integration.Tests/Docker/Abcd/`, in collection `"regtest"` (shares `LightningRegtestNetworkFixture`; never runs in parallel with the other Docker classes that force-remove containers).
+
+**Topology:**
+- Built once per fixture through a lazily created `AbcdNetwork` held by the fixture (`fixture.GetOrCreateAsync(...)`, disposed with it).
+- xUnit class fixtures can't take collection fixtures reliably, so the lazy object on the fixture is the simplest option.
+- Each test first checks its preconditions and then asserts **deltas**, so test order does not matter.
+
+Nodes:
+- **Alice:** fixture LND `alice`.
+- **David:** new fixture LND `david`, no auto channels.
+- **Bob, Carol:** `NLightningTestNode`s in this process, each with its own port (`PortPoolUtil`), `FakeSecureKeyManager` and SQLite file. Log prefix `[bob]`/`[carol]`.
+- Policies (distinct values, so a fee mix-up shows):
+  - Bob: base 1,000 msat, 100 ppm, delta 40.
+  - Carol: base 2,000 msat, 500 ppm, delta 40.
+
+Channels (all NLightning-funded, so no `update_fee` is received and the plan's D9 holds):
+1. Bob → Alice: 2,000,000 sat, push 1,000,000.
+2. Bob → Carol: 2,000,000 sat.
+3. Carol → David: 2,000,000 sat.
+
+All at 10,000 sat/kw. Bob and Carol fund their wallets with `FundWalletAsync`. Mine 6, then loop "mine 1, sync barrier" until LND lists each channel `Active`, our `State == Open && IsPeerConnected && IsReestablished`, and `ShortChannelId` is set.
+
+**Reestablish step:**
+- `alice.DisconnectPeer(bob)`: Bob reconnects.
+- `carol.PeerManager.DisconnectPeer(bob)` then reconnect explicitly.
+- Restart Carol (Stop/Start, same key and DB): she reconnects to Bob and David.
+- Assert every channel goes back to Active/usable, `channel_reestablish` was sent and received on each (count via `OnResponseMessageReady` plus inbound hook), and commitment numbers are unchanged.
+
+**Happy path:**
+- `X = 50,000,123 msat`.
+- David `AddInvoice{value_msat=X, private=false, route_hints=[{Bob, scid(B–C), 1000, 100, 40}, {Carol, scid(C–D), 2000, 500, 40}]}`.
+- `ResetMissionControl` on Alice.
+- Alice `SendPaymentV2{payment_request, max_parts=1, outgoing_chan_ids=[A–B], fee_limit_msat=1e6, timeout_seconds=60}`.
+
+Assertions:
+- `SUCCEEDED`; the preimage equals David's `LookupInvoice.r_preimage`; David's invoice is `SETTLED` with `amt_paid_msat == X`.
+- `fee_C = 2000 + floor(X*500/1e6)`, `amt_BC = X + fee_C`, `fee_B = 1000 + floor(amt_BC*100/1e6)`.
+- Alice's `payment.fee_msat == fee_B + fee_C`; route `hops[0].fee_msat == fee_B`, `hops[1].fee_msat == fee_C`, `hops.Count == 3`.
+- Bob via `ListChannels` (msat): A–B local `+ (amt_BC + fee_B)`, B–C local `− amt_BC`. Carol: B–C `+ amt_BC`, C–D `− X`.
+- LND balances (sat): Alice A–B local `− floor(...)`, David C–D local `+ ⌊X/1000⌋`, each within 1 sat.
+- Zero pending HTLCs (LND `pending_htlcs` empty; our Offered/Received counts 0).
+- B–C commitment numbers mirror each other on Bob and Carol.
+- Every channel still Active and every peer still connected.
+
+**Variant (a), final-hop failure decodable at Alice:**
+- David makes a hinted invoice, then `invoicesrpc.CancelInvoice`, then Alice pays.
+- Expect `FAILED` with `FAILURE_REASON_INCORRECT_PAYMENT_DETAILS`, attempt `failure.code == INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS` and `failure_source_index == 3`. That index proves Carol and Bob each wrapped the error onion correctly.
+- Balances unchanged, zero pending HTLCs, channels Active.
+- **a2 (W3-C stretch):** the hint underprices Carol's fee. Carol fails with `fee_insufficient` plus a signed `channel_update`, LND applies it and **retries successfully** (checks our `channel_update` bytes and signature).
+
+**Variant (b), Bob restarts with an HTLC in flight:**
+1. David `AddHoldInvoice(hash(p))` with hints.
+2. Alice pays through a streaming call that is not awaited.
+3. Wait until David's invoice is `ACCEPTED`, which proves the HTLC is locked in on all three hops.
+4. `bob.StopAsync()` (plus a `CrashAsync()` variant); wait until Alice and Carol drop Bob.
+5. **b2 (main):** David `SettleInvoice(p)` while Bob is down. Carol learns the preimage and persists it; her upstream fulfill waits.
+6. `bob.StartAsync()`. Bob reconnects to both peers and reestablishes; Carol retransmits the fulfill; Bob's circuit replay fulfills Alice.
+7. Alice `SUCCEEDED` with preimage `p`; fees and balances as in the happy path; zero pending HTLCs.
+- **b1:** settle after Bob is back.
+- No blocks are mined while the HTLC is in flight.
+
+**Variant (c):**
+- **Bob as sender:** David invoice with hint `[{Carol, scid(C–D), 2000, 500, 40}]`, then `bob.PayInvoiceAsync(bolt11)` through the client handler. Expect a preimage equal to David's, David `SETTLED`; Bob B–C `−(X + fee_C)`, Carol `+fee_C`.
+- **Bob as receiver:** `bob.CreateInvoiceAsync(X2)`; Alice `SendPaymentV2` (direct, `fee_msat == 0`). Bob's invoice is Settled, Bob's A–B local `+X2`, the preimage matches.
+
+**Flake avoidance:**
+- Poll with deadlines everywhere; no fixed sleeps.
+- `ChainSync.WaitAllAtTipAsync()` after every mine: every LND `GetInfo.synced_to_chain && block_height == tip`, and each NLightning `BlockchainMonitor.LastProcessedBlockHeight == tip`. This prevents CLTV disagreements, which LND reports as `expiry_too_soon`/`incorrect_cltv_expiry`.
+- Mine only when no HTLC is in flight.
+- `max_parts=1`, pinned `outgoing_chan_ids`, `ResetMissionControl` before each payment.
+- Select LND channels by channel point, never by index.
+- A test-only reconnect backoff of 1 s instead of 5 s.
+- Log the LND version.
+- Dump `docker logs alice|david` and both node logs on failure.
+- Timeouts: 90 s for active, 60 s per payment, 6 min per test.
+- Run with `scripts/run-abcd.sh` (proposed): 3× `dotnet test --filter FullyQualifiedName~Docker.Abcd`, stop at the first red.
+
+---
+
+## 4. Decisions for you (with my recommended defaults)
+
+1. **Route discovery: route hints (B) or public channels plus BOLT 7 relay (A).** Default: **B**, with W0-E/W1-E adding direct `channel_update` exchange. A becomes the NL-099 epic afterwards.
+2. **Who funds the test channels.** Default: **NLightning funds all three, with push to Alice**, so we never receive LND `update_fee`. The `update_fee` receive handler still ships in N6-T1. An LND-funded variant is a W3-C stretch; LND's funder `update_fee` timing in regtest is unverified.
+3. **Empty (`len=0`) vs signed `channel_update` in UPDATE failures.** BOLT 4 allows empty, but LND 0.20 acceptance is **unverified**. Default: signed update once W0-E lands; empty only before then.
+4. **attribution_data.** Default: don't advertise it, ignore it inbound, don't relay it (M3b later). Unverified whether LND 0.20 attaches TLV 1 to `update_fail_htlc` regardless; it is odd, so ignoring it is spec-compliant.
+5. **Replay cache after restart (NL-078).** Default: keep it in-memory for this goal, and record that a restart loses replay protection (regtest only).
+6. **Policy defaults.** `cltv_expiry_delta` 40 (BOLT 2 recommends ≥34; LND uses 80); invoice `c` 40; `max_cltv_expiry_distance` 2016; fee base 1000 msat / 1 ppm in production defaults (the test sets its own values).
+7. **`EnableHtlcs`.** Default: true on regtest only, false elsewhere, until N9-T4 and BOLT 5 exist.
+8. **Hosting Bob and Carol.** Default: **in-process** (same DI as the daemon, debuggable, restartable; no static state conflicts found). A containerised `nltg` image is optional later.
+9. **Fixture.** Default: **extend** the shared regtest fixture with `david` instead of adding a second fixture, since container names like `miner` would clash.
+10. **Timing of the restart variant.** Default: settle while Bob is down (b2) as the main assertion, b1 as a sub-case.
+11. **`HtlcExpiryMonitor` (N9-T2).** It is not needed for the test to pass, but a forwarding node without it can lose funds. Default: W3-C, and a gate before any non-regtest use.
+12. **Ledger IDs.** The next free ID is NL-239. Proposed new entries: route-hint e2e approach, multi-node test harness, direct `channel_update` exchange, `RoutingOptions`, and container fixtures depending on OrbStack routing.
+
+## 5. Risks
+
+- **HTLC signature order and trimming** must match LND on both commitments. The vectors cover it; the Docker N6 proof comes first.
+- **Hub-file merge pressure:** `ChannelManager`/`PeerManager` change in Wave 1 and again in Wave 2, and the DI hubs change every wave. Keep the one-owner-per-wave rule.
+- **Two NLightning nodes run identical code**, so a symmetric bug can pass between Bob and Carol. LND on both ends plus the reestablish and restart variants guard against this.
+- **Two NLightning nodes connecting to each other at the same time:** the LND tie-break is implemented, but between two of our own nodes it is untested. Cover it in the W0-F smoke test.
+- **SQL Server runs x64 under emulation on Apple Silicon.** It is slow; give container waits generous deadlines.
+- **Engine events must be re-derived at startup** (I8) or variant (b) will double-fulfill or lose the fulfill. W2-B's restart harness is the guard.
+
+### Critical Files for Implementation
+- /Users/ms/nlightning/src/NLightning.Domain/Channels/Commitments/ChannelCommitments.cs
+- /Users/ms/nlightning/src/NLightning.Application/Channels/Managers/ChannelManager.cs
+- /Users/ms/nlightning/src/NLightning.Application/Node/Managers/PeerManager.cs
+- /Users/ms/nlightning/test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs
+- /Users/ms/nlightning/test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs

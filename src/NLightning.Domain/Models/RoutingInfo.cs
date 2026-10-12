@@ -8,15 +8,15 @@ using Crypto.ValueObjects;
 /// </summary>
 /// <param name="compactPubKey">The public key of the node</param>
 /// <param name="shortChannelId">The short channel id of the channel</param>
-/// <param name="feeBaseMsat">The base fee in millisatoshis</param>
-/// <param name="feeProportionalMillionths">The proportional fee in millionths</param>
-/// <param name="cltvExpiryDelta">The CLTV expiry delta</param>
+/// <param name="feeBaseMsat">The base fee in millisatoshis (u32)</param>
+/// <param name="feeProportionalMillionths">The proportional fee in millionths (u32)</param>
+/// <param name="cltvExpiryDelta">The CLTV expiry delta (u16)</param>
 public sealed class RoutingInfo(
     CompactPubKey compactPubKey,
     ShortChannelId shortChannelId,
-    int feeBaseMsat,
-    int feeProportionalMillionths,
-    short cltvExpiryDelta)
+    uint feeBaseMsat,
+    uint feeProportionalMillionths,
+    ushort cltvExpiryDelta)
 {
     /// <summary>
     /// The public key of the node
@@ -31,15 +31,15 @@ public sealed class RoutingInfo(
     /// <summary>
     /// The base fee in millisatoshis
     /// </summary>
-    public int FeeBaseMsat { get; } = feeBaseMsat;
+    public uint FeeBaseMsat { get; } = feeBaseMsat;
 
     /// <summary>
     /// The proportional fee in millionths
     /// </summary>
-    public int FeeProportionalMillionths { get; } = feeProportionalMillionths;
+    public uint FeeProportionalMillionths { get; } = feeProportionalMillionths;
 
     /// <summary>
     /// The CLTV expiry delta
     /// </summary>
-    public short CltvExpiryDelta { get; } = cltvExpiryDelta;
+    public ushort CltvExpiryDelta { get; } = cltvExpiryDelta;
 }

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Configurations>Debug;Release;Debug.Native;Release.Native</Configurations>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
+    <PackageReference Include="Grpc.AspNetCore.Server" Version="2.76.0" />
+    <ProjectReference Include="../NLightning.Signing.Contracts/NLightning.Signing.Contracts.csproj" />
+    <ProjectReference Include="../NLightning.Infrastructure.Bitcoin/NLightning.Infrastructure.Bitcoin.csproj" />
+    <ProjectReference Include="../NLightning.Infrastructure.Repositories/NLightning.Infrastructure.Repositories.csproj" />
+  </ItemGroup>
+</Project>

@@ -18,6 +18,7 @@ public sealed class ListPeersPrinter : IPrinter<ListPeersIpcResponse>
                 Console.WriteLine("  Id:          {0}", peer.Id);
                 Console.WriteLine("  Connected:   {0}", peer.Connected ? "Yes" : "No");
                 Console.WriteLine("  Channel Qty: {0}", peer.ChannelQty);
+                Console.WriteLine("  HTLCs:       {0}", peer.HtlcsInFlight);
                 Console.WriteLine("  Address:     {0}", peer.Address);
                 Console.WriteLine("  Features:    {0}", peer.Features);
                 Console.WriteLine("----------------------------------------------------------------------------------");

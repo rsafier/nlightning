@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Updated `NBitcoin` to `v10.0.14` and `NBitcoin.Secp256k1` to `v4.0.3` (net10.0 assets; NL-1091). NBitcoin 10 fixes
+  the .NET 10 ARM64 taproot tweak miscompilation and rejects non-canonical CompactSize, uncompressed segwit keys and
+  off-curve raw public keys;
+- `SecureKeyManager` writes version 2 key files (random per-file salt and nonce, Argon2id 64 MiB). Version 1 files
+  are still read and are upgraded on first load; the original is kept as `<key file>.v1.bak`. **Builds older than
+  this one cannot read a version 2 key file**, so to roll back restore the `.v1.bak` copy;
+- Key file writes are atomic and keep the existing file's permissions (new files are created `0600` on Unix),
+  follow symlinks to replace the real file, and leave no temp file behind when they fail;
+- Key file passwords are hashed as their full UTF-8 encoding on every crypto backend. Files written by the libsodium
+  backend with a non-ASCII password (which hashed only the first `password.Length` UTF-8 bytes) still open, and are
+  rewritten with the full encoding;
+- New nodes (`SecureKeyManager.CreateNew`, and `FromMnemonic`) get **version 3** key files: a standard BIP32 master key
+  with the node key derived at `m/1017'/0'/6'/0/0` (`SecureKeyManager.NodeKeyPathString`, NL-159), so the node key is
+  no longer the wallet's root key and a mnemonic restores in other BIP32 wallets. Version 1 and 2 files keep the old
+  derivation (node key = master key, genesis hash as chain code) and their node id; a version 1 file is still upgraded
+  to version 2, never to 3. Builds older than this one cannot read a version 3 key file;
+- Key file rewrites (upgrade, index update, backup) never keep group or other permission bits (a key file written by
+  an old build with mode 0644 becomes 0600, with a warning on stderr);
+- Key file rewrites also keep the file's Unix owner and group where the process may set them (a rewrite by another
+  user, e.g. root, hands the file back to its owner), and copy the file's Windows ACL instead of the new file
+  inheriting the directory's (NL-224);
+- Version 1 key files written on Windows with a non-ASCII password (marshalled in the ANSI code page by the old
+  libsodium P/Invoke) open again (NL-212);
+
 ## v1.0.0
 
 Major release adding wallet address management, funding transaction building, and comprehensive key management improvements.

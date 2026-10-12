@@ -2,6 +2,7 @@ namespace NLightning.Domain.Protocol.ValueObjects;
 
 using Crypto.Constants;
 using Domain.Interfaces;
+using Utils.Extensions;
 
 /// <summary>
 /// Represents a chain hash.
@@ -45,6 +46,11 @@ public readonly struct ChainHash : IEquatable<ChainHash>, IValueObject
 
     public bool Equals(ChainHash other)
     {
+        // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+        if (Value is null || other.Value is null)
+            return Value is null && other.Value is null;
+        // ReSharper restore ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+
         return Value.SequenceEqual(other.Value);
     }
 
@@ -55,6 +61,6 @@ public readonly struct ChainHash : IEquatable<ChainHash>, IValueObject
 
     public override int GetHashCode()
     {
-        return Value.GetHashCode();
+        return Value.GetByteArrayHashCode();
     }
 }

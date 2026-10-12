@@ -1,0 +1,688 @@
+// Vendored from the bark repo (https://github.com/ark-bitcoin/bark, the mirror of
+// gitlab.com/ark-bitcoin/bark; server-rpc/protos), MIT License, Copyright (c) Team Second —
+// the public Ark gRPC surface of captaind (bark_server.proto's ArkService and the admin services) the
+// Bark/ASP integration tests speak. Field numbers are the wire contract; never reorder.
+
+syntax = "proto3";
+
+package bark_server;
+
+import "core.proto";
+
+// Public ark service for arkd.
+//
+// Terms of service may apply, check your server's `ArkInfo.tos_link`.
+service ArkService {
+	rpc Handshake(HandshakeRequest) returns (HandshakeResponse) {}
+	rpc GetArkInfo(core.Empty) returns (ArkInfo) {}
+	rpc GetOffboardFeeRate(core.Empty) returns (OffboardFeeRateResponse) {}
+
+	rpc GetVtxo(GetVtxoRequest) returns (GetVtxoResponse) {}
+	rpc GetVtxoStatus(GetVtxoStatusRequest) returns (GetVtxoStatusResponse) {}
+
+	// * BOARDING *
+
+	rpc RequestBoardCosign(BoardCosignRequest) returns (BoardCosignResponse) {}
+	rpc RegisterBoardVtxo(BoardVtxoRequest) returns (core.Empty) {}
+
+	// Register the signed transaction chains for VTXOs that already exist server-side
+	rpc RegisterVtxoTransactions(RegisterVtxoTransactionsRequest) returns (core.Empty) {}
+
+	// Deprecated path alias for RegisterVtxoTransactions, kept for wire
+	// compatibility with pre-rename clients. The request message is
+	// unchanged; only the gRPC method path differs. New clients must use
+	// RegisterVtxoTransactions.
+	rpc RegisterVtxos(RegisterVtxoTransactionsRequest) returns (core.Empty) {
+		option deprecated = true;
+	}
+
+	// * ARKOOR PAYMENTS*
+
+	rpc RequestArkoorCosign(ArkoorPackageCosignRequest) returns (ArkoorPackageCosignResponse) {}
+
+	// * SEND LN payments
+
+	rpc RequestLightningPayHtlcCosign(LightningPayHtlcCosignRequest) returns (ArkoorPackageCosignResponse) {}
+	rpc InitiateLightningPayment(InitiateLightningPaymentRequest) returns (core.Empty) {}
+	rpc CheckLightningPayment(CheckLightningPaymentRequest) returns (LightningPaymentStatus) {}
+	rpc RequestLightningPayHtlcRevocation(ArkoorPackageCosignRequest) returns (ArkoorPackageCosignResponse) {}
+
+	rpc FetchBolt12Invoice(FetchBolt12InvoiceRequest) returns (FetchBolt12InvoiceResponse) {}
+
+	// * RECEIVE LN payments
+
+	rpc StartLightningReceive(StartLightningReceiveRequest) returns (StartLightningReceiveResponse) {}
+	rpc CheckLightningReceive(CheckLightningReceiveRequest) returns (CheckLightningReceiveResponse) {}
+	rpc PrepareLightningReceiveClaim(PrepareLightningReceiveClaimRequest) returns (PrepareLightningReceiveClaimResponse) {}
+	rpc ClaimLightningReceive(ClaimLightningReceiveRequest) returns (ArkoorPackageCosignResponse) {}
+	rpc CancelLightningReceive(CancelLightningReceiveRequest) returns (core.Empty) {}
+
+	// * OFFBOARDS
+
+	rpc PrepareOffboard(PrepareOffboardRequest) returns (PrepareOffboardResponse) {}
+	rpc FinishOffboard(FinishOffboardRequest) returns (FinishOffboardResponse) {}
+
+	// * ARK ROUND INTERACTIONS *
+
+	// Subscribe to the round events
+	rpc NextRoundTime(core.Empty) returns (NextRoundTimeResponse) {}
+	rpc SubscribeRounds(core.Empty) returns (stream RoundEvent) {}
+	// Get the last round event
+	rpc LastRoundEvent(core.Empty) returns (RoundEvent) {}
+	rpc SubmitPayment(SubmitPaymentRequest) returns (SubmitPaymentResponse) {}
+	rpc ProvideVtxoSignatures(VtxoSignaturesRequest) returns (core.Empty) {}
+
+	// Submit a delegated round participation
+	rpc SubmitRoundParticipation(RoundParticipationRequest) returns (RoundParticipationResponse) {}
+	rpc RoundParticipationStatus(RoundParticipationStatusRequest) returns (RoundParticipationStatusResponse) {}
+	rpc RequestLeafVtxoCosign(LeafVtxoCosignRequest) returns (LeafVtxoCosignResponse) {}
+	rpc RequestForfeitNonces(ForfeitNoncesRequest) returns (ForfeitNoncesResponse) {}
+	rpc ForfeitVtxos(ForfeitVtxosRequest) returns (ForfeitVtxosResponse) {}
+}
+
+message HandshakeRequest {
+	optional string bark_version = 1;
+}
+
+message HandshakeResponse {
+	uint64 min_protocol_version = 1;
+	uint64 max_protocol_version = 2;
+	// Public Service Announcement, a generalized message from the server to be
+	// displayed to the user.
+	optional string psa = 3;
+}
+
+message ArkInfo {
+	string network = 1;
+	bytes server_pubkey = 2;
+	uint32 round_interval_secs = 3;
+	uint32 nb_round_nonces = 4;
+	uint32 vtxo_exit_delta = 5;
+	// Deprecated: renamed to vtxo_lifetime. This field is kept and populated
+	// with the same value for wire compatibility with older clients.
+	uint32 vtxo_expiry_delta = 6 [deprecated = true];
+	uint32 htlc_send_expiry_delta = 7;
+	uint32 htlc_expiry_delta = 8;
+	optional uint64 max_vtxo_amount = 9;
+	uint32 required_board_confirmations = 10;
+	uint32 max_user_invoice_cltv_delta = 11;
+	uint64 min_board_amount = 13;
+	bool ln_receive_anti_dos_required = 15;
+	bytes mailbox_pubkey = 16;
+
+	// Deprecated: use GetOffboardFeeRate instead. This field is kept
+	// for wire compatibility with older clients.
+	uint64 offboard_feerate_sat_vkb = 14 [deprecated = true];
+	FeeSchedule fees = 18;
+	uint32 max_vtxo_exit_depth = 19;
+
+	uint32 max_offboard_inputs = 20;
+
+	// The number of blocks a VTXO lives before it expires. Replaces the
+	// deprecated vtxo_expiry_delta field above; older servers only set that
+	// one, so clients should fall back to it when this field is 0.
+	uint32 vtxo_lifetime = 21;
+
+	// Link to the server's terms of service, if any.
+	optional string tos_link = 22;
+
+	// last index: 22
+}
+
+message OffboardFeeRateResponse {
+	uint64 sat_vkb = 1;
+}
+
+message FeeSchedule {
+	BoardFees board = 1;
+	OffboardFees offboard = 2;
+	RefreshFees refresh = 3;
+	LightningReceiveFees lightning_receive = 4;
+	LightningSendFees lightning_send = 5;
+}
+
+message PpmExpiryFeeEntry {
+	uint32 expiry_blocks_threshold = 1;
+	uint64 ppm = 2;
+}
+
+message BoardFees {
+	uint64 min_fee_sat = 1;
+	uint64 base_fee_sat = 2;
+	uint64 ppm = 3;
+}
+
+message OffboardFees {
+	uint64 base_fee_sat = 1;
+	uint64 fixed_additional_vb = 2;
+	repeated PpmExpiryFeeEntry ppm_expiry_table = 3;
+}
+
+message RefreshFees {
+	uint64 base_fee_sat = 1;
+	repeated PpmExpiryFeeEntry ppm_expiry_table = 2;
+}
+
+message LightningReceiveFees {
+	uint64 base_fee_sat = 1;
+	uint64 ppm = 2;
+}
+
+message LightningSendFees {
+	uint64 min_fee_sat = 1;
+	uint64 base_fee_sat = 2;
+	repeated PpmExpiryFeeEntry ppm_expiry_table = 3;
+}
+
+message GetVtxoRequest {
+	bytes vtxo_id = 1;
+}
+
+message GetVtxoResponse {
+	bytes vtxo = 1;
+}
+
+// Client-relevant spend state for a user-owned VTXO.
+//
+// Server-internal states (pool, forfeit, connector) are never returned;
+// in-flight Lightning-receive HTLCs are reported as HTLC_RECV_UNCLAIMED because
+// the client must reveal the preimage to claim them before they become spendable.
+enum VtxoSpendState {
+	VTXO_SPEND_STATE_UNSPECIFIED = 0;
+	// The VTXO is available for spending.
+	VTXO_SPEND_STATE_SPENDABLE = 1;
+	// The VTXO has been spent (via round, OOR, or offboard).
+	VTXO_SPEND_STATE_SPENT = 2;
+	// The VTXO originates from a round but the server has not released the
+	// unlock preimage yet.
+	VTXO_SPEND_STATE_UNCLAIMED = 3;
+	// The VTXO's signed transaction chain has not been uploaded yet.
+	VTXO_SPEND_STATE_UNREGISTERED = 4;
+	// The VTXO's preimage haven't been revealed yet
+	VTXO_SPEND_STATE_HTLC_RECV_UNCLAIMED = 5;
+}
+
+message GetVtxoStatusRequest {
+	bytes vtxo_id = 1;
+	// Serialized VtxoStatusAttestation proving the user controls the VTXO.
+	bytes attestation = 2;
+}
+
+message GetVtxoStatusResponse {
+	VtxoSpendState spend_state = 1;
+}
+
+
+// boarding
+
+message BoardCosignRequest {
+	uint64 amount = 1;
+	bytes utxo = 2;
+	uint32 expiry_height = 3;
+	bytes user_pubkey = 4;
+	bytes pub_nonce = 5;
+	bytes funding_tx = 6;
+}
+
+message BoardCosignResponse {
+	bytes pub_nonce = 1;
+	bytes partial_sig = 2;
+}
+
+message BoardVtxoRequest {
+	bytes board_vtxo = 1;
+}
+
+message RegisterVtxoTransactionsRequest {
+	// List of serialized VTXOs (using ProtocolEncoding)
+	repeated bytes vtxos = 1;
+}
+
+
+// arkoor
+
+message VtxoRequest {
+	uint64 amount = 1;
+	bytes policy = 2;
+}
+
+message ArkoorDestination {
+	uint64 total_amount = 1;
+	bytes policy = 2;
+}
+
+message ArkoorCosignRequest {
+	bytes input_vtxo_id = 1;
+	repeated ArkoorDestination outputs = 2;
+	repeated bytes user_pub_nonces = 3;
+	// outputs used for dust isolation
+	repeated ArkoorDestination isolated_outputs = 4;
+	bool use_checkpoint = 5;
+	bytes attestation = 6;
+}
+
+message ArkoorPackageCosignRequest {
+	repeated ArkoorCosignRequest parts = 1;
+}
+
+message ArkoorCosignResponse {
+	repeated bytes server_pub_nonces = 1;
+	repeated bytes server_partial_sigs = 2;
+}
+
+message ArkoorPackageCosignResponse {
+	repeated ArkoorCosignResponse parts = 1;
+}
+
+
+// lightning
+
+message LightningPayHtlcCosignRequest {
+	reserved 1, 3;
+	repeated ArkoorCosignRequest parts = 2;
+}
+
+message InitiateLightningPaymentRequest {
+	string invoice = 1;
+	repeated bytes htlc_vtxo_ids = 2;
+	uint64 payment_amount_sat = 3;
+	optional bytes mailbox_id = 4;
+	// How long the server should keep trying to pay the invoice; 0 makes a
+	// single attempt. Values above the server's maximum are capped to it.
+	// The server picks its default when unset.
+	optional uint32 retry_for_secs = 5;
+}
+
+message CheckLightningPaymentRequest {
+	bytes hash = 1;
+	bool wait = 2;
+}
+
+message PaymentSuccessStatus {
+	bytes preimage = 1;
+}
+
+message LightningPaymentStatus {
+	oneof payment_status {
+		core.Empty pending = 1;
+		PaymentSuccessStatus success = 2;
+		core.Empty failed = 3;
+	};
+}
+
+message FetchBolt12InvoiceRequest {
+	bytes offer = 1;
+	optional uint64 amount_sat = 2;
+}
+
+message FetchBolt12InvoiceResponse {
+	bytes invoice = 1;
+}
+
+message StartLightningReceiveRequest {
+	bytes payment_hash = 1;
+	uint64 amount_sat = 2;
+	uint32 min_cltv_delta = 3;
+	optional bytes mailbox_id = 4;
+	optional string description = 5;
+}
+
+message StartLightningReceiveResponse {
+	string bolt11 = 1;
+}
+
+message CheckLightningReceiveRequest {
+	bytes hash = 1;
+	bool wait = 2;
+}
+
+message PrepareLightningReceiveClaimRequest {
+	bytes payment_hash = 1;
+	bytes user_pubkey = 2;
+	uint32 htlc_recv_expiry = 3;
+	oneof lightning_receive_anti_dos {
+		InputVtxo input_vtxo = 4;
+		string token = 5;
+	};
+}
+
+message PrepareLightningReceiveClaimResponse {
+	CheckLightningReceiveResponse receive = 1;
+	repeated bytes htlc_vtxos = 2;
+}
+
+message ClaimLightningReceiveRequest {
+	bytes payment_hash = 1;
+	bytes payment_preimage = 2;
+	reserved 3; // vtxo_policy already in cosign_request
+	ArkoorPackageCosignRequest cosign_request = 4;
+}
+
+message CancelLightningReceiveRequest {
+	bytes payment_hash = 1;
+}
+
+enum LightningReceiveStatus {
+	// We have created the invoice and are awaiting the sender to start the process
+	CREATED = 0;
+	// The sender has setup the payment route and it's ready to go
+	ACCEPTED = 1;
+	// The Ark HTLC is created and ready to be executed with the preimage
+	HTLCS_READY = 2;
+	// The HTLCs have been executed and the payment was settled
+	SETTLED = 3;
+	// The payment was canceled before being executed
+	CANCELED = 4;
+}
+
+message CheckLightningReceiveResponse {
+	string invoice = 1;
+	uint64 amount_sat = 2;
+	LightningReceiveStatus status = 3;
+	// Empty until the status is HTLCS_READY or SETTLED
+	repeated bytes htlc_vtxos = 4;
+}
+
+// offboard
+
+message PrepareOffboardRequest {
+	OffboardRequest offboard = 1;
+	repeated bytes input_vtxo_ids = 2;
+	repeated bytes attestation = 3;
+}
+
+message PrepareOffboardResponse {
+	bytes offboard_tx = 1;
+	repeated bytes forfeit_cosign_nonces = 2;
+}
+
+message FinishOffboardRequest {
+	bytes offboard_txid = 1;
+	repeated bytes user_nonces = 2;
+	repeated bytes partial_signatures = 3;
+}
+
+message FinishOffboardResponse {
+	bytes signed_offboard_tx = 1;
+}
+
+// round
+
+message NextRoundTimeResponse {
+	// the next round start timestamp in seconds since unix epoch
+	uint64 timestamp = 1;
+}
+
+message RoundAttempt {
+	uint64 round_seq = 1;
+	uint64 attempt_seq = 2;
+	bytes round_attempt_challenge = 3;
+}
+
+message ForfeitNonces {
+	bytes input_vtxo_id = 1;
+	repeated bytes pub_nonces = 2;
+}
+
+message VtxoProposal {
+	uint64 round_seq = 1;
+	uint64 attempt_seq = 2;
+	bytes vtxos_spec = 3;
+	bytes unsigned_round_tx = 4;
+	repeated bytes vtxos_agg_nonces = 5;
+}
+
+message RoundFinished {
+	uint64 round_seq = 1;
+	uint64 attempt_seq = 2;
+	// The signed round tx.
+	bytes signed_round_tx = 3;
+	// The cosign signatures to plug into the vtxo tree.
+	repeated bytes vtxo_cosign_signatures = 4;
+}
+
+message RoundFailed {
+	uint64 round_seq = 1;
+}
+
+message RoundEvent {
+	oneof event {
+		RoundAttempt attempt = 1;
+		VtxoProposal vtxo_proposal = 2;
+		RoundFinished finished = 4;
+		RoundFailed failed = 5;
+
+		// old variants:
+		//RoundProposal round_proposal = 3;
+	};
+}
+
+message InputVtxo {
+	// vtxo id of input vtxos
+	bytes vtxo_id = 1;
+	bytes attestation = 2;
+}
+
+message SignedVtxoRequest {
+	VtxoRequest vtxo = 1;
+	bytes cosign_pubkey = 2;
+	repeated bytes public_nonces = 3;
+}
+
+message OffboardRequest {
+	// The target amount in sats
+	uint64 net_amount_sat = 1;
+	bytes offboard_spk = 2;
+	// Determines whether fees should be added onto the given amount or deducted from the gross amount.
+	bool deduct_fees_from_gross_amount = 3;
+	// The fee rate used to calculate the total fees
+	uint64 fee_rate_kwu = 5;
+}
+
+message SubmitPaymentRequest {
+	repeated InputVtxo input_vtxos = 2;
+	repeated SignedVtxoRequest vtxo_requests = 3;
+	repeated OffboardRequest offboard_requests = 4 [ deprecated = true ];
+	// Optional unblinded mailbox identifier for VTXO delivery.
+	// The server will post the created VTXO to this mailbox after the round completes.
+	optional bytes unblinded_mailbox_id = 5;
+}
+
+message SubmitPaymentResponse {
+	bytes unlock_hash = 1;
+}
+
+message ForfeitSignatures {
+	bytes input_vtxo_id = 1;
+	repeated bytes pub_nonces = 2;
+	repeated bytes signatures = 3;
+}
+
+message VtxoSignaturesRequest {
+	// The cosign pubkey these signatures are for.
+	bytes pubkey = 1;
+	repeated bytes signatures = 2;
+}
+
+message RoundParticipationRequest {
+	repeated InputVtxo input_vtxos = 2;
+	repeated VtxoRequest vtxo_requests = 3;
+	// Optional unblinded mailbox identifier for VTXO delivery.
+	// The server will post the created VTXO to this mailbox after the round completes.
+	optional bytes unblinded_mailbox_id = 4;
+	// Block height at which the refresh should happen: fees are calculated at
+	// this height and no round includes the participation before it.
+	// If omitted, the refresh happens in the next round.
+	optional uint32 scheduled_height = 5;
+}
+
+message RoundParticipationResponse {
+	bytes unlock_hash = 1;
+}
+
+message RoundParticipationStatusRequest {
+	bytes unlock_hash = 1;
+}
+
+enum RoundParticipationStatus {
+	// participation still waiting to happen
+	ROUND_PART_PENDING = 0;
+	// new vtxos have been issued, but not released yet
+	ROUND_PART_ISSUED = 1;
+	// old vtxos have been forfeited and new vtxos released
+	ROUND_PART_RELEASED = 2;
+}
+
+message RoundParticipationStatusResponse {
+	// the actual status
+	RoundParticipationStatus status = 1;
+
+    // vtxo ids of the input vtxos
+    repeated bytes input_vtxo_ids = 5;
+
+	// signed round funding tx
+	// (provided if status != ROUND_PART_PENDING)
+	optional bytes round_funding_tx = 2;
+
+	// unsigned output vtxos
+	// (provided if status != ROUND_PART_PENDING)
+	repeated bytes output_vtxos = 3;
+
+	// unlock preimage to unlock new vtxos
+	// (provided if status == ROUND_PART_RELEASED)
+	optional bytes unlock_preimage = 4;
+
+	// last index: 5
+}
+
+message LeafVtxoCosignRequest {
+	bytes vtxo_id = 1;
+	bytes public_nonce = 2;
+}
+
+message LeafVtxoCosignResponse {
+	bytes public_nonce = 1;
+	bytes partial_signature = 2;
+}
+
+message ForfeitNoncesRequest {
+	// the unlock hash to forfeit to, this is the unlock hash that locks the new output VTXO
+	bytes unlock_hash = 1;
+	// the VTXO IDs of the VTXOs to be forfeited for the same unlock preimage
+	repeated bytes vtxo_ids = 2;
+}
+
+message ForfeitNoncesResponse {
+	// list of nonces, one for each vtxo requested
+	repeated bytes public_nonces = 1;
+}
+
+message ForfeitVtxosRequest {
+	// encoded forfeit bundles, should all be for the same unlock hash
+	repeated bytes forfeit_bundles = 1;
+}
+
+message ForfeitVtxosResponse {
+	bytes unlock_preimage = 1;
+}
+
+
+service WalletAdminService {
+	rpc WalletStatus(core.Empty) returns (WalletStatusResponse) {}
+}
+
+service RoundAdminService {
+	rpc TriggerRound(core.Empty) returns (core.Empty) {}
+}
+
+service LightningAdminService {
+	rpc StartLightningNode(LightningNodeUri) returns (core.Empty) {}
+	rpc StopLightningNode(LightningNodeUri) returns (core.Empty) {}
+}
+
+service SweepAdminService {
+	rpc TriggerSweep(core.Empty) returns (core.Empty) {}
+}
+
+service BanAdminService {
+	rpc BanVtxo(BanVtxoRequest) returns (core.Empty) {}
+	rpc UnbanVtxo(UnbanVtxoRequest) returns (core.Empty) {}
+	rpc ListBannedVtxos(core.Empty) returns (ListBannedVtxosResponse) {}
+}
+
+service NurseryAdminService {
+	// Report of the txs the nursery is following up on. By default only
+	// unconfirmed, non-abandoned txs are returned; the request flags add
+	// the rest.
+	rpc ListNurseryTxs(ListNurseryTxsRequest) returns (ListNurseryTxsResponse) {}
+	// Abandon a nursery tx that can no longer make it onchain.
+	//
+	// The nursery stops following up on the tx and stops emitting the
+	// missed-target warning for it.
+	rpc Abandon(AbandonRequest) returns (core.Empty) {}
+}
+
+message ListNurseryTxsRequest {
+	bool include_confirmed = 1;
+	bool include_abandoned = 2;
+}
+
+message NurseryTxInfo {
+	string txid = 1;
+	// round | offboard | vtxopool | internal
+	string kind = 2;
+	// Whether the tx is currently in the node's mempool.
+	bool in_mempool = 3;
+	uint32 confirm_target_height = 4;
+	optional uint32 confirmed_at_height = 5;
+	// Unix timestamps in seconds.
+	uint64 created_at = 6;
+	optional uint64 abandoned_at = 7;
+	// Chunk feerate bitcoind reports for the tx, in sat/kwu. Unset if the
+	// tx is not in the mempool or the lookup failed.
+	optional uint64 chunk_fee_rate_kwu = 8;
+}
+
+message ListNurseryTxsResponse {
+	repeated NurseryTxInfo txs = 1;
+}
+
+message AbandonRequest {
+	string txid = 1;
+}
+
+message BanVtxoRequest {
+	bytes vtxo_id = 1;
+	uint32 ban_blocks = 2;
+}
+
+message UnbanVtxoRequest {
+	bytes vtxo_id = 1;
+}
+
+message BannedVtxo {
+	bytes vtxo_id = 1;
+	uint32 banned_until_height = 2;
+}
+
+message ListBannedVtxosResponse {
+	repeated BannedVtxo banned_vtxos = 1;
+}
+
+message WalletStatus {
+	string address = 1;
+	uint64 total_balance = 2;
+	uint64 trusted_balance = 3;
+	uint64 untrusted_balance = 4;
+	repeated string confirmed_utxos = 6;
+	repeated string unconfirmed_utxos = 7;
+}
+
+message WalletStatusResponse {
+	WalletStatus rounds = 1;
+	WalletStatus watchman = 2;
+}
+
+message LightningNodeUri {
+	string uri = 1;
+}

@@ -6,9 +6,14 @@ using ValueObjects;
 /// <summary>
 /// A series of (possibly zero) TLVs
 /// </summary>
+/// <remarks>
+/// The records are kept in insertion order. BOLT 1 requires strictly increasing types on the wire, so the stream
+/// serializer validates the order when writing: a hand-built stream whose records are not in ascending type order
+/// fails serialization instead of being silently re-sorted.
+/// </remarks>
 public sealed class TlvStream
 {
-    private readonly SortedDictionary<BigSize, BaseTlv> _tlvs = [];
+    private readonly List<BaseTlv> _tlvs = [];
 
     /// <summary>
     /// Add a TLV to the stream
@@ -16,10 +21,12 @@ public sealed class TlvStream
     /// <param name="baseTlv">The TLV to add</param>
     public void Add(BaseTlv baseTlv)
     {
-        if (!_tlvs.TryAdd(baseTlv.Type, baseTlv))
+        if (_tlvs.Any(t => t.Type == baseTlv.Type))
         {
             throw new ArgumentException($"A TLV with type {baseTlv.Type} already exists.");
         }
+
+        _tlvs.Add(baseTlv);
     }
 
     /// <summary>
@@ -33,19 +40,16 @@ public sealed class TlvStream
             if (tlv is null)
                 continue;
 
-            if (!_tlvs.TryAdd(tlv.Type, tlv))
-            {
-                throw new ArgumentException($"A TLV with type {tlv.Type} already exists.");
-            }
+            Add(tlv);
         }
     }
 
     /// <summary>
-    /// Get all TLVs in the stream
+    /// Get all TLVs in the stream, in insertion order
     /// </summary>
     public IEnumerable<BaseTlv> GetTlvs()
     {
-        return _tlvs.Values;
+        return _tlvs;
     }
 
     /// <summary>
@@ -56,7 +60,8 @@ public sealed class TlvStream
     /// <returns></returns>
     public bool TryGetTlv(BigSize type, out BaseTlv? tlv)
     {
-        return _tlvs.TryGetValue(type, out tlv);
+        tlv = _tlvs.FirstOrDefault(t => t.Type == type);
+        return tlv is not null;
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Serialization.Interfaces;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Messages;
 
@@ -11,19 +12,19 @@ using Exceptions;
 public class MessageSerializer : IMessageSerializer
 {
     private readonly ILogger<MessageSerializer> _logger;
-    private readonly IMessageTypeSerializerFactory _messageTypeSerializerFactory;
+    private readonly WireRegistry _wireRegistry;
 
     public MessageSerializer(ILogger<MessageSerializer> logger,
-                             IMessageTypeSerializerFactory messageTypeSerializerFactory)
+                             WireRegistry wireRegistry)
     {
         _logger = logger;
-        _messageTypeSerializerFactory = messageTypeSerializerFactory;
+        _wireRegistry = wireRegistry;
     }
 
     public async Task SerializeAsync(IMessage message, Stream stream)
     {
         var messageTypeSerializer =
-            _messageTypeSerializerFactory.GetSerializer(message.Type)
+            _wireRegistry.Get(message.Type)
          ?? throw new InvalidOperationException($"No serializer found for message type {message.Type}");
 
         // Write the message type to the stream
@@ -41,9 +42,17 @@ public class MessageSerializer : IMessageSerializer
         var type = EndianBitConverter.ToUInt16BigEndian(typeBytes);
 
         // Try to get the serializer for the message type
-        var messageTypeSerializer = _messageTypeSerializerFactory.GetSerializer<TMessage>();
+        var messageTypeSerializer = _wireRegistry.Get<TMessage>();
         if (messageTypeSerializer is not null)
+        {
+            // The wire type must be the one registered for TMessage, otherwise the bytes belong to another message.
+            if (!ReferenceEquals(_wireRegistry.Get((MessageTypes)type),
+                                 messageTypeSerializer))
+                throw new InvalidMessageException(
+                    $"Message type {type} does not match the expected message {typeof(TMessage).Name}");
+
             return await messageTypeSerializer.DeserializeAsync(stream);
+        }
 
         // If the type is unknown and even, throw an exception
         if (type % 2 == 0)
@@ -62,7 +71,7 @@ public class MessageSerializer : IMessageSerializer
         var type = EndianBitConverter.ToUInt16BigEndian(typeBytes);
 
         // Try to get the serializer for the message type
-        var messageTypeSerializer = _messageTypeSerializerFactory.GetSerializer((MessageTypes)type);
+        var messageTypeSerializer = _wireRegistry.Get((MessageTypes)type);
         if (messageTypeSerializer is not null)
             return await messageTypeSerializer.DeserializeAsync(stream);
 

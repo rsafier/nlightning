@@ -43,6 +43,22 @@ internal sealed class HandshakeService : IHandshakeService
         IsInitiator = isInitiator;
     }
 
+    /// <summary>
+    /// Initializes a new instance whose local static ECDH is computed by
+    /// <paramref name="protectedStaticEcdh"/>, so the static private key never enters the handshake state (NL-436).
+    /// </summary>
+    public HandshakeService(bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey,
+                            ReadOnlySpan<byte> staticPublicKey, IEcdh dh,
+                            ProtectedStaticEcdh protectedStaticEcdh)
+    {
+        ArgumentNullException.ThrowIfNull(dh);
+        ArgumentNullException.ThrowIfNull(protectedStaticEcdh);
+
+        _handshakeState = new HandshakeState(isInitiator, localStaticPublicKey, staticPublicKey, dh,
+                                             protectedStaticEcdh);
+        IsInitiator = isInitiator;
+    }
+
     /// <inheritdoc/>
     /// <exception cref="InvalidOperationException">Thrown when there are no more steps to complete</exception>
     public int PerformStep(ReadOnlySpan<byte> inMessage, Span<byte> outMessage, out ITransport? transport)

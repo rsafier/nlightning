@@ -1,4 +1,3 @@
-using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -10,6 +9,7 @@ using Domain.Serialization.Interfaces;
 using Domain.Transport;
 using Infrastructure.Crypto.Interfaces;
 using Services;
+using Tor;
 
 /// <summary>
 /// Factory for creating a transport service.
@@ -35,12 +35,29 @@ public sealed class TransportServiceFactory : ITransportServiceFactory
 
     /// <inheritdoc />
     public ITransportService CreateTransportService(bool isInitiator, ReadOnlySpan<byte> s, ReadOnlySpan<byte> rs,
-                                                    TcpClient tcpClient)
+                                                    PeerConnection connection)
     {
         // Create a specific logger for the TransportService class
         var logger = _loggerFactory.CreateLogger<TransportService>();
 
-        return new TransportService(_ecdh, logger, _messageSerializer, _nodeOptions.NetworkTimeout, isInitiator, s, rs,
-                                    tcpClient);
+        return new TransportService(_ecdh, logger, _messageSerializer,
+                                    TorTcpClient.GetNetworkTimeout(_nodeOptions, connection, !isInitiator), isInitiator,
+                                    s, rs, connection);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The handshake does its local static ECDH through <paramref name="protectedStaticEcdh"/>, so the node private
+    /// key never leaves the key manager (NL-436).
+    /// </remarks>
+    public ITransportService CreateTransportService(bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey,
+                                                    ReadOnlySpan<byte> rs, PeerConnection connection,
+                                                    ProtectedStaticEcdh protectedStaticEcdh)
+    {
+        var logger = _loggerFactory.CreateLogger<TransportService>();
+
+        return new TransportService(_ecdh, logger, _messageSerializer,
+                                    TorTcpClient.GetNetworkTimeout(_nodeOptions, connection, !isInitiator), isInitiator,
+                                    localStaticPublicKey, rs, connection, protectedStaticEcdh);
     }
 }

@@ -3,18 +3,13 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Channels.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class ShutdownMessageTests
 {
-    private readonly ShutdownMessageTypeSerializer _shutdownMessageTypeSerializer;
-
-    public ShutdownMessageTests()
-    {
-        _shutdownMessageTypeSerializer =
-            new ShutdownMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
-    }
+    private readonly IMessageTypeSerializer<ShutdownMessage> _shutdownMessageTypeSerializer =
+        SerializerHelper.WireRegistry.Get<ShutdownMessage>()!;
 
     [Fact]
     public async Task Given_ValidStream_When_DeserializeAsync_Then_ReturnsShutdownMessage()

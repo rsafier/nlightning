@@ -1,0 +1,1729 @@
+namespace NLightning.Domain.Tests.Protocol.InteractiveTx;
+
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Protocol.InteractiveTx;
+using Domain.Protocol.InteractiveTx.Enums;
+using Domain.Protocol.InteractiveTx.Models;
+using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
+using static InteractiveTxTestData;
+
+/// <summary>
+/// <see cref="InteractiveTxSession"/> (IT1-T1..T4): turn-taking, consecutive <c>tx_complete</c>, the receiver rules
+/// as the session applies them (IT-S-01/02, IT-R-01..04 incl. the agreed feerate, NL-219), the double-spend of previous
+/// RBF attempts (IT-RBF-01), <c>tx_signatures</c> (IT-SIG-01..03) and <c>tx_abort</c> (IT-ABT-01). Migrated from the
+/// deleted <c>InteractiveTransactionServiceTests</c>.
+/// </summary>
+public class InteractiveTxSessionTests
+{
+    private readonly FakePrevTxInspector _inspector = new();
+
+    #region Helpers
+
+    private sealed record Exchange(InteractiveTxSession Initiator, InteractiveTxSession NonInitiator,
+                                   List<(bool FromInitiator, IChannelMessage Message)> Log, bool InitiatorComplete,
+                                   bool NonInitiatorComplete);
+
+    /// <summary>Runs two sessions against each other until neither has anything to send.</summary>
+    private Exchange Run(InteractiveTxSession initiator, InteractiveTxSession nonInitiator,
+                         FakePrevTxInspector? inspector = null)
+    {
+        inspector ??= _inspector;
+        var log = new List<(bool, IChannelMessage)>();
+        var initiatorComplete = false;
+        var nonInitiatorComplete = false;
+
+        var step = initiator.Start();
+        initiator = step.Next;
+        var pending = new Queue<(bool FromInitiator, IChannelMessage Message)>(step.Outbound.Select(m => (true, m)));
+        initiatorComplete |= step.NegotiationComplete;
+
+        while (pending.Count > 0)
+        {
+            var (fromInitiator, message) = pending.Dequeue();
+            log.Add((fromInitiator, message));
+            if (fromInitiator)
+            {
+                step = nonInitiator.Receive(message, inspector);
+                nonInitiator = step.Next;
+                nonInitiatorComplete |= step.NegotiationComplete;
+            }
+            else
+            {
+                step = initiator.Receive(message, inspector);
+                initiator = step.Next;
+                initiatorComplete |= step.NegotiationComplete;
+            }
+
+            foreach (var outbound in step.Outbound)
+                pending.Enqueue((!fromInitiator, outbound));
+        }
+
+        return new Exchange(initiator, nonInitiator, log, initiatorComplete, nonInitiatorComplete);
+    }
+
+    private static string Names(IEnumerable<(bool FromInitiator, IChannelMessage Message)> log) =>
+        string.Join(",", log.Select(e => (e.FromInitiator ? "A:" : "B:") + e.Message.Type));
+
+    private static InteractiveTxSession NonInitiator(InteractiveTxContribution? contribution = null,
+                                                     SharedFundingSpec? shared = null, uint feeratePerKw = 253,
+                                                     ulong dustLimitSatoshis = 0) =>
+        InteractiveTxSession.Create(Parameters(false, contribution, shared, feeratePerKw: feeratePerKw,
+                                               dustLimitSatoshis: dustLimitSatoshis));
+
+    /// <summary>Our non-initiator session after the peer's first message.</summary>
+    private InteractiveTxStepResult Receive(InteractiveTxSession session, IChannelMessage message) =>
+        session.Receive(message, _inspector);
+
+    private static void AssertAborted(InteractiveTxStepResult result, string requirementId)
+    {
+        Assert.True(result.Aborted, "expected tx_abort");
+        Assert.Equal(requirementId, result.RequirementId);
+        Assert.Equal(InteractiveTxSessionState.Aborted, result.Next.State);
+        var abort = Assert.IsType<TxAbortMessage>(Assert.Single(result.Outbound));
+        Assert.Equal(TestChannelId, abort.Payload.ChannelId);
+        Assert.All(abort.Payload.Data, b => Assert.InRange(b, (byte)32, (byte)126));
+    }
+
+    /// <summary>A completed, constructed splice-less negotiation where both sides added one input.</summary>
+    private (InteractiveTxSession Initiator, InteractiveTxSession NonInitiator) ConstructedPair(
+        long initiatorInputSats = 100_000, long nonInitiatorInputSats = 100_000, SharedFundingSpec? shared = null,
+        SharedFundingSpec? sharedForNonInitiator = null)
+    {
+        var a = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1, initiatorInputSats)], [Output(10_000)]),
+                                                       shared, LowNodeId, HighNodeId));
+        var b = InteractiveTxSession.Create(Parameters(false,
+                                                       Contribution([Input(2, nonInitiatorInputSats)], [Output(10_000)]),
+                                                       sharedForNonInitiator, HighNodeId, LowNodeId));
+        var inspector = new FakePrevTxInspector
+        {
+            Override = (bytes, vout) =>
+            {
+                var sats = bytes.SequenceEqual(PrevTx(1)) ? initiatorInputSats : nonInitiatorInputSats;
+                return new PrevTxInspection(true, PrevTxId(bytes), 2, LightningMoney.Satoshis(sats), P2Wpkh, true, null);
+            }
+        };
+        var exchange = Run(a, b, inspector);
+        Assert.True(exchange.InitiatorComplete && exchange.NonInitiatorComplete, Names(exchange.Log));
+
+        return (exchange.Initiator.WithConstructedTransaction(Construct(exchange.Initiator)),
+                exchange.NonInitiator.WithConstructedTransaction(Construct(exchange.NonInitiator)));
+    }
+
+    #endregion
+
+    #region Create / Start
+
+    [Fact]
+    public void Given_ContributionWithFinalSequence_When_Creating_Then_Throws()
+    {
+        // Arrange
+        // (BOLT 2: "MUST set sequence to be less than or equal to 4294967293 (0xFFFFFFFD)")
+        var parameters = Parameters(true, Contribution([Input(1, sequence: 0xFFFFFFFE)]));
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => InteractiveTxSession.Create(parameters));
+    }
+
+    [Fact]
+    public void Given_NonInitiator_When_Starting_Then_Throws()
+    {
+        // Arrange
+        var session = NonInitiator();
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => session.Start());
+    }
+
+    [Fact]
+    public void Given_StartedInitiator_When_StartingAgain_Then_Throws()
+    {
+        // Arrange
+        var started = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1)]))).Start().Next;
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => started.Start());
+    }
+
+    [Fact]
+    public void Given_Initiator_When_Starting_Then_FirstMessageIsTxAddInputWithEvenSerialId()
+    {
+        // Arrange
+        // (BOLT 2: "The initiator initiates the interactive transaction construction protocol with tx_add_input")
+        var session = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1)], [Output(50_000)])));
+
+        // Act
+        var result = session.Start();
+
+        // Assert
+        var add = Assert.IsType<TxAddInputMessage>(Assert.Single(result.Outbound));
+        Assert.Equal(0UL, add.Payload.SerialId % 2);
+        Assert.Equal(PrevTx(1), add.Payload.PrevTx);
+        Assert.Equal(Sequence, add.Payload.Sequence);
+        Assert.False(result.Next.IsOurTurn);
+        Assert.Single(result.Next.Inputs);
+        Assert.Equal(InteractiveTxParty.Local, result.Next.Inputs[0].AddedBy);
+    }
+
+    [Theory]
+    [InlineData(true, 0UL)]
+    [InlineData(false, 1UL)]
+    public void Given_Contribution_When_Creating_Then_SerialIdsAreRandomUniqueAndOfOurParity(bool isInitiator,
+        ulong parity)
+    {
+        // Arrange
+        // (BOLT 2 tx_add_input rationale: "serial_id is a randomly chosen number which uniquely identifies this input")
+        var shared = isInitiator ? Splice(true) : null;
+        var contribution = Contribution([Input(1), Input(2), Input(3)], [Output(10_000), Output(20_000)]);
+
+        // Act
+        var sessions = Enumerable.Range(0, 4)
+                                 .Select(_ => InteractiveTxSession.Create(Parameters(isInitiator, contribution, shared)))
+                                 .Select(s => isInitiator ? s.Start().Next : s)
+                                 .ToList();
+        var ids = sessions.Select(s => DrainSerialIds(s, isInitiator)).ToList();
+
+        // Assert
+        Assert.All(ids, list =>
+        {
+            Assert.All(list, id => Assert.Equal(parity, id % 2));
+            Assert.Equal(list.Count, list.Distinct().Count());
+        });
+        Assert.True(ids.Select(l => string.Join(",", l)).Distinct().Count() > 1, "serial ids are not random");
+        Assert.Contains(ids.SelectMany(l => l), id => id > 1_000_000);
+    }
+
+    [Fact]
+    public void Given_SerialIdSourceRepeating_When_Creating_Then_DuplicatesAreDrawnAgainWithOurParity()
+    {
+        // Arrange
+        var values = new Queue<ulong>([6, 7, 6, 10, 11, 42]);
+        var contribution = Contribution([Input(1), Input(2)], [Output(10_000)]);
+
+        // Act
+        var session = InteractiveTxSession.Create(Parameters(true, contribution), () => values.Dequeue());
+        var ids = DrainSerialIds(session.Start().Next, true);
+
+        // Assert: 6; 7 -> 6 (repeat), 6 (repeat), 10; 11 -> 10 (repeat), 42
+        Assert.Equal([6UL, 10UL, 42UL], ids);
+    }
+
+    /// <summary>Our serial ids in sending order: answers each of our messages with the peer's tx_complete.</summary>
+    private List<ulong> DrainSerialIds(InteractiveTxSession session, bool started)
+    {
+        var ids = new List<ulong>();
+        var step = started ? null : Receive(session, Complete());
+        var current = step?.Next ?? session;
+        IEnumerable<IChannelMessage> outbound = step?.Outbound ?? [];
+        if (started)
+        {
+            ids.AddRange(current.Inputs.Select(i => i.SerialId));
+        }
+
+        for (var guard = 0; guard < 20; guard++)
+        {
+            foreach (var message in outbound)
+            {
+                if (message is TxAddInputMessage add)
+                    ids.Add(add.Payload.SerialId);
+                else if (message is TxAddOutputMessage output)
+                    ids.Add(output.Payload.SerialId);
+            }
+
+            if (outbound.Any(m => m is TxCompleteMessage) || current.IsNegotiationComplete
+                                                          || current.State != InteractiveTxSessionState.Negotiating)
+                break;
+
+            step = Receive(current, Complete());
+            current = step.Next;
+            outbound = step.Outbound;
+        }
+
+        return ids;
+    }
+
+    [Fact]
+    public void Given_InitiatorWithNothing_When_Starting_Then_SendsTxComplete()
+    {
+        // Arrange
+        var session = InteractiveTxSession.Create(Parameters(true));
+
+        // Act
+        var result = session.Start();
+
+        // Assert
+        Assert.IsType<TxCompleteMessage>(Assert.Single(result.Outbound));
+        Assert.False(result.NegotiationComplete);
+    }
+
+    #endregion
+
+    #region IT-S-02 turns and consecutive tx_complete
+
+    [Fact]
+    public void Given_InitiatorOnlyExample_When_Running_Then_MatchesTheSpecSequence()
+    {
+        // Arrange
+        // (BOLT 2 "initiator only": A has two inputs and an output, B has nothing to contribute)
+        var a = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1), Input(2)], [Output(150_000)])));
+        var b = NonInitiator();
+
+        // Act
+        var exchange = Run(a, b);
+
+        // Assert
+        Assert.Equal("A:TxAddInput,B:TxComplete,A:TxAddInput,B:TxComplete,A:TxAddOutput,B:TxComplete,A:TxComplete",
+                     Names(exchange.Log));
+        Assert.True(exchange.InitiatorComplete);
+        Assert.True(exchange.NonInitiatorComplete);
+        Assert.True(exchange.Initiator.IsNegotiationComplete);
+        Assert.Equal(2, exchange.NonInitiator.Inputs.Count);
+        Assert.All(exchange.NonInitiator.Inputs, i => Assert.Equal(InteractiveTxParty.Remote, i.AddedBy));
+        Assert.Equal(exchange.Initiator.Inputs.Select(i => i.SerialId), exchange.NonInitiator.Inputs.Select(i => i.SerialId));
+        Assert.Equal(exchange.Initiator.Outputs.Select(o => o.SerialId),
+                     exchange.NonInitiator.Outputs.Select(o => o.SerialId));
+    }
+
+    [Fact]
+    public void Given_BothContribute_When_Running_Then_TurnsAlternateAndBothSeeTheSameTransaction()
+    {
+        // Arrange
+        var a = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1)], [Output(50_000)])));
+        var b = NonInitiator(Contribution([Input(2)], [Output(60_000)]));
+
+        // Act
+        var exchange = Run(a, b);
+
+        // Assert
+        Assert.Equal("A:TxAddInput,B:TxAddInput,A:TxAddOutput,B:TxAddOutput,A:TxComplete,B:TxComplete",
+                     Names(exchange.Log));
+        Assert.True(exchange.InitiatorComplete && exchange.NonInitiatorComplete);
+        Assert.All(exchange.Initiator.Inputs.Where(i => i.AddedBy == InteractiveTxParty.Local),
+                   i => Assert.Equal(0UL, i.SerialId % 2));
+        Assert.All(exchange.NonInitiator.Inputs.Where(i => i.AddedBy == InteractiveTxParty.Local),
+                   i => Assert.Equal(1UL, i.SerialId % 2));
+        Assert.Equal(exchange.Initiator.Inputs.Select(i => (i.SerialId, i.PrevTxId)),
+                     exchange.NonInitiator.Inputs.Select(i => (i.SerialId, i.PrevTxId)));
+        Assert.Equal(2, exchange.Initiator.Outputs.Count);
+    }
+
+    [Fact]
+    public void Given_NotConsecutiveTxComplete_When_PeerAddsAfterOurComplete_Then_NegotiationContinues()
+    {
+        // Arrange: we (non-initiator) have nothing; the peer adds, we complete, the peer adds again
+        var session = NonInitiator();
+
+        // Act
+        var first = Receive(session, AddInput(0, 1));
+        var second = Receive(first.Next, AddInput(2, 2));
+        var third = Receive(second.Next, Complete());
+
+        // Assert
+        Assert.IsType<TxCompleteMessage>(Assert.Single(first.Outbound));
+        Assert.False(first.NegotiationComplete);
+        Assert.IsType<TxCompleteMessage>(Assert.Single(second.Outbound));
+        Assert.False(second.NegotiationComplete);
+        Assert.True(third.NegotiationComplete);
+        Assert.Empty(third.Outbound);
+        Assert.Equal(2, third.Next.Inputs.Count);
+    }
+
+    [Fact]
+    public void Given_PeersCompleteFirst_When_WeHaveNothing_Then_OurCompleteEndsTheNegotiation()
+    {
+        // Arrange: the peer (initiator) starts with tx_complete; we have nothing either (at feerate 0, so the empty
+        // transaction owes no fee for its common fields)
+        var session = NonInitiator(feeratePerKw: 0);
+
+        // Act
+        var result = Receive(session, Complete());
+
+        // Assert
+        Assert.IsType<TxCompleteMessage>(Assert.Single(result.Outbound));
+        Assert.True(result.NegotiationComplete);
+    }
+
+    [Fact]
+    public void Given_PeersCompleteFirst_When_WeStillHaveItems_Then_WeSendThemAndItIsNotComplete()
+    {
+        // Arrange
+        var session = NonInitiator(Contribution([Input(3)]));
+
+        // Act
+        var result = Receive(session, Complete());
+
+        // Assert
+        Assert.IsType<TxAddInputMessage>(Assert.Single(result.Outbound));
+        Assert.False(result.NegotiationComplete);
+    }
+
+    [Fact]
+    public void Given_InitiatorBeforeStart_When_PeerSendsAMessage_Then_OutOfTurnAbort()
+    {
+        // Arrange
+        var session = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1)])));
+
+        // Act
+        var result = session.Receive(AddInput(1, 5), _inspector);
+
+        // Assert
+        AssertAborted(result, "IT-S-02");
+    }
+
+    [Fact]
+    public void Given_CompletedNegotiation_When_PeerAddsAnInput_Then_Abort()
+    {
+        // Arrange
+        var completed = Receive(NonInitiator(feeratePerKw: 0), Complete()).Next;
+
+        // Act
+        var result = Receive(completed, AddInput(0, 1));
+
+        // Assert
+        AssertAborted(result, "IT-S-02");
+    }
+
+    #endregion
+
+    #region IT-S-01 / IT-R-01 tx_add_input as received
+
+    [Theory]
+    [InlineData(1UL)]
+    [InlineData(3UL)]
+    public void Given_LocalNonInitiator_When_PeerAddsInputWithOddSerialId_Then_Aborts(ulong serialId)
+    {
+        // Arrange
+        var session = NonInitiator();
+
+        // Act
+        var result = Receive(session, AddInput(serialId, 1));
+
+        // Assert
+        AssertAborted(result, "IT-S-01");
+    }
+
+    [Fact]
+    public void Given_LocalInitiator_When_PeerAddsInputWithEvenSerialId_Then_Aborts()
+    {
+        // Arrange
+        var started = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1)]))).Start().Next;
+
+        // Act
+        var result = started.Receive(AddInput(2, 5), _inspector);
+
+        // Assert
+        AssertAborted(result, "IT-S-01");
+    }
+
+    [Fact]
+    public void Given_AddedInput_When_PeerAddsTheSameSerialIdAgain_Then_Aborts()
+    {
+        // Arrange
+        var first = Receive(NonInitiator(), AddInput(0, 1)).Next;
+
+        // Act
+        var result = Receive(first, AddInput(0, 2));
+
+        // Assert
+        AssertAborted(result, "IT-S-01");
+    }
+
+    [Fact]
+    public void Given_AddedOutput_When_PeerAddsAnInputWithTheSameSerialId_Then_Accepted()
+    {
+        // Arrange (inputs and outputs have separate serial_id namespaces: "unique serial_id for each input")
+        var first = Receive(NonInitiator(), AddOutput(0)).Next;
+
+        // Act
+        var result = Receive(first, AddInput(0, 1));
+
+        // Assert
+        Assert.False(result.Aborted);
+        Assert.Single(result.Next.Inputs);
+        Assert.Single(result.Next.Outputs);
+    }
+
+    [Fact]
+    public void Given_AddedInput_When_PeerAddsTheSameOutpointUnderAnotherSerialId_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2: "prevtx and prevtx_vout are identical to a previously added (and not removed) input")
+        var first = Receive(NonInitiator(), AddInput(0, 1)).Next;
+
+        // Act
+        var result = Receive(first, AddInput(2, 1));
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_OurInput_When_PeerReAddsIt_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2 sender: "MUST NOT re-transmit inputs it has received from the peer")
+        var started = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1)], [Output(50_000)]))).Start();
+
+        // Act
+        var result = started.Next.Receive(AddInput(1, 1), _inspector);
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_PrevTxVoutOutOfRange_When_PeerAddsInput_Then_Aborts()
+    {
+        // Act
+        var result = Receive(NonInitiator(), AddInput(0, 1, vout: 2));
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_InvalidPrevTx_When_PeerAddsInput_Then_Aborts()
+    {
+        // Arrange
+        var inspector = new FakePrevTxInspector
+        {
+            Override = (_, _) => new PrevTxInspection(false, null, 0, null, null, false, "does not parse")
+        };
+
+        // Act
+        var result = NonInitiator().Receive(AddInput(0, 1), inspector);
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+        Assert.Contains("does not parse", result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_NonWitnessPrevOut_When_PeerAddsInput_Then_Aborts()
+    {
+        // Arrange
+        var p2Pkh = new BitcoinScript([0x76, 0xa9, 0x14, .. new byte[20], 0x88, 0xac]);
+        var inspector = new FakePrevTxInspector
+        {
+            Override = (bytes, _) => new PrevTxInspection(true, PrevTxId(bytes), 1, LightningMoney.Satoshis(1_000),
+                                                          p2Pkh, false, null)
+        };
+
+        // Act
+        var result = NonInitiator().Receive(AddInput(0, 1), inspector);
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_ValidInput_When_PeerAddsIt_Then_ItIsRecordedFromThePrevTx()
+    {
+        // Act
+        var result = Receive(NonInitiator(), AddInput(0, 9, vout: 1));
+
+        // Assert
+        var input = Assert.Single(result.Next.Inputs);
+        Assert.Equal(PrevTxId(PrevTx(9)), input.PrevTxId);
+        Assert.Equal(1u, input.PrevTxVout);
+        Assert.Equal(PrevOutAmount.MilliSatoshi, input.Amount.MilliSatoshi);
+        Assert.Equal(P2Wpkh, input.ScriptPubKey);
+        Assert.Equal(InteractiveTxParty.Remote, input.AddedBy);
+        Assert.Equal(1, result.Next.ReceivedAddInputCount);
+    }
+
+    #endregion
+
+    #region NL-219: 4096 received messages per type
+
+    [Fact]
+    public void Given_AddRemoveCycles_When_PeerSendsThe4096thTxAddInput_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2: "if has received 4096 tx_add_input messages during this negotiation"; removals do not reset it)
+        var session = NonInitiator();
+        InteractiveTxStepResult result = null!;
+
+        // Act
+        for (var i = 0; i < 4095; i++)
+        {
+            result = Receive(session, AddInput(0, 1));
+            Assert.False(result.Aborted, $"add #{i + 1}: {result.AbortReason}");
+            result = Receive(result.Next, RemoveInput(0));
+            Assert.False(result.Aborted, $"remove #{i + 1}: {result.AbortReason}");
+            session = result.Next;
+        }
+
+        var last = Receive(session, AddInput(0, 1));
+
+        // Assert
+        Assert.Equal(4095, session.ReceivedAddInputCount);
+        Assert.Empty(session.Inputs);
+        AssertAborted(last, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_AddRemoveCycles_When_PeerSendsThe4096thTxAddOutput_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2: "it has received 4096 tx_add_output messages during this negotiation")
+        var session = NonInitiator();
+        InteractiveTxStepResult result;
+
+        // Act
+        for (var i = 0; i < 4095; i++)
+        {
+            result = Receive(session, AddOutput(0));
+            Assert.False(result.Aborted, $"add #{i + 1}: {result.AbortReason}");
+            result = Receive(result.Next, RemoveOutput(0));
+            Assert.False(result.Aborted, $"remove #{i + 1}: {result.AbortReason}");
+            session = result.Next;
+        }
+
+        var last = Receive(session, AddOutput(0));
+
+        // Assert
+        Assert.Equal(4095, session.ReceivedAddOutputCount);
+        AssertAborted(last, "IT-R-02");
+    }
+
+    #endregion
+
+    #region IT-R-02 tx_add_output as received
+
+    [Theory]
+    [InlineData(0UL, 293L, "IT-R-02")] // below P2WPKH dust
+    [InlineData(1UL, 50_000L, "IT-S-01")] // wrong parity from the initiator
+    public void Given_BadOutput_When_PeerAddsIt_Then_Aborts(ulong serialId, long sats, string requirementId)
+    {
+        // Act
+        var result = Receive(NonInitiator(), AddOutput(serialId, sats));
+
+        // Assert
+        AssertAborted(result, requirementId);
+    }
+
+    [Fact]
+    public void Given_LocalNonInitiator_When_PeerAddsOutputWithEvenSerialId_Then_Accepts()
+    {
+        // Act
+        var result = Receive(NonInitiator(), AddOutput(0, 294));
+
+        // Assert
+        Assert.False(result.Aborted);
+        Assert.Single(result.Next.Outputs);
+        Assert.Equal(1, result.Next.ReceivedAddOutputCount);
+    }
+
+    [Fact]
+    public void Given_OutputWithSerialId_When_PeerAddsSecondOutputWithSameSerialId_Then_Aborts()
+    {
+        // Arrange
+        var first = Receive(NonInitiator(), AddOutput(0)).Next;
+
+        // Act
+        var result = Receive(first, AddOutput(0));
+
+        // Assert
+        AssertAborted(result, "IT-S-01");
+    }
+
+    [Theory]
+    [InlineData("0014")]
+    [InlineData("0020")]
+    [InlineData("5120")]
+    public void Given_SegwitScripts_When_PeerAddsOutputs_Then_Accepted(string prefix)
+    {
+        // Arrange
+        // (BOLT 2: "MUST accept P2WSH, P2WPKH, P2TR scripts")
+        var length = prefix == "0014" ? 20 : 32;
+        var script = new BitcoinScript([.. Convert.FromHexString(prefix), .. new byte[length]]);
+
+        // Act
+        var result = Receive(NonInitiator(), AddOutput(0, 10_000, script));
+
+        // Assert
+        Assert.False(result.Aborted, result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_ANegotiatedDustLimit_When_ThePeerAddsAnOutputBelowIt_Then_Aborts()
+    {
+        // Arrange (NL-473: the negotiated dust_limit rules, not Bitcoin Core's per-script threshold; the session's
+        // parameters carry the larger of both sides' dust_limit_satoshis)
+        var session = NonInitiator(dustLimitSatoshis: 1_000);
+
+        // Act: 500 sat is above the 294 sat P2WPKH threshold but below the negotiated limit
+        var below = Receive(session, AddOutput(0, 500));
+        var atLimit = Receive(NonInitiator(dustLimitSatoshis: 1_000), AddOutput(0, 1_000));
+
+        // Assert
+        AssertAborted(below, "IT-R-02");
+        Assert.False(atLimit.Aborted, atLimit.AbortReason);
+        Assert.Single(atLimit.Next.Outputs);
+    }
+
+    #endregion
+
+    #region IT-R-03 tx_remove_*
+
+    [Fact]
+    public void Given_AddedOutput_When_PeerRemovesIt_Then_Removed()
+    {
+        // Arrange
+        var first = Receive(NonInitiator(), AddOutput(0)).Next;
+
+        // Act
+        var result = Receive(first, RemoveOutput(0));
+
+        // Assert
+        Assert.False(result.Aborted);
+        Assert.Empty(result.Next.Outputs);
+    }
+
+    [Fact]
+    public void Given_AddedInput_When_PeerRemovesOutputWithThatSerialId_Then_Aborts()
+    {
+        // Arrange
+        var first = Receive(NonInitiator(), AddInput(0, 1)).Next;
+
+        // Act
+        var result = Receive(first, RemoveOutput(0));
+
+        // Assert
+        AssertAborted(result, "IT-R-03");
+    }
+
+    [Fact]
+    public void Given_AddedOutput_When_PeerRemovesInputWithThatSerialId_Then_Aborts()
+    {
+        // Arrange
+        var first = Receive(NonInitiator(), AddOutput(0)).Next;
+
+        // Act
+        var result = Receive(first, RemoveInput(0));
+
+        // Assert
+        AssertAborted(result, "IT-R-03");
+    }
+
+    [Fact]
+    public void Given_OurInput_When_PeerRemovesIt_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2: "the input or output identified by the serial_id was not added by the sender")
+        var started = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1)], [Output(50_000)]))).Start();
+
+        // Act
+        var result = started.Next.Receive(RemoveInput(0), _inspector);
+
+        // Assert
+        AssertAborted(result, "IT-R-03");
+    }
+
+    [Fact]
+    public void Given_RemovedInput_When_PeerRemovesItAgain_Then_Aborts()
+    {
+        // Arrange
+        var added = Receive(NonInitiator(), AddInput(0, 1)).Next;
+        var removed = Receive(added, RemoveInput(0)).Next;
+
+        // Act
+        var result = Receive(removed, RemoveInput(0));
+
+        // Assert
+        AssertAborted(result, "IT-R-03");
+    }
+
+    [Fact]
+    public void Given_SpecExampleWithRemoval_When_PeerRemovesItsOutput_Then_TheTransactionHasTheRest()
+    {
+        // Arrange
+        // (BOLT 2 "initiator and non-initiator": A adds 2 inputs and an output it then removes; we are B with one
+        // input and one output, which we send at once instead of waiting for A's second input as the spec's B does)
+        var b = NonInitiator(Contribution([Input(20)], [Output(60_000)]));
+
+        // Act
+        var s1 = Receive(b, AddInput(0, 10)); // (1) -> (2) our tx_add_input
+        var s2 = Receive(s1.Next, AddOutput(2)); // (3) -> our tx_add_output
+        var s3 = Receive(s2.Next, AddInput(4, 11)); // (5) -> our tx_complete
+        var s4 = Receive(s3.Next, RemoveOutput(2)); // (7) -> our tx_complete
+        var s5 = Receive(s4.Next, Complete()); // (9): consecutive with our tx_complete, so it concludes
+
+        // Assert
+        Assert.IsType<TxAddInputMessage>(Assert.Single(s1.Outbound));
+        Assert.IsType<TxAddOutputMessage>(Assert.Single(s2.Outbound));
+        Assert.IsType<TxCompleteMessage>(Assert.Single(s3.Outbound));
+        Assert.IsType<TxCompleteMessage>(Assert.Single(s4.Outbound));
+        Assert.Empty(s5.Outbound);
+        Assert.True(s5.NegotiationComplete, s5.AbortReason);
+        Assert.Equal(3, s5.Next.Inputs.Count);
+        var output = Assert.Single(s5.Next.Outputs);
+        Assert.Equal(InteractiveTxParty.Local, output.AddedBy);
+    }
+
+    #endregion
+
+    #region IT-R-04 tx_complete
+
+    [Fact]
+    public void Given_PeerOutputsAboveItsInputs_When_PeerCompletes_Then_WeAbortInsteadOfCompleting()
+    {
+        // Arrange: the peer adds a 100,000 sat input and a 100,001 sat output
+        var s1 = Receive(NonInitiator(), AddInput(0, 1)).Next;
+        var s2 = Receive(s1, AddOutput(2, 100_001)).Next;
+
+        // Act
+        var result = Receive(s2, Complete());
+
+        // Assert
+        AssertAborted(result, "IT-R-04");
+        Assert.False(result.NegotiationComplete);
+    }
+
+    [Theory]
+    [InlineData(252, false)]
+    [InlineData(253, true)]
+    public void Given_PeerInputs_When_Completing_Then_MoreThan252Aborts(int count, bool aborts)
+    {
+        // Arrange
+        // (BOLT 2: "there are more than 252 inputs")
+        var session = NonInitiator();
+        for (var i = 0; i < count; i++)
+        {
+            var step = Receive(session, AddInput((ulong)i * 2, i));
+            Assert.False(step.Aborted, step.AbortReason);
+            session = step.Next;
+        }
+
+        // Act
+        var result = Receive(session, Complete());
+
+        // Assert
+        if (aborts)
+            AssertAborted(result, "IT-R-04");
+        else
+            Assert.True(result.NegotiationComplete, result.AbortReason);
+    }
+
+    [Theory]
+    [InlineData(252, false)]
+    [InlineData(253, true)]
+    public void Given_PeerOutputs_When_Completing_Then_MoreThan252Aborts(int count, bool aborts)
+    {
+        // Arrange
+        // (BOLT 2: "there are more than 252 outputs")
+        var session = Receive(NonInitiator(), AddInput(0, 1)).Next;
+        for (var i = 0; i < count; i++)
+        {
+            var step = Receive(session, AddOutput((ulong)i * 2 + 2, 330));
+            Assert.False(step.Aborted, step.AbortReason);
+            session = step.Next;
+        }
+
+        // Act
+        var result = Receive(session, Complete());
+
+        // Assert
+        if (aborts)
+            AssertAborted(result, "IT-R-04");
+        else
+            Assert.True(result.NegotiationComplete, result.AbortReason);
+    }
+
+    [Theory]
+    [InlineData(99_890, false)] // pays 110 sat = floor(437 wu x 253 / 1000): exactly the agreed feerate
+    [InlineData(99_891, true)] // pays 109 sat
+    [InlineData(99_950, true)]
+    public void Given_PeerInitiatorFee_When_PeerCompletes_Then_ItMustPayTheAgreedFeerate(long outputSats,
+                                                                                         bool aborts)
+    {
+        // Arrange: the peer (initiator) adds a 100,000 sat P2WPKH input and a P2WPKH output; it owes the common fields
+        // (42), its input (164 + 107) and its output (124) = 437 wu at 253 sat/kw
+        // (BOLT 2 tx_complete: "the peer's paid feerate does not meet or exceed the agreed feerate")
+        var s1 = Receive(NonInitiator(), AddInput(0, 1)).Next;
+        var s2 = Receive(s1, AddOutput(2, outputSats)).Next;
+
+        // Act
+        var result = Receive(s2, Complete());
+
+        // Assert
+        if (aborts)
+            AssertAborted(result, "IT-R-04");
+        else
+            Assert.True(result.NegotiationComplete, result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_InitiatorAddingNothing_When_ItCompletesAtANonZeroFeerate_Then_CommonFieldsUnpaid()
+    {
+        // Arrange: the peer (initiator) sends tx_complete with nothing added; the common fields cost 10 sat at 253
+        // (BOLT 2 tx_complete: "if is the non-initiator: the initiator's fees do not cover the common fields")
+        var session = NonInitiator();
+
+        // Act
+        var result = Receive(session, Complete());
+
+        // Assert
+        AssertAborted(result, "IT-R-04");
+        Assert.Contains("common fields", result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_BothContributeAtTheAgreedFeerate_When_Running_Then_BothComplete()
+    {
+        // Arrange: each side adds a 100,000 sat input and change sized with the calculator
+        var initiatorContribution = Contribution([Input(1)], [Output(100_000 - 111)]); // 42 + 272 + 124 = 438 wu
+        var nonInitiatorContribution = Contribution([Input(2)], [Output(100_000 - 101)]); // 272 + 124 = 396 wu
+        Assert.Equal(111, CollaborativeFeeCalculator.GetLocalContributionFee(initiatorContribution, true, null, 253)
+                                                    .Satoshi);
+        Assert.Equal(101, CollaborativeFeeCalculator.GetLocalContributionFee(nonInitiatorContribution, false, null,
+                                                                               253).Satoshi);
+        var a = InteractiveTxSession.Create(Parameters(true, initiatorContribution));
+        var b = InteractiveTxSession.Create(Parameters(false, nonInitiatorContribution, localNodeId: HighNodeId,
+                                                       remoteNodeId: LowNodeId));
+
+        // Act
+        var exchange = Run(a, b);
+
+        // Assert
+        Assert.True(exchange.InitiatorComplete && exchange.NonInitiatorComplete, Names(exchange.Log));
+    }
+
+    #endregion
+
+    #region IT-RBF-01 double-spend of previous attempts
+
+    private static ConstructedInteractiveTx PreviousAttempt(params (InteractiveTxParty Party, int Seed)[] inputs) =>
+        new(PrevTxId(PrevTx(-inputs.Length)), [0x02], 120,
+            [
+                .. inputs.Select((x, i) => new InteractiveTxInput((ulong)i, x.Party, PrevTxId(PrevTx(x.Seed)), 0,
+                                                                  Sequence, PrevOutAmount, P2Wpkh, PrevTx(x.Seed),
+                                                                  false))
+            ], [], 1_000, null);
+
+    [Theory]
+    [InlineData(1, false)] // the peer re-adds its input of the previous attempt
+    [InlineData(9, true)] // a fresh input only: the attempts could both confirm
+    public void Given_RbfAttempt_When_PeerCompletes_Then_ItMustDoubleSpendThePreviousAttempt(int seed, bool aborts)
+    {
+        // Arrange
+        // (BOLT 2 tx_init_rbf/tx_ack_rbf: "If it contributed to previous transactions: MUST ensure that the new
+        // transaction double-spends all other attempts")
+        var previous = PreviousAttempt((InteractiveTxParty.Remote, 1));
+        var session = InteractiveTxSession.Create(Parameters(false, previousAttempts: [previous]));
+        var s1 = Receive(session, AddInput(0, seed)).Next;
+
+        // Act
+        var result = Receive(s1, Complete());
+
+        // Assert
+        if (aborts)
+            AssertAborted(result, "IT-RBF-01");
+        else
+            Assert.True(result.NegotiationComplete, result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_OurContributionNotDoubleSpendingOurPreviousAttempt_When_Creating_Then_Throws()
+    {
+        // Arrange: we added seed 1 to the previous attempt and now contribute seed 2 only
+        var previous = PreviousAttempt((InteractiveTxParty.Local, 1));
+        var parameters = Parameters(true, Contribution([Input(2)]), previousAttempts: [previous]);
+
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentException>(() => InteractiveTxSession.Create(parameters));
+        Assert.Contains("IT-RBF-01", exception.Message);
+    }
+
+    [Fact]
+    public void Given_OurContributionReAddingOurPreviousInput_When_Creating_Then_Created()
+    {
+        // Arrange
+        var previous = PreviousAttempt((InteractiveTxParty.Local, 1), (InteractiveTxParty.Remote, 3));
+        var parameters = Parameters(true, Contribution([Input(1), Input(4)]), previousAttempts: [previous]);
+
+        // Act
+        var session = InteractiveTxSession.Create(parameters);
+
+        // Assert
+        Assert.Equal(InteractiveTxSessionState.Negotiating, session.State);
+    }
+
+    [Fact]
+    public void Given_SpliceRbf_When_OurContributionDropsOurWalletInputs_Then_TheSharedInputSuffices()
+    {
+        // Arrange: splicing rationale, "RBF attempts automatically double-spend each other"
+        var spec = Splice(true);
+        var previous = new ConstructedInteractiveTx(FundingTxId, [0x02], 120,
+                                                    [
+                                                        new InteractiveTxInput(0, InteractiveTxParty.Local,
+                                                                               FundingTxId, 1, Sequence,
+                                                                               LightningMoney.Satoshis(1_000_000),
+                                                                               FundingScript, null, true),
+                                                        new InteractiveTxInput(2, InteractiveTxParty.Local,
+                                                                               PrevTxId(PrevTx(1)), 0, Sequence,
+                                                                               PrevOutAmount, P2Wpkh, PrevTx(1), false)
+                                                    ], [], 1_000, null);
+
+        // Act
+        var session = InteractiveTxSession.Create(Parameters(true, shared: spec, previousAttempts: [previous]));
+
+        // Assert
+        Assert.Equal(InteractiveTxSessionState.Negotiating, session.State);
+    }
+
+    #endregion
+
+    #region Splice: shared input and output
+
+    [Fact]
+    public void Given_SpliceInitiator_When_Starting_Then_SharedInputFirstWithoutPrevTx()
+    {
+        // Arrange
+        // (BOLT 2 splicing: "MUST add the current channel input to the splice transaction by sending tx_add_input
+        // with shared_input_txid [...] MUST NOT include prevtx for that shared input. MUST set prevtx_vout to the
+        // previous funding output index.")
+        var session = InteractiveTxSession.Create(Parameters(true, shared: Splice(true)));
+
+        // Act
+        var result = session.Start();
+
+        // Assert
+        var add = Assert.IsType<TxAddInputMessage>(Assert.Single(result.Outbound));
+        Assert.Empty(add.Payload.PrevTx);
+        Assert.Equal(1u, add.Payload.PrevTxVout);
+        Assert.Equal(FundingTxId, add.SharedInputTxIdTlv?.FundingTxId);
+        Assert.True(result.Next.Inputs[0].IsShared);
+    }
+
+    [Fact]
+    public void Given_SpliceBetweenTwoSessions_When_Running_Then_BothAgreeOnTheSharedInputAndOutput()
+    {
+        // Arrange: initiator splices in 100,000 (new capacity 1,090,000 after fees)
+        var a = InteractiveTxSession.Create(Parameters(true, Contribution([Input(1)]),
+                                                       Splice(true, 1_090_000, 690_000, 400_000)));
+        var b = NonInitiator(shared: Splice(false, 1_090_000, 400_000, 690_000));
+
+        // Act
+        var exchange = Run(a, b);
+
+        // Assert
+        Assert.True(exchange.InitiatorComplete && exchange.NonInitiatorComplete, Names(exchange.Log));
+        Assert.Equal("A:TxAddInput,B:TxComplete,A:TxAddInput,B:TxComplete,A:TxAddOutput,B:TxComplete,A:TxComplete",
+                     Names(exchange.Log));
+        var sharedIn = Assert.Single(exchange.NonInitiator.Inputs, i => i.IsShared);
+        Assert.Equal(InteractiveTxParty.Remote, sharedIn.AddedBy);
+        Assert.Equal(FundingScript, sharedIn.ScriptPubKey);
+        var sharedOut = Assert.Single(exchange.NonInitiator.Outputs, o => o.IsShared);
+        Assert.Equal(1_090_000L, sharedOut.Amount.Satoshi);
+    }
+
+    [Fact]
+    public void Given_Splice_When_PeerAddsSharedInputWithWrongTxId_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2 splicing: "If it doesn't match the txid of the previous funding transaction: MUST fail the
+        // negotiation by sending tx_abort.")
+        var session = NonInitiator(shared: Splice(false));
+
+        // Act
+        var wrongTxId = Receive(session, AddSharedInput(0, TxId.One));
+        var wrongVout = Receive(session, AddSharedInput(0, vout: 0));
+
+        // Assert
+        AssertAborted(wrongTxId, "SP-TX-02");
+        AssertAborted(wrongVout, "SP-TX-02");
+    }
+
+    [Fact]
+    public void Given_Splice_When_PeerAddsInputWithoutPrevTxOrTlv_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2: "if prevtx_len is 0: shared_input_txid is not set")
+        var session = NonInitiator(shared: Splice(false));
+        var message = new TxAddInputMessage(new TxAddInputPayload(TestChannelId, 0, [], 1, Sequence));
+
+        // Act
+        var result = Receive(session, message);
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_Splice_When_PeerAddsASecondSharedInput_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2: "a previously added (and not removed) input already exists with shared_input_txid set")
+        var first = Receive(NonInitiator(shared: Splice(false)), AddSharedInput(0)).Next;
+
+        // Act
+        var result = Receive(first, AddSharedInput(2));
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_Splice_When_PeerAddsSharedInputTlvWithAPrevTx_Then_Aborts()
+    {
+        // Arrange
+        var session = NonInitiator(shared: Splice(false));
+        var message = new TxAddInputMessage(new TxAddInputPayload(TestChannelId, 0, PrevTx(1), 1, Sequence),
+                                            new Domain.Protocol.Tlv.SharedInputTxIdTlv(FundingTxId));
+
+        // Act
+        var result = Receive(session, message);
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_Splice_When_PeerAddsTheFundingOutpointWithAPrevTx_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2 splicing: the initiator "MUST add the current channel input to the splice transaction by sending
+        // tx_add_input with shared_input_txid [...] MUST NOT include prevtx for that shared input")
+        var inspector = new FakePrevTxInspector
+        {
+            Override = (bytes, vout) => bytes.SequenceEqual(PrevTx(9))
+                                            ? new PrevTxInspection(true, FundingTxId, 2,
+                                                                   LightningMoney.Satoshis(1_000_000), FundingScript,
+                                                                   true, null)
+                                            : null
+        };
+        var session = NonInitiator(shared: Splice(false));
+
+        // Act
+        var result = session.Receive(AddInput(0, 9, 1), inspector);
+
+        // Assert
+        AssertAborted(result, "SP-TX-01");
+    }
+
+    [Fact]
+    public void Given_Splice_When_PeerAddsAnotherOutputOfTheFundingTransaction_Then_Accepted()
+    {
+        // Arrange: only the funding outpoint itself must come through shared_input_txid
+        var inspector = new FakePrevTxInspector
+        {
+            Override = (bytes, vout) => bytes.SequenceEqual(PrevTx(9))
+                                            ? new PrevTxInspection(true, FundingTxId, 2, PrevOutAmount, P2Wpkh, true,
+                                                                   null)
+                                            : null
+        };
+        var session = NonInitiator(shared: Splice(false));
+
+        // Act
+        var result = session.Receive(AddInput(0, 9, 0), inspector);
+
+        // Assert
+        Assert.False(result.Aborted, result.AbortReason);
+        Assert.False(Assert.Single(result.Next.Inputs).IsShared);
+    }
+
+    [Fact]
+    public void Given_NoSharedFunding_When_PeerAddsSharedInput_Then_Aborts()
+    {
+        // Act
+        var result = Receive(NonInitiator(), AddSharedInput(0));
+
+        // Assert
+        AssertAborted(result, "IT-R-01");
+    }
+
+    [Fact]
+    public void Given_Splice_When_PeerCompletesWithoutTheFundingOutput_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2 splicing: "There is not exactly one channel funding output")
+        var first = Receive(NonInitiator(shared: Splice(false)), AddSharedInput(0)).Next;
+
+        // Act
+        var result = Receive(first, Complete());
+
+        // Assert
+        AssertAborted(result, "SP-TX-05");
+    }
+
+    #endregion
+
+    #region Construction and IT-SIG-01..03
+
+    [Fact]
+    public void Given_IncompleteNegotiation_When_Constructing_Then_Throws()
+    {
+        // Arrange
+        var session = Receive(NonInitiator(), AddInput(0, 1)).Next;
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => session.WithConstructedTransaction(Construct(session)));
+    }
+
+    [Fact]
+    public void Given_TransactionNotMatchingTheNegotiation_When_Constructing_Then_Throws()
+    {
+        // Arrange
+        var completed = Receive(Receive(NonInitiator(), AddInput(0, 1)).Next, Complete()).Next;
+        var tx = Construct(completed);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => completed.WithConstructedTransaction(tx with { Inputs = [] }));
+        Assert.Throws<InvalidOperationException>(() => completed.WithConstructedTransaction(tx with { Locktime = 1 }));
+    }
+
+    [Fact]
+    public void Given_ConstructedSession_When_TxSignaturesBeforeCommitmentSigned_Then_ThrowsAndPeerTxSignaturesAborts()
+    {
+        // Arrange
+        // (BOLT 2 via SP-CS-02/IT-SIG-03: tx_signatures only after a valid commitment_signed)
+        var (a, b) = ConstructedPair();
+
+        // Act
+        var receive = b.Receive(Signatures(a.ConstructedTx!.TxId, [P2WpkhWitness()]), _inspector);
+
+        // Assert
+        Assert.Equal(InteractiveTxSessionState.AwaitingCommitmentSigned, a.State);
+        Assert.Throws<InvalidOperationException>(() => a.SendTxSignatures([P2WpkhWitness()], null));
+        AssertAborted(receive, "IT-SIG-03");
+    }
+
+    [Theory]
+    [InlineData(50_000L, 100_000L, true)] // the initiator contributed less: it signs first
+    [InlineData(100_000L, 50_000L, false)]
+    [InlineData(100_000L, 100_000L, true)] // tie: the initiator has the lower node id here
+    public void Given_Contributions_When_ExchangingSignatures_Then_TheLowerSideSignsFirstAndBothEndSigned(
+        long initiatorSats, long nonInitiatorSats, bool initiatorFirst)
+    {
+        // Arrange
+        var (a, b) = ConstructedPair(initiatorSats, nonInitiatorSats);
+        a = a.OnCommitmentSignedReceived();
+        b = b.OnCommitmentSignedReceived();
+        var (first, second) = initiatorFirst ? (a, b) : (b, a);
+
+        // Act
+        var secondTooEarly = Record.Exception(() => second.SendTxSignatures([P2WpkhWitness()], null));
+        var sent = first.SendTxSignatures([P2WpkhWitness()], null);
+        var received = second.Receive(Assert.Single(sent.Outbound), _inspector);
+        var reply = received.Next.SendTxSignatures([P2WpkhWitness()], null);
+        var closing = sent.Next.Receive(Assert.Single(reply.Outbound), _inspector);
+
+        // Assert
+        Assert.Equal(initiatorFirst, a.SendsTxSignaturesFirst());
+        Assert.Equal(!initiatorFirst, b.SendsTxSignaturesFirst());
+        Assert.IsType<InvalidOperationException>(secondTooEarly);
+        Assert.Equal(InteractiveTxSessionState.TxSignaturesSent, sent.Next.State);
+        Assert.True(sent.Next.MustBeRemembered);
+        Assert.Empty(received.Outbound);
+        Assert.NotNull(received.Next.RemoteWitnesses);
+        Assert.Equal(InteractiveTxSessionState.Signed, reply.Next.State);
+        Assert.Equal(InteractiveTxSessionState.Signed, closing.Next.State);
+        Assert.Single(closing.Next.RemoteWitnesses!);
+        var message = Assert.IsType<TxSignaturesMessage>(Assert.Single(sent.Outbound));
+        Assert.Equal((byte[])a.ConstructedTx!.TxId, message.Payload.TxId);
+    }
+
+    [Fact]
+    public void Given_WrongWitnessCount_When_SendingOurSignatures_Then_Throws()
+    {
+        // Arrange
+        var (a, _) = ConstructedPair(50_000);
+        a = a.OnCommitmentSignedReceived();
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => a.SendTxSignatures([], null));
+        Assert.Throws<ArgumentException>(() => a.SendTxSignatures([P2WpkhWitness(), P2WpkhWitness()], null));
+        Assert.Throws<ArgumentException>(() => a.SendTxSignatures([P2WpkhWitness()], SharedSignature()));
+    }
+
+    [Theory]
+    [InlineData("txid")]
+    [InlineData("count")]
+    [InlineData("sighash")]
+    [InlineData("empty")]
+    public void Given_BadPeerSignatures_When_WeHaveNotSigned_Then_Abort(string defect)
+    {
+        // Arrange
+        // (BOLT 2: "MUST fail the negotiation if: the message contains an empty witness; the number of witnesses
+        // does not equal [...]; the txid does not match [...]; a signature uses a flag that is not SIGHASH_ALL")
+        var (a, b) = ConstructedPair(100_000, 50_000); // the non-initiator signs first
+        a = a.OnCommitmentSignedReceived();
+        var txId = a.ConstructedTx!.TxId;
+        var message = defect switch
+        {
+            "txid" => Signatures(TxId.One, [P2WpkhWitness()]),
+            "count" => Signatures(txId, [P2WpkhWitness(), P2WpkhWitness()]),
+            "sighash" => Signatures(txId, [P2WpkhWitness(0x83)]),
+            _ => Signatures(txId, [new Witness([])])
+        };
+
+        // Act
+        var result = a.Receive(message, _inspector);
+
+        // Assert
+        Assert.False(b.SendsTxSignaturesFirst() == a.SendsTxSignaturesFirst());
+        AssertAborted(result, "IT-SIG-02");
+    }
+
+    [Fact]
+    public void Given_BadPeerSignatures_When_WeAlreadySigned_Then_NoAbortAndSessionUnchanged()
+    {
+        // Arrange
+        // (BOLT 2 tx_abort: "A sending node: MUST NOT have already transmitted tx_signatures")
+        var (a, _) = ConstructedPair(50_000); // the initiator signs first
+        var sent = a.OnCommitmentSignedReceived().SendTxSignatures([P2WpkhWitness()], null).Next;
+
+        // Act
+        var result = sent.Receive(Signatures(TxId.One, [P2WpkhWitness()]), _inspector);
+
+        // Assert
+        Assert.Empty(result.Outbound);
+        Assert.False(result.Aborted);
+        Assert.Equal("IT-SIG-02", result.RequirementId);
+        Assert.Same(sent, result.Next);
+        Assert.Equal(InteractiveTxSessionState.TxSignaturesSent, result.Next.State);
+    }
+
+    public static TheoryData<int> NegotiationMessageKinds => new() { 0, 1, 2, 3, 4 };
+
+    private static IChannelMessage NegotiationMessage(int kind) => kind switch
+    {
+        0 => AddInput(1, 9),
+        1 => AddOutput(1),
+        2 => RemoveInput(1),
+        3 => RemoveOutput(1),
+        _ => Complete()
+    };
+
+    [Theory]
+    [MemberData(nameof(NegotiationMessageKinds))]
+    public void Given_OurTxSignaturesSent_When_PeerSendsANegotiationMessage_Then_NoAbortAndSessionUnchanged(int kind)
+    {
+        // Arrange
+        // (BOLT 2 tx_abort: "A sending node: MUST NOT have already transmitted tx_signatures"; receiver: "if they have
+        // already sent tx_signatures to the peer: MUST NOT forget the channel until any inputs to the negotiated tx
+        // have been spent")
+        var (a, _) = ConstructedPair(50_000); // the initiator signs first
+        var sent = a.OnCommitmentSignedReceived().SendTxSignatures([P2WpkhWitness()], null).Next;
+
+        // Act
+        var result = sent.Receive(NegotiationMessage(kind), _inspector);
+
+        // Assert
+        Assert.Empty(result.Outbound);
+        Assert.False(result.Aborted);
+        Assert.False(result.NegotiationComplete);
+        Assert.Equal("IT-ABT-01", result.RequirementId);
+        Assert.Same(sent, result.Next);
+        Assert.Equal(InteractiveTxSessionState.TxSignaturesSent, result.Next.State);
+        Assert.True(result.Next.MustBeRemembered);
+    }
+
+    [Theory]
+    [MemberData(nameof(NegotiationMessageKinds))]
+    public void Given_Signed_When_PeerSendsANegotiationMessage_Then_NoAbortAndSessionUnchanged(int kind)
+    {
+        // Arrange
+        var (a, b) = ConstructedPair(50_000); // the initiator signs first
+        var sent = a.OnCommitmentSignedReceived().SendTxSignatures([P2WpkhWitness()], null);
+        var received = b.OnCommitmentSignedReceived().Receive(Assert.Single(sent.Outbound), _inspector);
+        var signed = received.Next.SendTxSignatures([P2WpkhWitness()], null).Next;
+        Assert.Equal(InteractiveTxSessionState.Signed, signed.State);
+
+        // Act
+        var result = signed.Receive(NegotiationMessage(kind), _inspector);
+
+        // Assert
+        Assert.Empty(result.Outbound);
+        Assert.False(result.Aborted);
+        Assert.Same(signed, result.Next);
+        Assert.Equal(InteractiveTxSessionState.Signed, result.Next.State);
+        Assert.True(result.Next.MustBeRemembered);
+    }
+
+    [Fact]
+    public void Given_SpliceSignatures_When_PeerOmitsSharedInputSignature_Then_ChannelFails()
+    {
+        // Arrange
+        // (BOLT 2 splicing: "If shared_input_signature is not set: MUST send an error and fail the channel.")
+        var (a, b) = SplicePair();
+        var initiatorFirst = a.SendsTxSignaturesFirst();
+        var (first, second) = initiatorFirst ? (a, b) : (b, a);
+        var firstWitnesses = first.Inputs.Count(i => i.AddedBy == InteractiveTxParty.Local && !i.IsShared);
+        var sent = first.SendTxSignatures(Enumerable.Repeat(P2WpkhWitness(), firstWitnesses).ToList(),
+                                          SharedSignature());
+        var sentMessage = Assert.IsType<TxSignaturesMessage>(Assert.Single(sent.Outbound));
+        var withoutShared = new TxSignaturesMessage(sentMessage.Payload);
+
+        // Act
+        var exception = Assert.Throws<ChannelFailedException>(() => second.Receive(withoutShared, _inspector));
+        var ok = second.Receive(sentMessage, _inspector);
+
+        // Assert
+        Assert.Equal("SP-SIG-01", exception.RequirementId);
+        Assert.Equal(TestChannelId, exception.FailedChannelId);
+        Assert.NotNull(ok.Next.RemoteSharedInputSignature);
+        Assert.NotNull(sentMessage.SharedInputSignatureTlv);
+    }
+
+    [Fact]
+    public void Given_SpliceSignatures_When_SendingWithoutSharedSignature_Then_Throws()
+    {
+        // Arrange
+        var (a, b) = SplicePair();
+        var first = a.SendsTxSignaturesFirst() ? a : b;
+        var witnesses = first.Inputs.Count(i => i.AddedBy == InteractiveTxParty.Local && !i.IsShared);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() =>
+            first.SendTxSignatures(Enumerable.Repeat(P2WpkhWitness(), witnesses).ToList(), null));
+    }
+
+    [Fact]
+    public void Given_TaprootSpliceSignatures_When_Exchanged_Then_ThePartialSignatureReplacesTheEcdsaOne()
+    {
+        // Arrange (BOLTs PR #1324: a taproot shared input carries shared_input_partial_signature, type 2, and no
+        // shared_input_signature; "If shared_input_partial_signature is not set: MUST send an error and fail the
+        // channel")
+        var (a, b) = SplicePair(taproot: true);
+        var (first, second) = a.SendsTxSignaturesFirst() ? (a, b) : (b, a);
+        var witnesses = Enumerable.Repeat(P2WpkhWitness(),
+                                          first.Inputs.Count(i => i.AddedBy == InteractiveTxParty.Local && !i.IsShared))
+                                  .ToList();
+        var partial = new MusigPartialSignatureWithNonce(Enumerable.Repeat((byte)0x02, 98).ToArray());
+
+        // Act
+        var ecdsa = Assert.Throws<ArgumentException>(() => first.SendTxSignatures(witnesses, SharedSignature()));
+        var both = Assert.Throws<ArgumentException>(() => first.SendTxSignatures(witnesses, SharedSignature(),
+                                                                                 partial));
+        var sent = first.SendTxSignatures(witnesses, null, partial);
+        var message = Assert.IsType<TxSignaturesMessage>(Assert.Single(sent.Outbound));
+        var missing = Assert.Throws<ChannelFailedException>(
+            () => second.Receive(new TxSignaturesMessage(message.Payload, new SharedInputSignatureTlv(SharedSignature())), _inspector));
+        var received = second.Receive(message, _inspector);
+
+        // Assert
+        Assert.Contains("shared_input_partial_signature", ecdsa.Message);
+        Assert.NotNull(both);
+        Assert.Null(message.SharedInputSignatureTlv);
+        Assert.Equal(partial, message.SharedInputPartialSignatureTlv!.PartialSignatureWithNonce);
+        Assert.Equal(partial, sent.Next.LocalSharedInputPartialSignature);
+        Assert.Equal("SP-SIG-01", missing.RequirementId);
+        Assert.Equal(partial, received.Next.RemoteSharedInputPartialSignature);
+        Assert.Null(received.Next.RemoteSharedInputSignature);
+    }
+
+    [Fact]
+    public void Given_AnEcdsaSplice_When_APartialSignatureIsGiven_Then_Throws()
+    {
+        // Arrange
+        var (a, b) = SplicePair();
+        var first = a.SendsTxSignaturesFirst() ? a : b;
+        var witnesses = Enumerable.Repeat(P2WpkhWitness(),
+                                          first.Inputs.Count(i => i.AddedBy == InteractiveTxParty.Local && !i.IsShared))
+                                  .ToList();
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => first.SendTxSignatures(
+                                             witnesses, SharedSignature(),
+                                             new MusigPartialSignatureWithNonce(Enumerable.Repeat((byte)0x02, 98)
+                                                                                          .ToArray())));
+    }
+
+    [Fact]
+    public void Given_SpliceWithBigNonInitiatorSpliceIn_When_Ordering_Then_SharedInputCountsForTheInitiator()
+    {
+        // Arrange: previous capacity 1,000,000 (balances 600,000 initiator / 400,000); the non-initiator splices in
+        // 900,000: 1,000,000 (initiator, shared input) > 900,000 (non-initiator) so the non-initiator signs first
+        var (a, b) = SplicePair(nonInitiatorSpliceIn: 900_000);
+
+        // Act
+        var initiatorFirst = a.SendsTxSignaturesFirst();
+        var nonInitiatorFirst = b.SendsTxSignaturesFirst();
+
+        // Assert
+        Assert.False(initiatorFirst);
+        Assert.True(nonInitiatorFirst);
+    }
+
+    private (InteractiveTxSession Initiator, InteractiveTxSession NonInitiator) SplicePair(
+        long nonInitiatorSpliceIn = 50_000, bool taproot = false)
+    {
+        // Each side leaves 1,000 sat of its balance for its fees (IT-R-04): the initiator pays the common fields and
+        // the shared input and output (598 wu, 151 sat at 253 sat/kw), the non-initiator its input (271 wu, 68 sat).
+        var capacity = 1_000_000 + nonInitiatorSpliceIn - 2_000;
+        var a = InteractiveTxSession.Create(Parameters(true, shared: Splice(true, capacity, 599_000,
+                                                                              399_000 + nonInitiatorSpliceIn,
+                                                                              taproot)));
+        var b = InteractiveTxSession.Create(Parameters(false, Contribution([Input(5, nonInitiatorSpliceIn)]),
+                                                       Splice(false, capacity, 399_000 + nonInitiatorSpliceIn,
+                                                              599_000, taproot), HighNodeId, LowNodeId));
+        var inspector = new FakePrevTxInspector
+        {
+            Override = (bytes, _) => new PrevTxInspection(true, PrevTxId(bytes), 1,
+                                                          LightningMoney.Satoshis(nonInitiatorSpliceIn), P2Wpkh,
+                                                          true, null)
+        };
+        var exchange = Run(a, b, inspector);
+        Assert.True(exchange.InitiatorComplete && exchange.NonInitiatorComplete, Names(exchange.Log));
+        return (exchange.Initiator.WithConstructedTransaction(Construct(exchange.Initiator)).OnCommitmentSignedReceived(),
+                exchange.NonInitiator.WithConstructedTransaction(Construct(exchange.NonInitiator))
+                            .OnCommitmentSignedReceived());
+    }
+
+    #endregion
+
+    #region IT-ABT-01 tx_abort
+
+    [Fact]
+    public void Given_Negotiating_When_PeerAborts_Then_WeEchoAndForget()
+    {
+        // Arrange
+        // (BOLT 2: "if they have not sent tx_signatures: SHOULD forget the current negotiation [...]; if they have
+        // not sent tx_abort: MUST echo back tx_abort")
+        var session = Receive(NonInitiator(), AddInput(0, 1)).Next;
+
+        // Act
+        var result = Receive(session, AbortMessage("no more"u8.ToArray()));
+
+        // Assert
+        AssertAborted(result, "IT-ABT-01");
+        Assert.Contains("no more", result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_WeAborted_When_PeerEchoes_Then_NoSecondAbort()
+    {
+        // Arrange
+        var aborted = NonInitiator().Abort("changed my mind");
+
+        // Act
+        var echo = Receive(aborted.Next, AbortMessage([]));
+        var again = aborted.Next.Abort("again");
+
+        // Assert
+        AssertAborted(aborted, "IT-ABT-01");
+        Assert.Empty(echo.Outbound);
+        Assert.Equal(InteractiveTxSessionState.Aborted, echo.Next.State);
+        Assert.Empty(again.Outbound);
+    }
+
+    [Fact]
+    public void Given_Aborted_When_StaleNegotiationMessagesArrive_Then_Ignored()
+    {
+        // Arrange
+        var aborted = NonInitiator().Abort("x").Next;
+
+        // Act
+        var add = Receive(aborted, AddInput(0, 1));
+        var complete = Receive(aborted, Complete());
+
+        // Assert
+        Assert.Empty(add.Outbound);
+        Assert.Empty(complete.Outbound);
+        Assert.Same(aborted, add.Next);
+    }
+
+    [Fact]
+    public void Given_NonPrintableAbortData_When_PeerAborts_Then_ReasonIsHex()
+    {
+        // Arrange
+        // (BOLT 2: "if data is not composed solely of printable ASCII characters [...] SHOULD NOT print out data
+        // verbatim")
+
+        // Act
+        var result = Receive(NonInitiator(), AbortMessage([0x41, 0x00, 0x1b]));
+
+        // Assert
+        Assert.EndsWith("0x41001b", result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_OurTxSignaturesSent_When_Aborting_Then_Throws()
+    {
+        // Arrange
+        // (BOLT 2: "A sending node: MUST NOT have already transmitted tx_signatures")
+        var (a, _) = ConstructedPair(50_000);
+        var sent = a.OnCommitmentSignedReceived().SendTxSignatures([P2WpkhWitness()], null).Next;
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => sent.Abort("too late"));
+    }
+
+    [Fact]
+    public void Given_OurTxSignaturesSent_When_PeerAborts_Then_NoEchoAndTheNegotiationIsRemembered()
+    {
+        // Arrange
+        // (BOLT 2: "if they have already sent tx_signatures to the peer: MUST NOT forget the channel until any
+        // inputs to the negotiated tx have been spent")
+        var (a, _) = ConstructedPair(50_000);
+        var sent = a.OnCommitmentSignedReceived().SendTxSignatures([P2WpkhWitness()], null).Next;
+
+        // Act
+        var result = sent.Receive(AbortMessage("bye"u8.ToArray()), _inspector);
+
+        // Assert
+        Assert.Empty(result.Outbound);
+        Assert.False(result.Aborted);
+        Assert.Equal("IT-ABT-01", result.RequirementId);
+        Assert.Equal(InteractiveTxSessionState.TxSignaturesSent, result.Next.State);
+        Assert.True(result.Next.MustBeRemembered);
+    }
+
+    [Theory]
+    [InlineData(InteractiveTxSessionState.AwaitingCommitmentSigned)]
+    [InlineData(InteractiveTxSessionState.AwaitingTxSignatures)]
+    public void Given_BeforeOurTxSignatures_When_PeerAborts_Then_EchoAndAborted(InteractiveTxSessionState state)
+    {
+        // Arrange
+        var (a, _) = ConstructedPair(50_000);
+        if (state == InteractiveTxSessionState.AwaitingTxSignatures)
+            a = a.OnCommitmentSignedReceived();
+
+        // Act
+        var result = a.Receive(AbortMessage([]), _inspector);
+
+        // Assert
+        AssertAborted(result, "IT-ABT-01");
+        Assert.False(result.Next.MustBeRemembered);
+    }
+
+    [Fact]
+    public void Given_Negotiating_When_WeAbort_Then_TxAbortCarriesThePrintableReason()
+    {
+        // Act
+        var result = NonInitiator().Abort("fee too high\n");
+
+        // Assert
+        var abort = Assert.IsType<TxAbortMessage>(Assert.Single(result.Outbound));
+        Assert.Equal("fee too high?"u8.ToArray(), abort.Payload.Data);
+    }
+
+    #endregion
+
+    #region Restore and misuse
+
+    [Fact]
+    public void Given_StoredSessionAfterOurSignatures_When_Restored_Then_ItResumesTheExchange()
+    {
+        // Arrange
+        var (a, b) = ConstructedPair(50_000);
+        var sent = a.OnCommitmentSignedReceived().SendTxSignatures([P2WpkhWitness()], null).Next;
+        var model = new InteractiveTxSessionModel
+        {
+            ChannelId = TestChannelId,
+            SessionId = Guid.NewGuid(),
+            Purpose = InteractiveTxPurpose.DualFund,
+            IsInitiator = true,
+            FeeratePerKw = 253,
+            Locktime = 120,
+            Inputs = sent.Inputs,
+            Outputs = sent.Outputs,
+            LocalContribution = sent.Parameters.LocalContribution,
+            ConstructedTx = sent.ConstructedTx,
+            OurWitnesses = sent.LocalWitnesses,
+            CommitmentSignedSent = true,
+            CommitmentSignedReceived = true,
+            TxSignaturesSent = true,
+            State = InteractiveTxSessionState.TxSignaturesSent,
+            CreatedAt = DateTimeOffset.UnixEpoch
+        };
+        var peerSigned = b.OnCommitmentSignedReceived();
+        var peerReceived = peerSigned.Receive(Signatures(sent.ConstructedTx!.TxId, sent.LocalWitnesses!), _inspector);
+        var peerReply = peerReceived.Next.SendTxSignatures([P2WpkhWitness()], null);
+
+        // Act
+        var restored = InteractiveTxSession.Restore(model, sent.Parameters);
+        var result = restored.Receive(Assert.Single(peerReply.Outbound), _inspector);
+
+        // Assert
+        Assert.Equal(InteractiveTxSessionState.TxSignaturesSent, restored.State);
+        Assert.True(restored.MustBeRemembered);
+        Assert.Equal(sent.LocalWitnesses, restored.LocalWitnesses);
+        Assert.Equal(InteractiveTxSessionState.Signed, result.Next.State);
+        Assert.Throws<InvalidOperationException>(() => restored.Abort("x"));
+    }
+
+    [Theory]
+    [InlineData(InteractiveTxSessionState.Negotiating)]
+    [InlineData(InteractiveTxSessionState.Aborted)]
+    public void Given_UnresumableRow_When_Restoring_Then_Throws(InteractiveTxSessionState state)
+    {
+        // Arrange
+        var (a, _) = ConstructedPair();
+        var model = new InteractiveTxSessionModel
+        {
+            ChannelId = TestChannelId,
+            SessionId = Guid.NewGuid(),
+            Purpose = InteractiveTxPurpose.Splice,
+            IsInitiator = true,
+            FeeratePerKw = 253,
+            Locktime = 120,
+            Inputs = a.Inputs,
+            Outputs = a.Outputs,
+            LocalContribution = a.Parameters.LocalContribution,
+            ConstructedTx = a.ConstructedTx,
+            State = state,
+            CreatedAt = DateTimeOffset.UnixEpoch
+        };
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => InteractiveTxSession.Restore(model, a.Parameters));
+        Assert.Throws<ArgumentException>(() =>
+            InteractiveTxSession.Restore(model with { State = InteractiveTxSessionState.AwaitingTxSignatures },
+                                         a.Parameters with { IsInitiator = false }));
+    }
+
+    [Fact]
+    public void Given_MessageOfAnotherChannel_When_Receiving_Then_Throws()
+    {
+        // Arrange
+        var other = new TxCompleteMessage(new TxCompletePayload(new ChannelId(new byte[32])));
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => Receive(NonInitiator(), other));
+    }
+
+    [Fact]
+    public void Given_TxInitRbf_When_Receiving_Then_Throws()
+    {
+        // Arrange (an RBF is a new session; the driver handles tx_init_rbf)
+        var rbf = new TxInitRbfMessage(new TxInitRbfPayload(TestChannelId, 300, 120));
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => Receive(NonInitiator(), rbf));
+    }
+
+    [Fact]
+    public void Given_Session_When_Stepping_Then_ThePreviousSessionIsUnchanged()
+    {
+        // Arrange
+        var session = NonInitiator();
+
+        // Act
+        var result = Receive(session, AddInput(0, 1));
+
+        // Assert
+        Assert.Empty(session.Inputs);
+        Assert.Equal(0, session.ReceivedAddInputCount);
+        Assert.Single(result.Next.Inputs);
+    }
+
+    [Fact]
+    public void Given_SendsFirstBeforeConstruction_When_Asked_Then_Throws()
+    {
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => NonInitiator().SendsTxSignaturesFirst());
+        Assert.Throws<InvalidOperationException>(() => NonInitiator().OnCommitmentSignedReceived());
+    }
+
+    #endregion
+}

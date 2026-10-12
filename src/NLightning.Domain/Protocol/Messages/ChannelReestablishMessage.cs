@@ -21,15 +21,51 @@ public sealed class ChannelReestablishMessage : BaseChannelMessage
 
     public NextFundingTlv? NextFundingTlv { get; }
 
-    public ChannelReestablishMessage(ChannelReestablishPayload payload, NextFundingTlv? nextFundingTlv = null)
+    /// <summary>
+    /// BOLT 2 <c>channel_reestablish_tlvs</c> type 5 (<c>my_current_funding_locked</c>, SP-RE-02). Not read or written
+    /// by the serializer until lane SP1-A-T2.
+    /// </summary>
+    public MyCurrentFundingLockedTlv? MyCurrentFundingLockedTlv { get; }
+
+    /// <summary>
+    /// Simple taproot channels <c>next_local_nonces</c> (TLV 22): the sender's verification nonces for its next
+    /// commitment, one per active funding (and, as Eclair 0.14.3 does, one for a pending splice or RBF attempt).
+    /// Required on a simple taproot channel, absent otherwise.
+    /// </summary>
+    public NextLocalNoncesTlv? NextLocalNoncesTlv { get; }
+
+    /// <summary>
+    /// BOLTs PR #1324 <c>current_commit_nonce</c> (TLV 24): sent while the sender still misses the peer's
+    /// <c>commitment_signed</c> for an interactive transaction of a simple taproot channel.
+    /// </summary>
+    public CurrentCommitNonceTlv? CurrentCommitNonceTlv { get; }
+
+    /// <summary>
+    /// <c>announcement_nonces</c> (type 7, taproot gossip, BOLTs PR #1059): fresh nonces for the
+    /// <c>announcement_signatures_2</c> retransmission asked by <c>my_current_funding_locked</c>'s bit 1.
+    /// </summary>
+    public AnnouncementNoncesTlv? AnnouncementNoncesTlv { get; }
+
+    public ChannelReestablishMessage(ChannelReestablishPayload payload, NextFundingTlv? nextFundingTlv = null,
+                                     MyCurrentFundingLockedTlv? myCurrentFundingLockedTlv = null,
+                                     NextLocalNoncesTlv? nextLocalNoncesTlv = null,
+                                     CurrentCommitNonceTlv? currentCommitNonceTlv = null,
+                                     AnnouncementNoncesTlv? announcementNoncesTlv = null)
         : base(MessageTypes.ChannelReestablish, payload)
     {
+        AnnouncementNoncesTlv = announcementNoncesTlv;
         NextFundingTlv = nextFundingTlv;
+        MyCurrentFundingLockedTlv = myCurrentFundingLockedTlv;
+        NextLocalNoncesTlv = nextLocalNoncesTlv;
+        CurrentCommitNonceTlv = currentCommitNonceTlv;
 
-        if (NextFundingTlv is not null)
-        {
-            Extension = new TlvStream();
-            Extension.Add(NextFundingTlv);
-        }
+        if (NextFundingTlv is null && MyCurrentFundingLockedTlv is null && NextLocalNoncesTlv is null
+         && CurrentCommitNonceTlv is null && AnnouncementNoncesTlv is null)
+            return;
+
+        // BOLT 1: ascending type order (1, 5, 7, 22, 24)
+        Extension = new TlvStream();
+        Extension.Add(NextFundingTlv, MyCurrentFundingLockedTlv, AnnouncementNoncesTlv, NextLocalNoncesTlv,
+                      CurrentCommitNonceTlv);
     }
 }

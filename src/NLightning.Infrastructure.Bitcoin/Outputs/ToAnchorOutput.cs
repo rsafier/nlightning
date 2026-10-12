@@ -9,12 +9,10 @@ using Domain.Money;
 /// </summary>
 public class ToAnchorOutput : BaseOutput
 {
-    public override ScriptType ScriptType => ScriptType.P2WSH;
-
     public PubKey RemoteFundingPubKey { get; set; }
 
     public ToAnchorOutput(LightningMoney amount, PubKey remoteFundingPubKey)
-        : base(amount, GenerateAnchorScript(remoteFundingPubKey))
+        : base(amount, GenerateAnchorScript(remoteFundingPubKey), ScriptType.P2WSH)
     {
         RemoteFundingPubKey = remoteFundingPubKey;
     }

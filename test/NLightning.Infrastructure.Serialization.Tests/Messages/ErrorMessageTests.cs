@@ -5,17 +5,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class ErrorMessageTests
 {
-    private readonly ErrorMessageTypeSerializer _errorMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<ErrorMessage> _errorMessageTypeSerializer;
 
     public ErrorMessageTests()
     {
         _errorMessageTypeSerializer =
-            new ErrorMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.WireRegistry.Get<ErrorMessage>()!;
     }
 
     [Fact]

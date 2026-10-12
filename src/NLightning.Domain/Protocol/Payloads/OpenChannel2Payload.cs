@@ -19,7 +19,7 @@ public class OpenChannel2Payload(
     CompactPubKey delayedPaymentBasepoint,
     LightningMoney dustLimitAmount,
     CompactPubKey firstPerCommitmentPoint,
-    ulong fundingAmount,
+    LightningMoney fundingAmount,
     uint fundingFeeRatePerKw,
     CompactPubKey fundingPubKey,
     CompactPubKey htlcBasepoint,
@@ -57,7 +57,7 @@ public class OpenChannel2Payload(
     public uint CommitmentFeeRatePerKw { get; } = commitmentFeeRatePerKw;
 
     /// <summary>
-    /// funding_satoshis is the amount the sender is putting into the channel.
+    /// funding_satoshis is the amount the sender is putting into the channel (whole satoshis on the wire).
     /// </summary>
     public LightningMoney FundingAmount { get; } = fundingAmount;
 

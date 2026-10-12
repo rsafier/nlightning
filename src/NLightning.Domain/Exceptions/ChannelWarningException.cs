@@ -16,6 +16,12 @@ public class ChannelWarningException : WarningException
     public ChannelId? ChannelId { get; }
     public string? PeerMessage { get; }
 
+    /// <summary>
+    /// When true, the connection is closed after the `warning` is sent (BOLT 1/2 "send a `warning` and close the
+    /// connection"), instead of staying up. The channel itself is never failed by a warning.
+    /// </summary>
+    public bool CloseConnection { get; init; }
+
     public ChannelWarningException(string message, string? peerMessage = null) : base(message)
     {
         PeerMessage = peerMessage;

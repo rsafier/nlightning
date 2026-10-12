@@ -61,14 +61,6 @@ public class ChannelKeySetEntity
     public required byte[] CurrentPerCommitmentPoint { get; set; }
 
     /// <summary>
-    /// For remote key sets: stores their last revealed per-commitment secret
-    /// This is needed to create penalty transactions if they broadcast old commitments
-    /// For local key sets: this should be null (we don't store our own secrets)
-    /// </summary>
-
-    public byte[]? LastRevealedPerCommitmentSecret { get; set; }
-
-    /// <summary>
     /// The index representing the key derivation progress for this channel key set.
     /// </summary>
     /// <remarks>Used to track the current state of key generation in the channel.</remarks>

@@ -1,5 +1,3 @@
-using System.Net;
-
 namespace NLightning.Domain.Node.Options;
 
 using Domain.Crypto.Constants;
@@ -11,23 +9,76 @@ using Protocol.Tlv;
 
 public class FeatureOptions
 {
-    public FeatureSupport OptionDataLossProtect { get; private set; } = FeatureSupport.Compulsory;
+    /// <summary>
+    /// Features this node does not implement yet. They are never advertised (and a configuration that enables them
+    /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
+    /// </summary>
+    /// <remarks>
+    /// Holds trampoline_routing (bits 56/57, NL-875) while trampoline routing is being built and option_simple_taproot
+    /// (bits 80/81, NL-877) while simple taproot channels are being built. Empty from NL-332 (owner
+    /// decision 2026-10-02, attribution_data, the last member then, left it and is advertised Optional by default)
+    /// until NL-875. Features that left the set before: quiesce, dual_fund and splice by splicing plan D13 after
+    /// Proofs SP2, SPR and DF (wave d13); provide_storage with the peer_storage handlers and route_blinding with the
+    /// blinded payloads (onion M5), wave rf1; onion_messages with the onion message service after Proof M6, wave M6,
+    /// plan D9.
+    /// Add a feature here while it is not implemented, and remove it from this set when it is.
+    /// </remarks>
+    public static readonly IReadOnlySet<Feature> ExperimentalFeatures =
+        new HashSet<Feature> { Feature.OptionTrampolineRouting, Feature.OptionSimpleTaproot, Feature.OptionGossipV2 };
+
+    /// <summary>
+    /// The experimental set these options are gated by: <see cref="ExperimentalFeatures"/>, replaced only by tests of
+    /// the gate itself (the configuration binder never sets an internal property).
+    /// </summary>
+    internal IReadOnlySet<Feature> ExperimentalFeatureSet { get; init; } = ExperimentalFeatures;
+
+    /// <summary>
+    /// Allow advertising the <see cref="ExperimentalFeatures"/> (not implemented yet). Off by default; only turn it on
+    /// for development and interop testing, never with real funds.
+    /// </summary>
+    public bool AllowExperimentalFeatures { get; set; }
+
+    /// <summary>
+    /// option_data_loss_protect.
+    /// </summary>
+    /// <remarks>
+    /// BOLT 9 marks it ASSUMED, but LND/CLN still expect the bit, so it is still advertised, as Optional rather than
+    /// Compulsory because channel_reestablish itself is not implemented yet (NL-035). ASSUMED bits are sent in init
+    /// and node_announcement for interop even though BOLT 9 gives them no context; a peer that omits them is treated
+    /// as supporting them (see <see cref="FeatureSet.IsCompatible"/>).
+    /// </remarks>
+    public FeatureSupport OptionDataLossProtect { get; private set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable an upfront shutdown script.
     /// </summary>
-    public FeatureSupport UpfrontShutdownScript { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: we never generate a local upfront script and shutdown does not enforce the peer's one yet,
+    /// which BOLT 2 requires once option_upfront_shutdown_script is negotiated.
+    /// </remarks>
+    public FeatureSupport UpfrontShutdownScript { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable gossip queries.
     /// </summary>
+    /// <remarks>
+    /// Optional: peers then wait for our <c>gossip_timestamp_filter</c> instead of dumping their graph on us, our sync
+    /// queries them (<c>GossipSyncManager</c>, G3-T2) and their queries are answered from the graph
+    /// (<c>QueryResponder</c>, G3-T1; from an empty graph while <c>Gossip:Enabled</c> is off).
+    /// </remarks>
     public FeatureSupport GossipQueries { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport VarOnionOptIn { get; private set; } = FeatureSupport.Compulsory;
 
     /// <summary>
-    /// Enable expanded gossip queries.
+    /// Enable expanded gossip queries (gossip_queries_ex, bits 10/11).
     /// </summary>
+    /// <remarks>
+    /// Optional since BOLT 7 plan G3-T4: the graph answers <c>query_option</c> with <c>timestamps_tlv</c> and
+    /// <c>checksums_tlv</c> (byte-identical to Core Lightning's reply for the same channel, the captured
+    /// <c>Bolt7QueryVectors</c>) and <c>query_flags</c> bits 0-4, and our range sync asks for timestamps and sends
+    /// <c>query_flags</c> when both sides offer it.
+    /// </remarks>
     public FeatureSupport ExpandedGossipQueries { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport OptionStaticRemoteKey { get; private set; } = FeatureSupport.Compulsory;
@@ -37,6 +88,12 @@ public class FeatureOptions
     /// <summary>
     /// Enable basic MPP.
     /// </summary>
+    /// <remarks>
+    /// Defaults to Optional: the final hop holds the parts of a multi-part payment until <c>total_msat</c> arrives
+    /// (BOLT 4 <c>basic_mpp</c>, ABCD W6-B), and our invoices advertise it. We never split our own payments. No turns
+    /// multi-part receiving off (a part with <c>total_msat</c> != <c>amt_to_forward</c> is failed, BOLT 4) and removes
+    /// the bit from init and from our invoices.
+    /// </remarks>
     public FeatureSupport BasicMpp { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
@@ -45,34 +102,98 @@ public class FeatureOptions
     public FeatureSupport LargeChannels { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable zero fee anchor tx.
+    /// Enable zero fee anchor tx (option_anchors, BOLT 3 <c>option_anchors_zero_fee_htlc_tx</c>).
     /// </summary>
-    public FeatureSupport OptionAnchors { get; set; } = FeatureSupport.No;
+    /// <remarks>
+    /// Optional since wave O7b (BOLT 5 plan O7-T4): our commitment is CPFP-bumped through our anchor (also as a
+    /// <c>submitpackage</c> package below the mempool minimum), the peer's through our anchor on it, our anchors HTLC
+    /// transactions take wallet fee inputs, and every anchors channel keeps an on-chain reserve
+    /// (<c>Node:Anchors</c>, <see cref="AnchorReserveOptions"/>). When both sides support it the opener picks the
+    /// anchors channel type; with a peer without it the channel stays <c>option_static_remotekey</c>. Set No to open and
+    /// accept <c>option_static_remotekey</c> channels only.
+    /// </remarks>
+    public FeatureSupport OptionAnchors { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable route blinding.
     /// </summary>
+    /// <remarks>
+    /// Optional by default since onion M5 (lane rf1-m5): blinded payloads are forwarded as introduction or intermediate
+    /// node and received as the final node, proven against the BOLT 4 vectors and LND 0.20.
+    /// </remarks>
     public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable beyond segwit shutdown.
+    /// Enable beyond segwit shutdown (BOLT 9 <c>option_shutdown_anysegwit</c> 26/27).
     /// </summary>
-    public FeatureSupport BeyondSegwitShutdown { get; set; } = FeatureSupport.No;
+    /// <remarks>
+    /// Optional by default since NL-776: a peer's <c>shutdown</c> or <c>upfront_shutdown_script</c> may then pay a segwit
+    /// v1-v16 program (P2TR), which CLN v26.06.8 sends on dual-funded channels. Without it negotiated such a script is
+    /// refused (<c>shutdown</c>: warning, B2-SHUT-R02; at the open: the open fails).
+    /// </remarks>
+    public FeatureSupport BeyondSegwitShutdown { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable dual fund.
+    /// Enable dual fund (BOLT 2 "Channel Establishment v2", BOLT 9 <c>option_dual_fund</c> 28/29).
     /// </summary>
+    /// <remarks>
+    /// Optional by default since splicing plan D13 (wave d13), on every network: a peer's <c>open_channel2</c> is
+    /// accepted (<c>IDualFundedOpenService</c>, as accepter we contribute <c>Node:DualFund:AcceptContributionSat</c>,
+    /// 0 by default) and <c>openchannel --dual-fund</c> opens a v2 channel; <c>openchannel</c> without the flag still
+    /// opens a v1 channel. RBF of a v2 open is allowed too (<c>Node:DualFund:AllowRbf</c>, true by default since lane
+    /// dfrbf). BOLT 9 lists no dependency. Set No to accept and open v1 channels only.
+    /// </remarks>
     public FeatureSupport DualFund { get; set; } = FeatureSupport.Optional;
 
+    /// <summary>
+    /// Enable quiescence (<c>stfu</c>, BOLT 9 <c>option_quiesce</c> 34/35).
+    /// </summary>
+    /// <remarks>
+    /// Optional by default since splicing plan D13 (wave d13), together with <see cref="OptionSplice"/>: a peer may
+    /// quiesce a channel with us (<c>IQuiescenceService</c>) for a splice or its RBF. BOLT 9 lists no dependency.
+    /// </remarks>
     public FeatureSupport OptionQuiesce { get; set; } = FeatureSupport.Optional;
 
+    /// <summary>
+    /// Enable splicing (BOLT 2 "Channel Splicing", BOLT 9 <c>option_splice</c> 62/63).
+    /// </summary>
+    /// <remarks>
+    /// Optional by default since splicing plan D13 (wave d13, after Proofs SP2 and SPR), on every network, together
+    /// with <see cref="OptionQuiesce"/>. BOLT 9 lists no dependency, but a splice needs quiescence too: splicing checks
+    /// that both 35 and 63 were negotiated at use (D14), so turning <see cref="OptionQuiesce"/> off turns splicing off
+    /// as well. Pre-standard bits (154/155) are never used.
+    /// </remarks>
+    public FeatureSupport OptionSplice { get; set; } = FeatureSupport.Optional;
+
+    /// <summary>
+    /// Enable attribution data (BOLT 4 attributable failures and hold times, BOLT 9 bits 36/37).
+    /// </summary>
+    /// <remarks>
+    /// Optional by default on every network since NL-332 (owner decision 2026-10-02) and no longer in
+    /// <see cref="ExperimentalFeatures"/>: implemented in onion M3b (NL-072) and used by the switch and payments since
+    /// ABCD wave 7, proven between NLightning nodes (Docker <c>AttributionFlowTests</c>). BOLT 4 ties every
+    /// requirement to our own advertisement, not to the peer's: while advertised, the switch adds
+    /// <c>attribution_data</c> (TLV 1, odd) to the <c>update_fail_htlc</c>/<c>update_fulfill_htlc</c> of an incoming
+    /// HTLC without <c>path_key</c>. A peer without the feature (LND 0.20) ignores the odd TLV and reads the legacy
+    /// reason/preimage unchanged. A received <c>attribution_data</c> is verified whatever this setting.
+    /// </remarks>
     public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable onion messages.
+    /// Enable onion messages (BOLT 4, wave M6): Optional by default since Proof M6 against CLN (plan D9).
     /// </summary>
-    public FeatureSupport OptionOnionMessages { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionOnionMessages { get; set; } = FeatureSupport.Optional;
 
+    /// <summary>
+    /// Offer BOLT 1 peer storage: keep the latest <c>peer_storage</c> blob of each peer we have a channel with and hand
+    /// it back with <c>peer_storage_retrieval</c> after every init.
+    /// </summary>
+    /// <remarks>
+    /// Implemented by the Application <c>PeerStorageService</c> (<c>AddPeerStorageServices</c>, called by the daemon's
+    /// <c>AddNltgNodeServices</c>). Optional by default; a host that advertises it without registering that service
+    /// drops every <c>peer_storage</c>, against the BOLT 1 MUST (the peer factory logs that misconfiguration).
+    /// Negotiated with a peer, it also makes us send that peer our own encrypted backup blob.
+    /// </remarks>
     public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport OptionChannelType { get; private set; } = FeatureSupport.Compulsory;
@@ -80,7 +201,10 @@ public class FeatureOptions
     /// <summary>
     /// Enable scid alias.
     /// </summary>
-    public FeatureSupport ScidAlias { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: aliases are only partially handled (no alias-based forwarding or real-scid rejection).
+    /// </remarks>
+    public FeatureSupport ScidAlias { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable payment metadata.
@@ -92,7 +216,55 @@ public class FeatureOptions
     /// </summary>
     public FeatureSupport ZeroConf { get; set; } = FeatureSupport.No;
 
-    public FeatureSupport OptionSimpleClose { get; set; } = FeatureSupport.No;
+    /// <summary>
+    /// option_simple_close (BOLT 2 closing_complete/closing_sig, BOLT2 plan N11; LND's "rbf-coop-close").
+    /// </summary>
+    /// <remarks>
+    /// Optional by default on every network, mainnet included, since taproot plan D-T1 (owner decision 2026-10-03,
+    /// NL-877): implemented in BOLT2 plan N11 and proven against LND 0.21 (<c>--protocol.rbf-coop-close</c>) and Eclair
+    /// 0.14.3, either side closing; <c>option_simple_taproot</c> depends on it. Negotiated only when both sides signal
+    /// it: with such a peer every mutual close uses <c>closing_complete</c>/<c>closing_sig</c>, with a peer without the
+    /// bit (LND without rbf-coop-close, LDK) the legacy <c>closing_signed</c> negotiation. Needs
+    /// <see cref="BeyondSegwitShutdown"/> (BOLT 9 dependency, Optional by default too). Set No for legacy closes only.
+    /// </remarks>
+    public FeatureSupport OptionSimpleClose { get; set; } = FeatureSupport.Optional;
+
+    /// <summary>
+    /// Enable trampoline routing (BOLT 4 "Trampoline Payments", BOLTs PR 836; BOLT 9 <c>trampoline_routing</c> 56/57,
+    /// contexts init, node_announcement and BOLT 11 invoices).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No and is in <see cref="ExperimentalFeatures"/> while trampoline routing is being built (NL-875):
+    /// enabling it fails <see cref="GetValidationErrors"/> unless <see cref="AllowExperimentalFeatures"/> is set. BOLT 9
+    /// lists no dependency.
+    /// </remarks>
+    public FeatureSupport OptionTrampolineRouting { get; set; } = FeatureSupport.No;
+
+    /// <summary>
+    /// Enable simple taproot channels (<c>option_simple_taproot</c>, bits 80/81, contexts init and node_announcement and
+    /// a channel type bit; the staging bits 180/181 are never advertised).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No and is in <see cref="ExperimentalFeatures"/> while taproot channels are being built (NL-877):
+    /// enabling it fails <see cref="GetValidationErrors"/> unless <see cref="AllowExperimentalFeatures"/> is set. BOLT 9
+    /// dependencies: <c>option_channel_type</c> and <see cref="OptionSimpleClose"/>. LND 0.21 also requires
+    /// <see cref="OptionAnchors"/> (bit 23) next to 81 in a peer's init, so a configuration with taproot on and anchors
+    /// off is refused too.
+    /// </remarks>
+    public FeatureSupport OptionSimpleTaproot { get; set; } = FeatureSupport.No;
+
+    /// <summary>
+    /// Enable taproot gossip (<c>option_gossip_v2</c>, bits 70/71, BOLTs PR #1059, a draft; contexts init and
+    /// node_announcement): we read, validate, store, serve and relay the v2 gossip messages next to v1 and, with
+    /// <see cref="OptionSimpleTaproot"/>, open and announce public simple taproot channels with them.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No and is in <see cref="ExperimentalFeatures"/> while the spec is a draft (NL-878): enabling it fails
+    /// <see cref="GetValidationErrors"/> unless <see cref="AllowExperimentalFeatures"/> is set.
+    /// <c>option_gossip_v2_p2wsh</c> (72/73) and <c>option_gossip_announce_private</c> (74/75) are not supported and
+    /// never advertised.
+    /// </remarks>
+    public FeatureSupport OptionGossipV2 { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable initial routing sync.
@@ -109,23 +281,123 @@ public class FeatureOptions
     public IEnumerable<ChainHash> ChainHashes { get; set; } = [];
 
     /// <summary>
-    /// The remote address of the node.
-    /// </summary>
-    /// <remarks>
-    /// This is used to connect to our node.
-    /// </remarks>
-    public IPAddress? RemoteAddress { get; set; } = null;
-
-    /// <summary>
     /// Get Features set for the node.
     /// </summary>
-    /// <returns>The features set for the node.</returns>
+    /// <param name="context">The context the features will be presented in (defaults to <c>init</c>).</param>
+    /// <returns>The features set for the node, filtered to the features allowed in <paramref name="context"/>.</returns>
+    public FeatureSet GetNodeFeatures(FeatureContext context = FeatureContext.Init)
+    {
+        return BuildFeatureSet().FilterByContext(context);
+    }
+
+    /// <summary>
+    /// Validates the configured features.
+    /// </summary>
+    /// <returns>A list of human-readable errors; empty when the configuration is valid.</returns>
     /// <remarks>
-    /// All features set as Optional.
+    /// BOLT 9 requires every advertised feature to have its dependencies set. <see cref="FeatureSet.SetFeature(Feature, bool, bool)"/>
+    /// would silently turn on a dependency that was configured as <see cref="FeatureSupport.No"/>, so reject that
+    /// combination up front instead. Enabling one of the <see cref="ExperimentalFeatures"/> without
+    /// <see cref="AllowExperimentalFeatures"/> is also an error, so the node refuses to start instead of silently
+    /// dropping the setting.
     /// </remarks>
-    public FeatureSet GetNodeFeatures()
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        var errors = new List<string>();
+        var configured = GetConfiguredFeatures();
+        foreach (var (feature, support) in configured)
+        {
+            if (support == FeatureSupport.No)
+                continue;
+
+            if (!AllowExperimentalFeatures && ExperimentalFeatureSet.Contains(feature))
+            {
+                errors.Add($"Feature {feature} is not implemented yet; set {nameof(AllowExperimentalFeatures)} to "
+                         + "advertise it anyway");
+            }
+
+            foreach (var dependency in FeatureSet.GetDependencies(feature))
+            {
+                if (configured.TryGetValue(dependency, out var dependencySupport)
+                 && dependencySupport == FeatureSupport.No)
+                {
+                    errors.Add($"Feature {feature} requires {dependency}, which is disabled");
+                }
+            }
+        }
+
+        // Not a BOLT 9 dependency, but LND 0.21 refuses an init with 81 and without 23 (feature/deps.go)
+        if (OptionSimpleTaproot != FeatureSupport.No && OptionAnchors == FeatureSupport.No)
+        {
+            errors.Add($"Feature {Feature.OptionSimpleTaproot} requires {Feature.OptionAnchors}, which is disabled "
+                     + "(LND refuses option_simple_taproot without option_anchors)");
+        }
+
+        return errors;
+    }
+
+    private Dictionary<Feature, FeatureSupport> GetConfiguredFeatures() => new()
+    {
+        { Feature.OptionDataLossProtect, OptionDataLossProtect },
+        { Feature.OptionUpfrontShutdownScript, UpfrontShutdownScript },
+        { Feature.GossipQueries, GossipQueries },
+        { Feature.VarOnionOptin, VarOnionOptIn },
+        { Feature.GossipQueriesEx, ExpandedGossipQueries },
+        { Feature.OptionStaticRemoteKey, OptionStaticRemoteKey },
+        { Feature.PaymentSecret, PaymentSecret },
+        { Feature.BasicMpp, BasicMpp },
+        { Feature.OptionSupportLargeChannel, LargeChannels },
+        { Feature.OptionAnchors, OptionAnchors },
+        { Feature.OptionRouteBlinding, OptionRouteBlinding },
+        { Feature.OptionShutdownAnySegwit, BeyondSegwitShutdown },
+        { Feature.OptionDualFund, DualFund },
+        { Feature.OptionQuiesce, OptionQuiesce },
+        { Feature.OptionAttributionData, OptionAttributionData },
+        { Feature.OptionOnionMessages, OptionOnionMessages },
+        { Feature.OptionProvideStorage, OptionProvideStorage },
+        { Feature.OptionChannelType, OptionChannelType },
+        { Feature.OptionScidAlias, ScidAlias },
+        { Feature.OptionPaymentMetadata, PaymentMetadata },
+        { Feature.OptionZeroconf, ZeroConf },
+        { Feature.OptionSimpleClose, OptionSimpleClose },
+        { Feature.OptionSplice, OptionSplice },
+        { Feature.OptionTrampolineRouting, OptionTrampolineRouting },
+        { Feature.OptionSimpleTaproot, OptionSimpleTaproot },
+        { Feature.OptionGossipV2, OptionGossipV2 },
+    };
+
+    /// <summary>
+    /// Whether a feature configured with <paramref name="support"/> goes into our feature bits: never when it is
+    /// disabled, and never for an <see cref="ExperimentalFeatures">experimental</see> one unless
+    /// <see cref="AllowExperimentalFeatures"/> is set.
+    /// </summary>
+    private bool IsAdvertised(Feature feature, FeatureSupport support)
+    {
+        return support != FeatureSupport.No
+            && (AllowExperimentalFeatures || !ExperimentalFeatureSet.Contains(feature));
+    }
+
+    /// <summary>
+    /// Whether our init advertises <c>option_simple_taproot</c>: configured and, while it is experimental,
+    /// <see cref="AllowExperimentalFeatures"/> set (NL-877 T5: our taproot opens need it).
+    /// </summary>
+    public bool IsSimpleTaprootAdvertised => IsAdvertised(Feature.OptionSimpleTaproot, OptionSimpleTaproot);
+
+    /// <summary>
+    /// Whether our init advertises <c>option_gossip_v2</c>: configured and, while it is experimental,
+    /// <see cref="AllowExperimentalFeatures"/> set (NL-878: the v2 gossip messages and public taproot channels need it).
+    /// </summary>
+    public bool IsGossipV2Advertised => IsAdvertised(Feature.OptionGossipV2, OptionGossipV2);
+
+    private FeatureSet BuildFeatureSet()
     {
         var features = new FeatureSet();
+
+        // FeatureSet sets data_loss_protect as compulsory by default; honour the configured support level
+        if (OptionDataLossProtect == FeatureSupport.No)
+            features.SetFeature(Feature.OptionDataLossProtect, false, false);
+        else
+            features.SetFeature(Feature.OptionDataLossProtect, OptionDataLossProtect == FeatureSupport.Compulsory);
 
         if (UpfrontShutdownScript != FeatureSupport.No)
         {
@@ -143,7 +415,7 @@ public class FeatureOptions
             features.SetFeature(Feature.GossipQueriesEx, ExpandedGossipQueries == FeatureSupport.Compulsory);
         }
 
-        if (BasicMpp != FeatureSupport.No)
+        if (IsAdvertised(Feature.BasicMpp, BasicMpp))
         {
             features.SetFeature(Feature.BasicMpp, BasicMpp == FeatureSupport.Compulsory);
         }
@@ -153,12 +425,12 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionSupportLargeChannel, LargeChannels == FeatureSupport.Compulsory);
         }
 
-        if (OptionAnchors != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionAnchors, OptionAnchors))
         {
             features.SetFeature(Feature.OptionAnchors, OptionAnchors == FeatureSupport.Compulsory);
         }
 
-        if (OptionRouteBlinding != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionRouteBlinding, OptionRouteBlinding))
         {
             features.SetFeature(Feature.OptionRouteBlinding, OptionRouteBlinding == FeatureSupport.Compulsory);
         }
@@ -168,27 +440,27 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionShutdownAnySegwit, BeyondSegwitShutdown == FeatureSupport.Compulsory);
         }
 
-        if (DualFund != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionDualFund, DualFund))
         {
             features.SetFeature(Feature.OptionDualFund, DualFund == FeatureSupport.Compulsory);
         }
 
-        if (OptionQuiesce != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionQuiesce, OptionQuiesce))
         {
             features.SetFeature(Feature.OptionQuiesce, OptionQuiesce == FeatureSupport.Compulsory);
         }
 
-        if (OptionAttributionData != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionAttributionData, OptionAttributionData))
         {
             features.SetFeature(Feature.OptionAttributionData, OptionAttributionData == FeatureSupport.Compulsory);
         }
 
-        if (OptionOnionMessages != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionOnionMessages, OptionOnionMessages))
         {
             features.SetFeature(Feature.OptionOnionMessages, OptionOnionMessages == FeatureSupport.Compulsory);
         }
 
-        if (OptionProvideStorage != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionProvideStorage, OptionProvideStorage))
         {
             features.SetFeature(Feature.OptionProvideStorage, OptionProvideStorage == FeatureSupport.Compulsory);
         }
@@ -213,9 +485,30 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionZeroconf, ZeroConf == FeatureSupport.Compulsory);
         }
 
-        if (OptionSimpleClose != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionSimpleClose, OptionSimpleClose))
         {
             features.SetFeature(Feature.OptionSimpleClose, OptionSimpleClose == FeatureSupport.Compulsory);
+        }
+
+        if (IsAdvertised(Feature.OptionSplice, OptionSplice))
+        {
+            features.SetFeature(Feature.OptionSplice, OptionSplice == FeatureSupport.Compulsory);
+        }
+
+        if (IsAdvertised(Feature.OptionTrampolineRouting, OptionTrampolineRouting))
+        {
+            features.SetFeature(Feature.OptionTrampolineRouting,
+                                OptionTrampolineRouting == FeatureSupport.Compulsory);
+        }
+
+        if (IsAdvertised(Feature.OptionSimpleTaproot, OptionSimpleTaproot))
+        {
+            features.SetFeature(Feature.OptionSimpleTaproot, OptionSimpleTaproot == FeatureSupport.Compulsory);
+        }
+
+        if (IsAdvertised(Feature.OptionGossipV2, OptionGossipV2))
+        {
+            features.SetFeature(Feature.OptionGossipV2, OptionGossipV2 == FeatureSupport.Compulsory);
         }
 
         return features;
@@ -237,13 +530,6 @@ public class FeatureOptions
         }
 
         return new NetworksTlv(ChainHashes);
-
-        // TODO: Review this when implementing BOLT7
-        // // If RemoteAddress is set, add it to the extension
-        // if (RemoteAddress != null)
-        // {
-        //     extension.Add(new(new BigSize(3), RemoteAddress.GetAddressBytes()));
-        // }
     }
 
     /// <summary>
@@ -256,6 +542,8 @@ public class FeatureOptions
     {
         var options = new FeatureOptions
         {
+            // These options describe what was already negotiated, not what we advertise, so nothing is gated here
+            AllowExperimentalFeatures = true,
             OptionDataLossProtect = featureSet.IsFeatureSet(Feature.OptionDataLossProtect, true)
                                         ? FeatureSupport.Compulsory
                                         : featureSet.IsFeatureSet(Feature.OptionDataLossProtect, false)
@@ -366,6 +654,26 @@ public class FeatureOptions
                                     : featureSet.IsFeatureSet(Feature.OptionSimpleClose, false)
                                         ? FeatureSupport.Optional
                                         : FeatureSupport.No,
+            OptionSplice = featureSet.IsFeatureSet(Feature.OptionSplice, true)
+                               ? FeatureSupport.Compulsory
+                               : featureSet.IsFeatureSet(Feature.OptionSplice, false)
+                                   ? FeatureSupport.Optional
+                                   : FeatureSupport.No,
+            OptionTrampolineRouting = featureSet.IsFeatureSet(Feature.OptionTrampolineRouting, true)
+                                          ? FeatureSupport.Compulsory
+                                          : featureSet.IsFeatureSet(Feature.OptionTrampolineRouting, false)
+                                              ? FeatureSupport.Optional
+                                              : FeatureSupport.No,
+            OptionSimpleTaproot = featureSet.IsFeatureSet(Feature.OptionSimpleTaproot, true)
+                                      ? FeatureSupport.Compulsory
+                                      : featureSet.IsFeatureSet(Feature.OptionSimpleTaproot, false)
+                                          ? FeatureSupport.Optional
+                                          : FeatureSupport.No,
+            OptionGossipV2 = featureSet.IsFeatureSet(Feature.OptionGossipV2, true)
+                                 ? FeatureSupport.Compulsory
+                                 : featureSet.IsFeatureSet(Feature.OptionGossipV2, false)
+                                     ? FeatureSupport.Optional
+                                     : FeatureSupport.No,
         };
 
         if (extension?.TryGetTlv(new BigSize(1), out var chainHashes) ?? false)

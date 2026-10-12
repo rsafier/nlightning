@@ -4,17 +4,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class TxCompleteMessageTests
 {
-    private readonly TxCompleteMessageTypeSerializer _txCompleteMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<TxCompleteMessage> _txCompleteMessageTypeSerializer;
 
     public TxCompleteMessageTests()
     {
         _txCompleteMessageTypeSerializer =
-            new TxCompleteMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.WireRegistry.Get<TxCompleteMessage>()!;
     }
 
     [Fact]

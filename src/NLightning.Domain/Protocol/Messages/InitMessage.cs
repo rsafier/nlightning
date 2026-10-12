@@ -23,16 +23,34 @@ public sealed class InitMessage : BaseMessage
 
     public RemoteAddressTlv? RemoteAddressTlv { get; }
 
-    public InitMessage(InitPayload payload, NetworksTlv? networksTlv = null, RemoteAddressTlv? remoteAddressTlv = null)
+    /// <summary>Liquidity ads (TLV 1339, NL-850).</summary>
+    public WillFundRatesTlv? WillFundRatesTlv { get; }
+
+    /// <summary>
+    /// The raw value of a received <c>remote_addr</c> that is not a valid address descriptor (NL-344). The TLV is odd
+    /// and only advisory, so it never fails the init: <see cref="RemoteAddressTlv"/> is then null and the receiver
+    /// logs this and drops it. Never serialized.
+    /// </summary>
+    public byte[]? UndecodableRemoteAddress { get; init; }
+
+    /// <summary>
+    /// The raw value of a received liquidity ads <c>option_will_fund</c> (TLV 1339, NL-850) that does not decode. The
+    /// record is odd and only advisory, so it never fails the init: <see cref="WillFundRatesTlv"/> is then null and the
+    /// receiver logs this and drops it. Never serialized.
+    /// </summary>
+    public byte[]? UndecodableWillFundRates { get; init; }
+
+    public InitMessage(InitPayload payload, NetworksTlv? networksTlv = null, RemoteAddressTlv? remoteAddressTlv = null, WillFundRatesTlv? willFundRatesTlv = null)
         : base(MessageTypes.Init, payload)
     {
+        WillFundRatesTlv = willFundRatesTlv;
         NetworksTlv = networksTlv;
         RemoteAddressTlv = remoteAddressTlv;
 
-        if (networksTlv is not null || remoteAddressTlv is not null)
+        if (networksTlv is not null || remoteAddressTlv is not null || willFundRatesTlv is not null)
         {
             Extension = new TlvStream();
-            Extension.Add(networksTlv, remoteAddressTlv);
+            Extension.Add(networksTlv, remoteAddressTlv, willFundRatesTlv);
         }
     }
 }

@@ -1,0 +1,95 @@
+namespace NLightning.Domain.Client.Responses;
+
+using Accounting.Labels;
+using Crypto.ValueObjects;
+using Money;
+using Payments.Enums;
+using Payments.Keysend;
+using Payments.Models;
+
+/// <summary>
+/// One of our invoices, as returned by <c>CreateInvoice</c> and <c>ListInvoices</c>. It never carries the preimage or
+/// the payment secret beyond what the BOLT 11 string already contains.
+/// </summary>
+public sealed class InvoiceInfoClientResponse
+{
+    /// <summary>
+    /// The BOLT 11 string, or null for a BOLT 12 invoice (issued for one of our offers; it has no string form).
+    /// </summary>
+    public string? Bolt11 { get; init; }
+    public required Hash PaymentHash { get; init; }
+
+    /// <summary>
+    /// The requested amount, or null for an any-amount invoice.
+    /// </summary>
+    public LightningMoney? Amount { get; init; }
+
+    public string? Description { get; init; }
+    public required InvoiceStatus Status { get; init; }
+    public required DateTimeOffset CreatedAt { get; init; }
+    public required DateTimeOffset ExpiresAt { get; init; }
+
+    /// <summary>
+    /// True when the invoice was still open at <see cref="ExpiresAt"/> when the response was built.
+    /// </summary>
+    public bool IsExpired { get; init; }
+
+    /// <summary>
+    /// The amount the paying HTLC carried, once accepted.
+    /// </summary>
+    public LightningMoney? AmountReceived { get; init; }
+
+    public DateTimeOffset? SettledAt { get; init; }
+
+    /// <summary>
+    /// BOLT 11 (a <c>createinvoice</c> string), BOLT 12 (issued for one of our offers, NL-454) or a received keysend
+    /// payment (lane lh1-l3).
+    /// </summary>
+    public InvoiceKind Kind { get; init; }
+
+    /// <summary>
+    /// The offer a BOLT 12 invoice was issued for; null for a BOLT 11 invoice.
+    /// </summary>
+    public Hash? OfferId { get; init; }
+
+    /// <summary>
+    /// The custom records a keysend payer attached (empty for invoices we issued).
+    /// </summary>
+    public IReadOnlyList<CustomRecord> CustomRecords { get; init; } = [];
+
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1), or null.
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1); empty for none.
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
+
+    /// <summary>
+    /// Maps a stored invoice; <paramref name="now"/> decides <see cref="IsExpired"/>.
+    /// </summary>
+    public static InvoiceInfoClientResponse FromModel(InvoiceModel invoice, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(invoice);
+        return new InvoiceInfoClientResponse
+        {
+            Bolt11 = invoice.Bolt11,
+            PaymentHash = invoice.PaymentHash,
+            Amount = invoice.Amount,
+            Description = invoice.Description,
+            Status = invoice.Status,
+            CreatedAt = invoice.CreatedAt,
+            ExpiresAt = invoice.ExpiresAt,
+            IsExpired = invoice.IsExpired(now),
+            AmountReceived = invoice.AmountReceived,
+            SettledAt = invoice.SettledAt,
+            Kind = invoice.Kind,
+            OfferId = invoice.Bolt12?.OfferId,
+            CustomRecords = invoice.Keysend?.CustomRecords ?? [],
+            Label = invoice.Label,
+            Tags = SourceLabels.FromStored(null, invoice.Tags).TagStrings
+        };
+    }
+}

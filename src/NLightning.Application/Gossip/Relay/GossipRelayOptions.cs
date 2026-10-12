@@ -1,0 +1,112 @@
+namespace NLightning.Application.Gossip.Relay;
+
+using Domain.Protocol.ValueObjects;
+
+/// <summary>
+/// The relay of other nodes' gossip (BOLT 7 plan §3.7, G3-T3, D12), bound from the <c>Gossip</c> section. Our own
+/// gossip keeps <c>Gossip:OwnGossipFlushInterval</c> (<c>GossipOptions</c>).
+/// </summary>
+public sealed class GossipRelayOptions
+{
+    /// <summary>The configuration section.</summary>
+    public const string SectionName = "Gossip";
+
+    /// <summary>
+    /// Whether we relay the gossip of other nodes to our peers. Unset (the default) means on everywhere, mainnet
+    /// included since the NL-417 relay proof (owner decision 2026-09-28; plan D12 kept it off on mainnet before). Our own
+    /// gossip is always sent.
+    /// </summary>
+    /// <remarks>Configuration key <c>Gossip:RelayEnabled</c>.</remarks>
+    public bool? RelayEnabled { get; set; }
+
+    /// <summary>
+    /// How often each peer gets the gossip accepted since its last flush (BOLT 7: SHOULD flush every 60 seconds). Each
+    /// connection has its own phase in the interval (staggered), so the peers are not all served at once.
+    /// </summary>
+    public TimeSpan RelayFlushInterval { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// How often the relay collects the gossip accepted since the last collect (NL-366: drained from the ingress's
+    /// accepted-gossip feed; one full pass over the graph snapshot only when the feed overflowed or is missing).
+    /// </summary>
+    public TimeSpan RelayCollectInterval { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The relay's clock tick: per-peer flushes and the backlog pacing run on it.
+    /// </summary>
+    public TimeSpan RelayTickInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// How fast the graph backlog a new <c>gossip_timestamp_filter</c> asks for goes out, per peer (plan: 1,000).
+    /// </summary>
+    public int BacklogMessagesPerSecond { get; set; } = 1_000;
+
+    /// <summary>
+    /// How long a relay tick waits for the peers' sends. A peer still sending after it keeps its send running and is
+    /// skipped by the next ticks until it ends; the other peers go on.
+    /// </summary>
+    public TimeSpan RelaySendWait { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The most relay messages waiting for one connection's next flush (plan §3.7: <c>Gossip:MaxOutboundQueue</c>,
+    /// 5,000). Beyond it the oldest waiting <c>node_announcement</c>, else the oldest channel message (an announcement
+    /// with its updates), is dropped (counted as <c>relay_backlog_full</c>): the peer can ask for
+    /// it again with a query, and a peer that drains slowly never makes the relay queue more than this per flush on
+    /// its outbox. <c>Gossip:MaxRelayPendingPerPeer</c>.
+    /// </summary>
+    public int MaxRelayPendingPerPeer { get; set; } = 5_000;
+
+    /// <summary>
+    /// A connection the relay paused because its outbox refused gossip (NL-360, <c>Gossip:MaxOutboxGossipPerPeer</c>)
+    /// is resumed once its outbox holds at most this percentage of the gossip caps (hysteresis, so a slow reader gets
+    /// batches instead of one message per drained slot). <c>Gossip:RelayResumePercent</c>, 1 to 100.
+    /// </summary>
+    public int RelayResumePercent { get; set; } = 50;
+
+    /// <summary>
+    /// A paused connection whose outbox sent no gossip for this long is stalled (NL-360): its graph backlog ends and
+    /// the messages waiting for its flush are dropped (counted as <c>relay_stalled</c>), so a peer that never reads
+    /// does not keep an old graph snapshot or a relay backlog alive. The connection stays up (gossip is never worth a
+    /// connection; BOLT 1 pings find a dead one); the relay resumes when its outbox drains, and the peer can query what
+    /// it missed. Zero turns it off. <c>Gossip:RelayStallTimeout</c>.
+    /// </summary>
+    public TimeSpan RelayStallTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>How many received message versions keep their origin peers (origin suppression).</summary>
+    public int MaxTrackedOrigins { get; set; } = GossipOriginTracker.DefaultCapacity;
+
+    /// <summary>
+    /// The effective switch: <see cref="RelayEnabled"/> when set, otherwise true on every chain, mainnet included (NL-417).
+    /// </summary>
+    public bool IsRelayEnabledFor(BitcoinNetwork network)
+    {
+        // Kept per network so a chain-specific default can come back without changing the callers
+        _ = network;
+        return RelayEnabled ?? true;
+    }
+
+    /// <summary>The invalid settings, empty when valid.</summary>
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        var errors = new List<string>();
+        if (RelayFlushInterval <= TimeSpan.Zero)
+            errors.Add($"{nameof(RelayFlushInterval)} must be positive");
+        if (RelayCollectInterval <= TimeSpan.Zero)
+            errors.Add($"{nameof(RelayCollectInterval)} must be positive");
+        if (RelayTickInterval <= TimeSpan.Zero)
+            errors.Add($"{nameof(RelayTickInterval)} must be positive");
+        if (RelaySendWait <= TimeSpan.Zero)
+            errors.Add($"{nameof(RelaySendWait)} must be positive");
+        if (BacklogMessagesPerSecond < 1)
+            errors.Add($"{nameof(BacklogMessagesPerSecond)} must be at least 1");
+        if (MaxRelayPendingPerPeer < 1)
+            errors.Add($"{nameof(MaxRelayPendingPerPeer)} must be at least 1");
+        if (RelayResumePercent is < 1 or > 100)
+            errors.Add($"{nameof(RelayResumePercent)} must be between 1 and 100");
+        if (RelayStallTimeout < TimeSpan.Zero)
+            errors.Add($"{nameof(RelayStallTimeout)} must not be negative");
+        if (MaxTrackedOrigins < 1)
+            errors.Add($"{nameof(MaxTrackedOrigins)} must be at least 1");
+        return errors;
+    }
+}

@@ -14,8 +14,6 @@ using Infrastructure.Crypto.Hashes;
 /// </summary>
 public class ReceivedHtlcOutput : BaseHtlcOutput
 {
-    public override ScriptType ScriptType => ScriptType.P2WSH;
-
     [SetsRequiredMembers]
     public ReceivedHtlcOutput(LightningMoney amount, ulong cltvExpiry, bool hasAnchor, PubKey localHtlcPubKey,
                               ReadOnlyMemory<byte> paymentHash, PubKey remoteHtlcPubKey, PubKey revocationPubKey)

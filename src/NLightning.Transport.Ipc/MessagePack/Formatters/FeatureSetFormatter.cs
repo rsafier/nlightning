@@ -17,9 +17,11 @@ public class FeatureSetFormatter : IMessagePackFormatter<FeatureSet?>
             return;
         }
 
-        using var bitWriter = new BitWriter(value.SizeInBits);
-        value.WriteToBitWriter(bitWriter, value.SizeInBits, false);
-        writer.Write(value.SizeInBits);
+        // SizeInBits is the index of the highest set bit, so the set is one bit longer (it dropped that bit, NL-567)
+        var length = value.SizeInBits + 1;
+        using var bitWriter = new BitWriter(length);
+        value.WriteToBitWriter(bitWriter, length, false);
+        writer.Write(length);
         writer.Write(bitWriter.ToArray());
     }
 

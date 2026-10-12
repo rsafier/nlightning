@@ -1,0 +1,192 @@
+// Minimal subset of CLN's gRPC proxy proto (https://github.com/ElementsProject/lightning,
+// cln-grpc/proto/node.proto and cln-grpc/proto/primitives.proto), BSD-MIT License,
+// Copyright Rusty Russell (Blockstream) 2015-2024 — exactly the three calls Second's captaind (the
+// Bark ASP) makes against a CLN node's pay side and lifecycle (server/src/ln/cln/mod.rs,
+// xpay.rs and node_manager.rs): Getinfo, Xpay, ListPays and FetchInvoice (a BOLT 12 offer's
+// invoice), with the messages they reference. Method names and field numbers are the wire contract
+// with the full proto's Rust client (cln-rpc, bark's cln-rpc/protos/node.proto at 2c5f0fcb): the
+// gRPC path is /cln.Node/<Method> exactly as there (ListPays, FetchInvoice); never rename, reorder or
+// renumber. The other ~100 methods of cln.Node are not vendored: a client that calls one gets
+// UNIMPLEMENTED.
+syntax = "proto3";
+
+package cln;
+
+service Node {
+	rpc Getinfo(GetinfoRequest) returns (GetinfoResponse) {}
+	rpc Xpay(XpayRequest) returns (XpayResponse) {}
+	rpc ListPays(ListpaysRequest) returns (ListpaysResponse) {}
+	rpc FetchInvoice(FetchinvoiceRequest) returns (FetchinvoiceResponse) {}
+}
+
+// primitives.proto
+message Amount {
+	uint64 msat = 1;
+}
+
+message GetinfoRequest {
+}
+
+message GetinfoResponse {
+	bytes id = 1;
+	string alias = 2;
+	bytes color = 3;
+	uint32 num_peers = 4;
+	uint32 num_pending_channels = 5;
+	uint32 num_active_channels = 6;
+	uint32 num_inactive_channels = 7;
+	string version = 8;
+	string lightning_dir = 9;
+	optional GetinfoOurFeatures our_features = 10;
+	uint32 blockheight = 11;
+	string network = 12;
+	Amount fees_collected_msat = 13;
+	repeated GetinfoAddress address = 14;
+	repeated GetinfoBinding binding = 15;
+	optional string warning_bitcoind_sync = 16;
+	optional string warning_lightningd_sync = 17;
+}
+
+message GetinfoOurFeatures {
+	bytes init = 1;
+	bytes node = 2;
+	bytes channel = 3;
+	bytes invoice = 4;
+}
+
+message GetinfoAddress {
+	// Getinfo.address[].type
+	enum GetinfoAddressType {
+		DNS = 0;
+		IPV4 = 1;
+		IPV6 = 2;
+		TORV2 = 3;
+		TORV3 = 4;
+	}
+	GetinfoAddressType item_type = 1;
+	uint32 port = 2;
+	optional string address = 3;
+}
+
+message GetinfoBinding {
+	// Getinfo.binding[].type
+	enum GetinfoBindingType {
+		LOCAL_SOCKET = 0;
+		IPV4 = 1;
+		IPV6 = 2;
+		TORV2 = 3;
+		TORV3 = 4;
+		WEBSOCKET = 5;
+	}
+	GetinfoBindingType item_type = 1;
+	optional string address = 2;
+	optional uint32 port = 3;
+	optional string socket = 4;
+	optional string subtype = 5;
+}
+
+message ListpaysRequest {
+	// ListPays.index
+	enum ListpaysIndex {
+		CREATED = 0;
+		UPDATED = 1;
+	}
+	// ListPays.status
+	enum ListpaysStatus {
+		PENDING = 0;
+		COMPLETE = 1;
+		FAILED = 2;
+	}
+	optional string bolt11 = 1;
+	optional bytes payment_hash = 2;
+	optional ListpaysStatus status = 3;
+	optional ListpaysIndex index = 4;
+	optional uint64 start = 5;
+	optional uint32 limit = 6;
+}
+
+message ListpaysResponse {
+	repeated ListpaysPays pays = 1;
+}
+
+message ListpaysPays {
+	// ListPays.pays[].status
+	enum ListpaysPaysStatus {
+		PENDING = 0;
+		FAILED = 1;
+		COMPLETE = 2;
+	}
+	bytes payment_hash = 1;
+	ListpaysPaysStatus status = 2;
+	optional bytes destination = 3;
+	uint64 created_at = 4;
+	optional string label = 5;
+	optional string bolt11 = 6;
+	optional string bolt12 = 7;
+	optional Amount amount_msat = 8;
+	optional Amount amount_sent_msat = 9;
+	optional bytes erroronion = 10;
+	optional string description = 11;
+	optional uint64 completed_at = 12;
+	optional bytes preimage = 13;
+	optional uint64 number_of_parts = 14;
+	optional uint64 created_index = 15;
+	optional uint64 updated_index = 16;
+}
+
+message XpayRequest {
+	string invstring = 1;
+	optional Amount amount_msat = 2;
+	optional Amount maxfee = 3;
+	repeated string layers = 4;
+	optional uint32 retry_for = 5;
+	optional Amount partial_msat = 6;
+	optional uint32 maxdelay = 7;
+	optional string payer_note = 8;
+	optional string label = 9;
+	optional bytes localinvreqid = 10;
+	optional bool dev_use_shadow = 11;
+}
+
+message XpayResponse {
+	bytes payment_preimage = 1;
+	uint64 failed_parts = 2;
+	uint64 successful_parts = 3;
+	Amount amount_msat = 4;
+	Amount amount_sent_msat = 5;
+}
+
+message FetchinvoiceRequest {
+	string offer = 1;
+	optional Amount amount_msat = 2;
+	optional uint64 quantity = 3;
+	optional uint64 recurrence_counter = 4;
+	optional double recurrence_start = 5;
+	optional string recurrence_label = 6;
+	optional double timeout = 7;
+	optional string payer_note = 8;
+	optional string payer_metadata = 9;
+	optional string bip353 = 10;
+}
+
+message FetchinvoiceResponse {
+	string invoice = 1;
+	FetchinvoiceChanges changes = 2;
+	optional FetchinvoiceNextPeriod next_period = 3;
+}
+
+message FetchinvoiceChanges {
+	optional string description_appended = 1;
+	optional string description = 2;
+	optional string vendor_removed = 3;
+	optional string vendor = 4;
+	optional Amount amount_msat = 5;
+}
+
+message FetchinvoiceNextPeriod {
+	uint64 counter = 1;
+	uint64 starttime = 2;
+	uint64 endtime = 3;
+	uint64 paywindow_start = 4;
+	uint64 paywindow_end = 5;
+}

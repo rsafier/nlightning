@@ -20,6 +20,15 @@ public class PeerModel
     public string Type { get; }
     public DateTime LastSeenAt { get; set; }
 
+    /// <summary>
+    /// We know no address to dial this peer at (NL-497, wave spr): it connected to us, from a loopback address (a local
+    /// tunnel, Tor on the same host) or from an ephemeral port, so <see cref="Host"/>/<see cref="Port"/> are only where
+    /// it came from. Such a peer is still saved, without an address (empty host, port 0), so its channels are
+    /// registered at startup, but it is never dialed at that address (not at startup, not by the reconnect loop): we
+    /// wait for it to connect again. Channel backups and restores leave such a row out.
+    /// </summary>
+    public bool IsInboundOnly { get; init; }
+
     public FeatureSet Features
     {
         get
@@ -40,11 +49,27 @@ public class PeerModel
         }
     }
 
+    /// <summary>
+    /// The features the peer advertised in its <c>init</c>, before they were negotiated with ours
+    /// (<see cref="IPeerService.PeerFeatures"/>): what the peer itself supports, e.g. whether a trampoline node takes a
+    /// split outer leg (NL-924), whatever we advertise.
+    /// </summary>
+    public FeatureOptions AdvertisedFeatures
+    {
+        get
+        {
+            return _peerService?.PeerFeatures
+                ?? throw new NullReferenceException($"{nameof(PeerModel)}.{nameof(AdvertisedFeatures)} was null");
+        }
+    }
+
     public PeerAddressInfo PeerAddressInfo
     {
         get
         {
-            _peerAddressInfo ??= new PeerAddressInfo($"{NodeId}@{Host}:{Port}");
+            // An IPv6 host goes in brackets (pubkey@[2001:db8::1]:9735, NL-113 D-B10-6)
+            var host = Host.Contains(':') && !Host.StartsWith('[') ? $"[{Host}]" : Host;
+            _peerAddressInfo ??= new PeerAddressInfo($"{NodeId}@{host}:{Port}");
 
             return _peerAddressInfo.Value;
         }

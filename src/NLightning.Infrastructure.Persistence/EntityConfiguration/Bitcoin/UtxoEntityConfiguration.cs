@@ -23,12 +23,9 @@ public static class UtxoEntityConfiguration
                   .IsRequired();
             entity.Property(e => e.BlockHeight)
                   .IsRequired();
-            entity.Property(e => e.AddressIndex)
-                  .IsRequired();
-            entity.Property(e => e.IsAddressChange)
-                  .IsRequired();
-            entity.Property(e => e.AddressType)
-                  .IsRequired();
+            entity.Property(e => e.AddressIndex).IsRequired(false);
+            entity.Property(e => e.IsAddressChange).IsRequired(false);
+            entity.Property(e => e.AddressType).IsRequired(false);
 
             // Set Optional props
             entity.Property(e => e.LockedToChannelId)
@@ -41,6 +38,24 @@ public static class UtxoEntityConfiguration
             // Set converters
             entity.Property(x => x.TransactionId)
                   .HasConversion<TxIdConverter>();
+
+            entity.Property(e => e.SilentPaymentTransactionId).HasConversion<TxIdConverter>();
+            entity.HasOne(e => e.SilentPayment).WithOne(e => e.Utxo)
+                  .HasForeignKey<UtxoEntity>(e => new { e.SilentPaymentTransactionId, e.SilentPaymentIndex })
+                  .OnDelete(DeleteBehavior.Restrict);
+            var quote = databaseType == DatabaseType.MicrosoftSql ? "[" : "\"";
+            var close = databaseType == DatabaseType.MicrosoftSql ? "]" : "\"";
+            string Column(string name) => databaseType == DatabaseType.PostgreSql
+                ? string.Concat(name.Select((c, i) => char.IsUpper(c) && i > 0 ? "_" + char.ToLowerInvariant(c) : char.ToLowerInvariant(c).ToString()))
+                : quote + name + close;
+            var address = Column("AddressIndex");
+            var change = Column("IsAddressChange");
+            var type = Column("AddressType");
+            var spTx = Column("SilentPaymentTransactionId");
+            var spIndex = Column("SilentPaymentIndex");
+            entity.ToTable(t => t.HasCheckConstraint("CK_Utxos_Ownership",
+                $"(({address} IS NOT NULL AND {change} IS NOT NULL AND {type} IS NOT NULL AND {spTx} IS NULL AND {spIndex} IS NULL) OR " +
+                $"({address} IS NULL AND {change} IS NULL AND {type} IS NULL AND {spTx} IS NOT NULL AND {spIndex} IS NOT NULL AND {spTx} = {Column("TransactionId")} AND {spIndex} = {Column("Index")}))"));
 
             // Set indexes
             entity.HasIndex(x => x.AddressType);
@@ -66,6 +81,7 @@ public static class UtxoEntityConfiguration
 
     private static void OptimizeConfigurationForSqlServer(EntityTypeBuilder<UtxoEntity> entity)
     {
+        entity.Property(e => e.SilentPaymentTransactionId).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
         entity.Property(e => e.TransactionId).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
         entity.Property(e => e.LockedToChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
 

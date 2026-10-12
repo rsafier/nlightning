@@ -1,0 +1,386 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace NLightning.Application.Tests.Gossip.Announcements;
+
+using Application.Gossip.Announcements;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Enums;
+using Domain.Gossip.Addresses;
+using Domain.Gossip.Interfaces;
+using Domain.Gossip.Persistence;
+using Domain.LiquidityAds;
+using Domain.LiquidityAds.Enums;
+using Domain.Node.Interfaces;
+using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
+
+/// <summary>
+/// BOLT 7 plan G1-T6: our <c>node_announcement</c> with a real signer, a graph row store shared across "restarts"
+/// (new service instances) and a settable clock.
+/// </summary>
+public class NodeAnnouncementServiceTests : IDisposable
+{
+    private static readonly DateTimeOffset s_now = DateTimeOffset.FromUnixTimeSeconds(1_780_000_000);
+
+    private readonly AnnouncementTestPair _pair = new();
+    private readonly SettableTimeProvider _clock = new(s_now);
+    private readonly Mock<IGraphDbRepository> _graphDb = new();
+    private readonly Mock<IUnitOfWork> _unitOfWork = new();
+    private readonly GossipOptions _gossipOptions = new();
+    private readonly ServiceProvider _provider;
+    private GraphNodeRecord? _stored;
+    private GraphNodeRecord? _staged;
+    private int _saves;
+
+    public NodeAnnouncementServiceTests()
+    {
+        _graphDb.Setup(g => g.GetNodeAsync(It.IsAny<CompactPubKey>())).ReturnsAsync(() => _stored);
+        _graphDb.Setup(g => g.UpsertNodeAsync(It.IsAny<GraphNodeRecord>()))
+                .Callback((GraphNodeRecord record) => _staged = record)
+                .Returns(Task.CompletedTask);
+        _unitOfWork.SetupGet(u => u.GraphDbRepository).Returns(_graphDb.Object);
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
+        {
+            _stored = _staged ?? _stored;
+            _staged = null;
+            _saves++;
+            return Task.CompletedTask;
+        });
+
+        var services = new ServiceCollection();
+        services.AddScoped(_ => _unitOfWork.Object);
+        _provider = services.BuildServiceProvider();
+    }
+
+    private AnnouncementTestNode Alice => _pair.Alice;
+
+    [Fact]
+    public async Task Given_NoAnnouncedChannel_When_Announcing_Then_NothingIsMade()
+    {
+        // Arrange (BOLT 7: others ignore the node_announcement of a node without an announced channel)
+        var service = CreateService();
+
+        // Act
+        var announcement = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(announcement);
+        Assert.Empty(Alice.Sink.NodeAnnouncements);
+        Assert.Empty(Alice.Relay.Queued);
+        Assert.Equal(0, _saves);
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncedChannel_When_Announcing_Then_SignedWithOurFieldsAndSavedFirst()
+    {
+        // Arrange
+        MarkAnnounced();
+        Alice.NodeOptions.Alias = "nltg-⚡";
+        Alice.NodeOptions.Color = "#102030";
+        _gossipOptions.AnnounceAddresses = ["node.example.com:9735", "203.0.113.5:9735"];
+        var service = CreateService();
+
+        // Act
+        var announcement = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert: fields
+        Assert.NotNull(announcement);
+        Assert.Equal(Alice.NodeId, announcement.NodeId);
+        Assert.Equal("nltg-⚡", announcement.GetAliasText());
+        Assert.Equal(new byte[] { 0x10, 0x20, 0x30 }, announcement.RgbColor.ToArray());
+        Assert.Equal((uint)s_now.ToUnixTimeSeconds(), announcement.Timestamp);
+        var addresses = AddressDescriptorCodec.DecodeList(announcement.Addresses.Span).Addresses;
+        Assert.Equal([AddressDescriptorType.IPv4, AddressDescriptorType.Dns], addresses.Select(a => a.Type));
+        Assert.Equal(Alice.NodeOptions.Features.GetNodeFeatures(FeatureContext.NodeAnnouncement).GetWireBytes(),
+                     announcement.Features.ToArray());
+        Assert.True(Alice.Verifier.Verify(announcement.GetSignatureHash(), announcement.Signature, Alice.NodeId));
+
+        // Saved as our node's graph row, then handed to the graph and the relay
+        Assert.Equal(1, _saves);
+        Assert.NotNull(_stored);
+        Assert.Equal(announcement.Timestamp, _stored.Timestamp);
+        Assert.Equal(announcement.GetBytes(), _stored.RawAnnouncement);
+        Assert.Same(announcement, Assert.Single(Alice.Sink.NodeAnnouncements));
+        Assert.Same(announcement, Assert.Single(Alice.Relay.Queued));
+        Assert.Same(announcement, service.Current);
+    }
+
+    [Fact]
+    public async Task Given_AStoredAnnouncement_When_RestartedInTheSameSecond_Then_TheTimestampStillIncreases()
+    {
+        // Arrange (BOLT 7: MUST set timestamp greater than any previous node_announcement it created)
+        MarkAnnounced();
+        var first = await CreateService().AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Act: a new process on the same database, same clock
+        var second = await CreateService().AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(first.Timestamp + 1, second.Timestamp);
+        Assert.Equal(second.Timestamp, _stored!.Timestamp);
+    }
+
+    [Fact]
+    public async Task Given_AStoredTimestampAheadOfTheClock_When_Announcing_Then_ItIsExceeded()
+    {
+        // Arrange: the clock went back since the last announcement
+        MarkAnnounced();
+        _stored = new GraphNodeRecord(Alice.NodeId, (uint)s_now.ToUnixTimeSeconds() + 3_600, [],
+                                      new byte[GraphNodeRecord.AliasLength], new byte[3], [], [0x00], s_now);
+
+        // Act
+        var announcement = await CreateService().AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal((uint)s_now.ToUnixTimeSeconds() + 3_601, announcement!.Timestamp);
+    }
+
+    [Fact]
+    public async Task Given_NothingChanged_When_AnnouncingAgain_Then_TheSameOneIsPublishedWithoutASave()
+    {
+        // Arrange
+        MarkAnnounced();
+        var service = CreateService();
+        var first = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+        _clock.Now = s_now.AddDays(1);
+
+        // Act
+        var second = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Same(first, second);
+        Assert.Equal(1, _saves);
+    }
+
+    [Fact]
+    public async Task Given_ANewAlias_When_AnnouncingAgain_Then_ANewerOneIsMade()
+    {
+        // Arrange
+        MarkAnnounced();
+        var service = CreateService();
+        var first = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+        Alice.NodeOptions.Alias = "renamed";
+
+        // Act
+        var second = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotSame(first, second);
+        Assert.Equal("renamed", second!.GetAliasText());
+        Assert.True(second.Timestamp > first!.Timestamp);
+        Assert.Equal(2, _saves);
+    }
+
+    [Fact]
+    public async Task Given_TheRefreshIntervalPassed_When_AnnouncingAgain_Then_ItIsSignedAgain()
+    {
+        // Arrange (a node_announcement older than two weeks may be pruned by peers)
+        MarkAnnounced();
+        var service = CreateService();
+        var first = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+        _clock.Now = s_now + _gossipOptions.NodeAnnouncementRefreshInterval;
+
+        // Act
+        var second = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal((uint)_clock.Now.ToUnixTimeSeconds(), second!.Timestamp);
+        Assert.True(second.Timestamp > first!.Timestamp);
+    }
+
+    [Fact]
+    public async Task Given_TheSaveFails_When_Announcing_Then_NothingIsPublished()
+    {
+        // Arrange
+        MarkAnnounced();
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).ThrowsAsync(new InvalidOperationException("disk full"));
+        var service = CreateService();
+
+        // Act
+        service.RequestAnnouncement();
+        await service.LastRequest;
+
+        // Assert
+        Assert.Null(service.Current);
+        Assert.Empty(Alice.Sink.NodeAnnouncements);
+        Assert.Empty(Alice.Relay.Queued);
+    }
+
+    [Fact]
+    public async Task Given_OurOnionServiceComesUp_When_ItsSourceReportsIt_Then_ANewAnnouncementCarriesIt()
+    {
+        // Arrange
+        const string onion = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+        MarkAnnounced();
+        _gossipOptions.AnnounceAddresses = ["203.0.113.5:9735"];
+        var source = new FakeAddressSource();
+        var service = CreateService(source);
+        var before = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        source.Set(AddressDescriptor.FromHost(AddressDescriptorType.TorV3, onion, 9735));
+        await service.LastRequest;
+
+        // Assert: re-signed at once, IPv4 then Tor v3 (BOLT 7 ascending type order)
+        Assert.NotNull(before);
+        var after = service.Current;
+        Assert.NotNull(after);
+        Assert.NotSame(before, after);
+        var addresses = AddressDescriptorCodec.DecodeList(after.Addresses.Span).Addresses;
+        Assert.Equal([AddressDescriptorType.IPv4, AddressDescriptorType.TorV3], addresses.Select(a => a.Type));
+        Assert.Equal(onion, addresses[1].Host);
+        Assert.Equal(2, Alice.Sink.NodeAnnouncements.Count);
+    }
+
+    [Fact]
+    public async Task Given_NoFundingRates_When_Announcing_Then_TheAnnouncementHasNoExtraData()
+    {
+        // Arrange (liquidity ads, NL-850: we do not sell by default)
+        MarkAnnounced();
+        var service = CreateService();
+
+        // Act
+        var announcement = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(announcement);
+        Assert.True(announcement.ExtraData.IsEmpty);
+        Assert.False(NodeAnnouncementRates.TryRead(announcement.ExtraData.Span, out _));
+    }
+
+    [Fact]
+    public async Task Given_FundingRates_When_Announcing_Then_TheSignedAnnouncementCarriesOurRates()
+    {
+        // Arrange
+        MarkAnnounced();
+        Alice.NodeOptions.LiquidityAds.FundingRates = [CreateRate(100_000, 500_000)];
+        var service = CreateService();
+
+        // Act
+        var announcement = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert: fd053b || len || will_fund_rates after the addresses, covered by the signature and stored
+        Assert.NotNull(announcement);
+        Assert.Equal(0xfd, announcement.ExtraData.Span[0]);
+        Assert.True(NodeAnnouncementRates.TryRead(announcement.ExtraData.Span, out var rates));
+        Assert.Equal(Alice.NodeOptions.LiquidityAds.GetWillFundRates(), rates);
+        Assert.True(rates.Supports(LiquidityPaymentType.FromChannelBalance));
+        Assert.True(Alice.Verifier.Verify(announcement.GetSignatureHash(), announcement.Signature, Alice.NodeId));
+        Assert.True(NodeAnnouncementRates.TryReadFromAnnouncement(_stored!.RawAnnouncement, out var storedRates));
+        Assert.Equal(rates, storedRates);
+    }
+
+    [Fact]
+    public async Task Given_OurRatesChange_When_AnnouncingAgain_Then_ANewerOneCarriesTheNewRates()
+    {
+        // Arrange
+        MarkAnnounced();
+        Alice.NodeOptions.LiquidityAds.FundingRates = [CreateRate(100_000, 500_000)];
+        var service = CreateService();
+        var first = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+        Alice.NodeOptions.LiquidityAds.FundingRates = [CreateRate(200_000, 1_000_000)];
+
+        // Act
+        var second = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotSame(first, second);
+        Assert.True(second!.Timestamp > first!.Timestamp);
+        Assert.True(NodeAnnouncementRates.TryRead(second.ExtraData.Span, out var rates));
+        Assert.Equal(200_000u, Assert.Single(rates.Rates).MinAmountSat);
+        Assert.Equal(2, _saves);
+    }
+
+    [Fact]
+    public async Task Given_WeStopSelling_When_AnnouncingAgain_Then_ANewerOneHasNoRates()
+    {
+        // Arrange
+        MarkAnnounced();
+        Alice.NodeOptions.LiquidityAds.FundingRates = [CreateRate(100_000, 500_000)];
+        var service = CreateService();
+        var first = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+        Alice.NodeOptions.LiquidityAds.FundingRates = [];
+
+        // Act
+        var second = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotSame(first, second);
+        Assert.True(second!.ExtraData.IsEmpty);
+        Assert.Equal(2, _saves);
+    }
+
+    [Fact]
+    public void Given_ConfiguredAndRuntimeAddresses_When_Merged_Then_EachIsKeptOnceInTypeOrder()
+    {
+        // Arrange
+        var onion = AddressDescriptor.FromHost(AddressDescriptorType.TorV3,
+                                               "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion", 9735);
+        var dns = AddressDescriptor.FromDnsHostname("node.example.com", 9735);
+        var ip = AddressDescriptor.FromIpAddress(System.Net.IPAddress.Parse("203.0.113.5"), 9735);
+
+        // Act: the configured onion is the same address; a second DNS name would break BOLT 7
+        var merged = NodeAnnouncementService.MergeAddresses(
+            [ip, dns, onion], [onion, AddressDescriptor.FromDnsHostname("other.example.com", 9735)]);
+
+        // Assert
+        Assert.Equal([ip, onion, dns], merged);
+    }
+
+    public void Dispose()
+    {
+        _provider.Dispose();
+        _pair.Dispose();
+    }
+
+    private NodeAnnouncementService CreateService(FakeAddressSource? addressSource = null) =>
+        new(Alice.Channels, Alice.Signer, NullLogger<NodeAnnouncementService>.Instance,
+            new OwnGossipPublisher(Alice.Sink, Alice.Relay), _provider, Options.Create(Alice.NodeOptions),
+            Options.Create(_gossipOptions), _clock, addressSource is null ? null : [addressSource]);
+
+    private sealed class FakeAddressSource : IAnnouncedAddressSource
+    {
+        private IReadOnlyList<AddressDescriptor> _addresses = [];
+
+        public event EventHandler? AnnouncedAddressesChanged;
+
+        public IReadOnlyList<AddressDescriptor> GetAnnouncedAddresses() => _addresses;
+
+        public void Set(AddressDescriptor descriptor)
+        {
+            _addresses = [descriptor];
+            AnnouncedAddressesChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private static FundingRateOptions CreateRate(uint min, uint max) =>
+        new()
+        {
+            MinAmountSat = min,
+            MaxAmountSat = max,
+            FundingWeight = 550,
+            FeeBasis = 100,
+            FeeBaseSat = 5_000,
+            ChannelCreationFeeSat = 1_000
+        };
+
+    /// <summary>Both halves of the channel's announcement_signatures exchanged.</summary>
+    private void MarkAnnounced()
+    {
+        var signature = new CompactSignature(Enumerable.Repeat((byte)0x01, 64).ToArray());
+        Alice.Channel.SetRemoteAnnouncementSignatures(new ChannelAnnouncementSignatures(signature, signature));
+        Alice.Channel.MarkAnnouncementSignaturesSent(s_now);
+    }
+
+    private sealed class SettableTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+}

@@ -1,11 +1,15 @@
+using System.Threading.Channels;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Handlers;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
@@ -16,8 +20,21 @@ using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
+using Domain.Persistence.Interfaces;
 using Interfaces;
 
+/// <summary>
+/// The long-poll behind <c>openchannel</c>: answers when the channel's funding is published and when the channel is
+/// ready.
+/// </summary>
+/// <remarks>
+/// With <see cref="OpenChannelClientSubscriptionRequest.ReportFundingChanges"/> (NL-535) it answers as soon as the
+/// channel, still waiting for its funding (<see cref="ChannelState.V1FundingSigned"/>), runs on a published funding
+/// transaction other than the one the client printed last: at once for a dual-funded open whose first attempt was
+/// published before the call, and on every RBF attempt of either side (a dual-funded attempt counts once its
+/// <c>BroadcastTransactions</c> row exists, so an attempt still being signed is never reported). A peer that disconnects
+/// once the funding is signed no longer fails the wait: the open continues and the channel reestablishes.
+/// </remarks>
 public class OpenChannelClientSubscriptionHandler :
     IClientCommandHandler<OpenChannelClientSubscriptionRequest, OpenChannelClientSubscriptionResponse>
 {
@@ -25,6 +42,7 @@ public class OpenChannelClientSubscriptionHandler :
     private readonly ILogger<OpenChannelClientSubscriptionHandler> _logger;
     private readonly IPeerManager _peerManager;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
+    private readonly IServiceScopeFactory? _serviceScopeFactory;
 
     private ChannelId _channelId;
     private IPeerService? _peerService;
@@ -34,12 +52,14 @@ public class OpenChannelClientSubscriptionHandler :
 
     public OpenChannelClientSubscriptionHandler(IChannelMemoryRepository channelMemoryRepository,
                                                 ILogger<OpenChannelClientSubscriptionHandler> logger,
-                                                IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository)
+                                                IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository,
+                                                IServiceScopeFactory? serviceScopeFactory = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
         _peerManager = peerManager;
         _utxoMemoryRepository = utxoMemoryRepository;
+        _serviceScopeFactory = serviceScopeFactory;
     }
 
     /// <inheritdoc/>
@@ -54,45 +74,63 @@ public class OpenChannelClientSubscriptionHandler :
         if (!_channelMemoryRepository.TryGetChannel(_channelId, out var channel))
             throw new ClientException(ErrorCodes.InvalidChannel, $"Channel with Id {_channelId} not found");
 
-        var peer = _peerManager.GetPeer(channel.RemoteNodeId) ?? throw new ClientException(ErrorCodes.InvalidOperation,
-                       $"Peer with NodeId {channel.RemoteNodeId} is not connected");
-
-        // Create a task completion source for the response
-        var tsc = new TaskCompletionSource<OpenChannelClientSubscriptionResponse>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
         // If it's in a state we consider Open, return immediately
-        if (channel.State is ChannelState.ReadyForUs or ChannelState.ReadyForThem or ChannelState.Open)
-        {
-            return new OpenChannelClientSubscriptionResponse(channel.ChannelId)
-            {
-                ChannelState = ChannelState.ReadyForUs,
-                TxId = channel.FundingOutput?.TransactionId,
-                Index = channel.FundingOutput?.Index
-            };
-        }
+        if (IsReady(channel))
+            return CreateResponse(channel, ChannelState.ReadyForUs);
+
+        // Once the funding is signed the open no longer needs the peer to be connected (it reestablishes)
+        var fundingSigned = channel.State == ChannelState.V1FundingSigned;
+        var peer = _peerManager.GetPeer(channel.RemoteNodeId);
+        if (peer is null && !fundingSigned)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      $"Peer with NodeId {channel.RemoteNodeId} is not connected");
 
         // Check if the channel is already in a state we care about
         var lockedUtxos = _utxoMemoryRepository.GetLockedUtxosForChannel(_channelId);
-        if (channel.State is not ChannelState.V1FundingSigned && lockedUtxos.Count == 0)
+        if (!fundingSigned && lockedUtxos.Count == 0)
             throw new ClientException(ErrorCodes.InvalidOperation, $"No locked UTXOs found for channel {_channelId}");
+
+        var failure = new TaskCompletionSource<OpenChannelClientSubscriptionResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var updates = Channel.CreateUnbounded<ChannelModel>(new UnboundedChannelOptions { SingleReader = true });
+        var remoteNodeId = channel.RemoteNodeId;
 
         try
         {
-            if (!peer.TryGetPeerService(out _peerService))
-                throw new ClientException(ErrorCodes.InvalidOperation, "Error getting peerService from peer");
+            if (peer is not null)
+            {
+                if (!peer.TryGetPeerService(out _peerService))
+                    throw new ClientException(ErrorCodes.InvalidOperation, "Error getting peerService from peer");
 
-            // Subscribe to the events
-            _peerService.OnAttentionMessageReceived += AttentionMessageHandlerEnvelope;
-            _peerService.OnDisconnect += PeerDisconnectionEnvelope;
-            _peerService.OnExceptionRaised += ExceptionRaisedEnvelope;
+                // Subscribe to the events
+                _peerService.OnAttentionMessageReceived += AttentionMessageHandlerEnvelope;
+                _peerService.OnDisconnect += PeerDisconnectionEnvelope;
+                _peerService.OnExceptionRaised += ExceptionRaisedEnvelope;
+            }
+
             _channelMemoryRepository.OnChannelUpdated += ChannelUpdatedHandlerEnvelope;
 
-            return await tsc.Task;
+            // Subscribed first, so an update between the read and the subscription is not lost
+            if (request.ReportFundingChanges && _channelMemoryRepository.TryGetChannel(_channelId, out var current)
+                                             && await TryAnswerAsync(current, request, true) is { } immediate)
+                return immediate;
+
+            while (true)
+            {
+                var next = updates.Reader.ReadAsync(ct).AsTask();
+                var completed = await Task.WhenAny(next, failure.Task);
+                if (completed == failure.Task)
+                    return await failure.Task;
+
+                if (await TryAnswerAsync(await next, request, false) is { } answer)
+                    return answer;
+            }
         }
         catch
         {
-            if (!_channelMemoryRepository.TryGetChannel(_channelId, out channel)
+            // A client that stops waiting (Ctrl-C after the txid) leaves the open as it is
+            if (ct.IsCancellationRequested
+             || !_channelMemoryRepository.TryGetChannel(_channelId, out channel)
              || channel.State is ChannelState.ReadyForUs
                               or ChannelState.ReadyForThem
                               or ChannelState.Open
@@ -114,17 +152,78 @@ public class OpenChannelClientSubscriptionHandler :
 
         // Envelopes for the events
         void AttentionMessageHandlerEnvelope(object? _, AttentionMessageEventArgs args) =>
-            HandleAttentionMessage(args, tsc);
+            HandleAttentionMessage(args, failure);
 
         void PeerDisconnectionEnvelope(object? _, PeerDisconnectedEventArgs args) =>
-            HandlePeerDisconnection(args, channel.RemoteNodeId, tsc);
+            HandlePeerDisconnection(args, remoteNodeId, failure);
 
         void ExceptionRaisedEnvelope(object? _, Exception e) =>
-            HandleExceptionRaised(e, tsc);
+            HandleExceptionRaised(e, failure);
 
-        void ChannelUpdatedHandlerEnvelope(object? _, ChannelUpdatedEventArgs args) =>
-            HandleChannelUpdated(args, tsc);
+        void ChannelUpdatedHandlerEnvelope(object? _, ChannelUpdatedEventArgs args)
+        {
+            if (args.Channel.ChannelId == _channelId)
+                updates.Writer.TryWrite(args.Channel);
+        }
     }
+
+    /// <summary>
+    /// The answer for the channel as it is now, or null to keep waiting. <paramref name="beforeAnyUpdate"/> is the
+    /// check at the start of the call, which only a <see cref="OpenChannelClientSubscriptionRequest.ReportFundingChanges"/>
+    /// request makes.
+    /// </summary>
+    private async Task<OpenChannelClientSubscriptionResponse?> TryAnswerAsync(
+        ChannelModel channel, OpenChannelClientSubscriptionRequest request, bool beforeAnyUpdate)
+    {
+        if (IsReady(channel))
+            return CreateResponse(channel, ChannelState.ReadyForUs);
+
+        if (channel.State != ChannelState.V1FundingSigned)
+            return null;
+
+        // An older client: every update of a channel waiting for its funding is an answer
+        if (!request.ReportFundingChanges)
+            return beforeAnyUpdate ? null : CreateResponse(channel, ChannelState.V1FundingSigned);
+
+        if (channel.FundingOutput?.TransactionId is not { } txId || txId == request.KnownFundingTxId)
+            return null;
+
+        // A dual-funded RBF attempt moves the channel's funding output while it is being signed; it is reported once
+        // it is published (its broadcast row is saved with both tx_signatures)
+        if (channel.Version == ChannelVersion.V2 && !await IsPublishedAsync(txId))
+            return null;
+
+        return CreateResponse(channel, ChannelState.V1FundingSigned);
+    }
+
+    private async Task<bool> IsPublishedAsync(TxId txId)
+    {
+        if (_serviceScopeFactory is null)
+            return true;
+
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            return await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(txId) is not null;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Could not read the broadcast of funding {TxId}; reporting it", txId);
+            return true;
+        }
+    }
+
+    private static bool IsReady(ChannelModel channel) =>
+        channel.State is ChannelState.ReadyForUs or ChannelState.ReadyForThem or ChannelState.Open;
+
+    private static OpenChannelClientSubscriptionResponse CreateResponse(ChannelModel channel, ChannelState state) =>
+        new(channel.ChannelId)
+        {
+            ChannelState = state,
+            TxId = channel.FundingOutput?.TransactionId,
+            Index = channel.FundingOutput?.Index
+        };
 
     private void HandleAttentionMessage(AttentionMessageEventArgs args,
                                         TaskCompletionSource<OpenChannelClientSubscriptionResponse> tsc)
@@ -144,6 +243,15 @@ public class OpenChannelClientSubscriptionHandler :
     {
         if (args.PeerPubKey != peerPubKey)
             return;
+
+        // A signed funding survives the disconnection: the channel waits for it and reestablishes (NL-535)
+        if (_channelMemoryRepository.TryGetChannel(_channelId, out var channel)
+         && channel.State == ChannelState.V1FundingSigned)
+        {
+            _logger.LogInformation("Peer {Peer} disconnected while channel {ChannelId} waits for its funding; still "
+                                 + "waiting", peerPubKey, _channelId);
+            return;
+        }
 
         if (args.Exception is null)
         {
@@ -169,31 +277,5 @@ public class OpenChannelClientSubscriptionHandler :
 
         _logger.LogError("Exception raised while opening channel: {message}", e.Message);
         tsc.TrySetException(e);
-    }
-
-    private void HandleChannelUpdated(ChannelUpdatedEventArgs args,
-                                      TaskCompletionSource<OpenChannelClientSubscriptionResponse> tsc)
-    {
-        if (args.Channel.ChannelId != _channelId)
-            return;
-
-        if (args.Channel.State == ChannelState.V1FundingSigned)
-        {
-            tsc.TrySetResult(new OpenChannelClientSubscriptionResponse(args.Channel.ChannelId)
-            {
-                ChannelState = ChannelState.V1FundingSigned,
-                TxId = args.Channel.FundingOutput?.TransactionId,
-                Index = args.Channel.FundingOutput?.Index
-            });
-        }
-        else if (args.Channel.State is ChannelState.ReadyForUs or ChannelState.ReadyForThem)
-        {
-            tsc.TrySetResult(new OpenChannelClientSubscriptionResponse(args.Channel.ChannelId)
-            {
-                ChannelState = ChannelState.ReadyForUs,
-                TxId = args.Channel.FundingOutput?.TransactionId,
-                Index = args.Channel.FundingOutput?.Index
-            });
-        }
     }
 }

@@ -67,19 +67,20 @@ internal sealed class ConnectPeerIpcHandler : IIpcCommandHandler
         }
         catch (FormatException fe)
         {
-            _logger.LogWarning(fe, "Invalid peer address format");
+            IpcRequestLog.LogRefused(_logger, Command, $"Invalid address format: {fe.Message}");
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.InvalidAddress,
                                                        $"Invalid address format: {fe.Message}");
         }
         catch (InvalidOperationException oe)
         {
-            _logger.LogInformation(oe, "The operation could not be completed");
+            IpcRequestLog.LogRefusedOrFault(_logger, Command, $"The operation could not be completed: {oe.Message}",
+                                            oe);
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.InvalidOperation,
                                                        $"The operation could not be completed: {oe.Message}");
         }
         catch (ConnectionException ce)
         {
-            _logger.LogError(ce, "Failed to connect to peer");
+            IpcRequestLog.LogRefused(_logger, Command, $"Connection failed: {ce.Message}");
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.ConnectionError,
                                                        $"Connection failed: {ce.Message}");
         }

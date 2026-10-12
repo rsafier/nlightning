@@ -1,0 +1,731 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace NLightning.Client.Handlers;
+
+using Domain.Accounting.Books;
+using Domain.Accounting.Books.Export;
+using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Reports;
+using Domain.Client.Enums;
+using Ipc;
+using Printers;
+using Transport.Ipc.Requests;
+using Transport.Ipc.Responses;
+
+/// <summary>
+/// The <c>accounting</c> verb family of the CLI (NL-602 A2): <c>accounting report &lt;kind&gt; [...]</c> (ClientCommand
+/// 43), <c>accounting export --format hledger|beancount|csv [--since] [--until] [--output &lt;file&gt;]</c> (44) and
+/// <c>accounting reconcile|rebuild|verify</c> (45); <c>accounting prices import|list|fetch</c> (45, A3-T2:
+/// <see cref="AccountingPricesCommands"/>); since A3-T5 also <c>accounting close &lt;period&gt; [--force]</c>,
+/// <c>close list</c>, <c>close show &lt;period&gt;</c> and <c>rebuild --book financial</c> (45); since A3-T4
+/// <c>accounting lots import &lt;file&gt;</c> (45, <see cref="AccountingLotsCommands"/>).
+/// </summary>
+/// <remarks>
+/// An export is fetched page by page and written by the client, to standard output or to <c>--output</c> (a path on
+/// the client's machine, replaced when it exists); the daemon never writes a file (plan §11).
+/// </remarks>
+internal static class AccountingBooksCommands
+{
+    /// <summary>The verb.</summary>
+    internal const string Verb = "accounting";
+
+    /// <summary>The usage of the verb family.</summary>
+    internal const string Usage =
+        "accounting report <balance|income|channels|peers|fees|register> [options] | accounting report "
+      + "<gains|unrealized|lots|unvalued|unclassified|risk> [options] (financial book, --currency, --price) | "
+      + "accounting export --format <hledger|beancount|csv> [--book operational|financial] [--currency <code>] "
+      + "[--since <time>] [--until <time>] [--output <file>] | accounting "
+      + "<reconcile|rebuild [--book operational|financial]|verify> | accounting close <period> [--force] | accounting "
+      + "close list | accounting close show <period> | " + AccountingClassifyCommands.Usage + " | "
+      + AccountingPricesCommands.Usage + " | " + AccountingLotsCommands.Usage;
+
+    /// <summary>The largest register page.</summary>
+    internal const int MaxLimit = 1_000;
+
+    /// <summary>The export's page size.</summary>
+    internal const int ExportPageSize = 1_000;
+
+    private static readonly Dictionary<string, AccountingReportKind> s_reportKinds =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["balance"] = AccountingReportKind.BalanceSheet,
+            ["balance-sheet"] = AccountingReportKind.BalanceSheet,
+            ["balancesheet"] = AccountingReportKind.BalanceSheet,
+            ["income"] = AccountingReportKind.IncomeStatement,
+            ["income-statement"] = AccountingReportKind.IncomeStatement,
+            ["incomestatement"] = AccountingReportKind.IncomeStatement,
+            ["channels"] = AccountingReportKind.Channels,
+            ["peers"] = AccountingReportKind.Peers,
+            ["fees"] = AccountingReportKind.Fees,
+            ["register"] = AccountingReportKind.Register,
+            ["gains"] = AccountingReportKind.RealizedGains,
+            ["realized"] = AccountingReportKind.RealizedGains,
+            ["realized-gains"] = AccountingReportKind.RealizedGains,
+            ["unrealized"] = AccountingReportKind.UnrealizedGains,
+            ["unrealized-gains"] = AccountingReportKind.UnrealizedGains,
+            ["lots"] = AccountingReportKind.Lots,
+            ["unvalued"] = AccountingReportKind.Unvalued,
+            ["unclassified"] = AccountingReportKind.Unclassified,
+            ["risk"] = AccountingReportKind.RiskCapital,
+            ["risk-capital"] = AccountingReportKind.RiskCapital
+        };
+
+    /// <summary>The report kinds as the usage names them.</summary>
+    private const string ReportKindNames =
+        "balance, income, channels, peers, fees, register, gains, unrealized, lots, unvalued, unclassified or risk";
+
+    /// <summary>Whether <paramref name="cmd"/> is the <c>accounting</c> verb.</summary>
+    internal static bool IsAccounting(string cmd) => cmd == Verb;
+
+    /// <summary>The arguments of an <c>accounting</c> command.</summary>
+    internal sealed record AccountingArguments(
+        string Subcommand,
+        AccountingReportIpcRequest? Report = null,
+        AccountingExportIpcRequest? Export = null,
+        string? OutputPath = null,
+        AccountingAdminIpcRequest? Admin = null,
+        string? PricesFile = null,
+        string? LotsFile = null);
+
+    /// <summary>Checks the arguments; an error message with the usage, or null when they are valid.</summary>
+    internal static string? Validate(string[] commandArgs) =>
+        Parse(commandArgs, out var error) is null ? $"{error} Usage: {Usage}" : null;
+
+    /// <summary>
+    /// Parses <c>accounting &lt;subcommand&gt; [options]</c>; options are <c>--name value</c> or <c>--name=value</c>, a
+    /// time is Unix seconds or an ISO date, a channel a 64-hex channel id or a short_channel_id.
+    /// </summary>
+    /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
+    internal static AccountingArguments? Parse(string[] commandArgs, out string? error)
+    {
+        error = null;
+        if (commandArgs.Length == 0)
+        {
+            error = "Missing accounting subcommand.";
+            return null;
+        }
+
+        var subcommand = commandArgs[0].ToLowerInvariant();
+        switch (subcommand)
+        {
+            case "report":
+                return ParseReport(commandArgs[1..], out error);
+            case "export":
+                return ParseExport(commandArgs[1..], out error);
+            case "classify":
+                return AccountingClassifyCommands.Parse(commandArgs[1..], out error) is { } classify
+                           ? new AccountingArguments(subcommand, Admin: classify)
+                           : null;
+            case "prices":
+                return AccountingPricesCommands.Parse(commandArgs[1..], out error);
+            case "lots":
+                return AccountingLotsCommands.Parse(commandArgs[1..], out error);
+            case "close":
+                return ParseClose(commandArgs[1..], out error);
+            case "rebuild" when commandArgs.Length > 1:
+                return ParseRebuild(commandArgs[1..], out error);
+            case "reconcile":
+            case "rebuild":
+            case "verify":
+                if (commandArgs.Length > 1)
+                {
+                    error = $"Unexpected argument '{commandArgs[1]}'.";
+                    return null;
+                }
+
+                var action = subcommand switch
+                {
+                    "reconcile" => AccountingAdminAction.Reconcile,
+                    "rebuild" => AccountingAdminAction.Rebuild,
+                    _ => AccountingAdminAction.Verify
+                };
+                return new AccountingArguments(subcommand,
+                                               Admin: new AccountingAdminIpcRequest { Action = (int)action });
+            default:
+                error = $"Unknown accounting subcommand '{commandArgs[0]}'.";
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Parses <c>close &lt;period&gt; [--force]</c>, <c>close list</c> and <c>close show &lt;period&gt;</c> (A3-T5); the
+    /// period is <c>YYYY-MM</c> or <c>YYYY-MM-DD..YYYY-MM-DD</c> (the last day included).
+    /// </summary>
+    private static AccountingArguments? ParseClose(string[] args, out string? error)
+    {
+        error = null;
+        if (args.Length == 0)
+        {
+            error = "Missing period: accounting close <period> [--force] | close list | close show <period>.";
+            return null;
+        }
+
+        var verb = args[0].ToLowerInvariant();
+        if (verb == "list")
+        {
+            if (args.Length > 1)
+            {
+                error = $"Unexpected argument '{args[1]}'.";
+                return null;
+            }
+
+            return new AccountingArguments("close",
+                                           Admin: new AccountingAdminIpcRequest
+                                           {
+                                               Action = (int)AccountingAdminAction.CloseList
+                                           });
+        }
+
+        var show = verb == "show";
+        var rest = show ? args[1..] : args;
+        string? period = null;
+        var force = false;
+        foreach (var arg in rest)
+        {
+            if (!show && string.Equals(arg, "--force", StringComparison.OrdinalIgnoreCase))
+            {
+                force = true;
+                continue;
+            }
+
+            if (period is not null || arg.StartsWith("--", StringComparison.Ordinal))
+            {
+                error = $"Unexpected argument '{arg}'.";
+                return null;
+            }
+
+            period = arg;
+        }
+
+        if (!AccountingPeriodRange.TryParse(period, out var range, out error))
+            return null;
+
+        return new AccountingArguments("close",
+                                       Admin: new AccountingAdminIpcRequest
+                                       {
+                                           Action = (int)(show
+                                                              ? AccountingAdminAction.CloseShow
+                                                              : AccountingAdminAction.Close),
+                                           Period = range!.PeriodId,
+                                           Force = force
+                                       });
+    }
+
+    /// <summary>Parses <c>rebuild --book operational|financial</c> (A3-T5).</summary>
+    private static AccountingArguments? ParseRebuild(string[] args, out string? error)
+    {
+        var options = ParseOptions(args, ["--book"], out error);
+        if (options is null)
+            return null;
+
+        var value = options[0].Value;
+        AccountingBook? book = value.ToLowerInvariant() switch
+        {
+            "operational" => AccountingBook.Operational,
+            "financial" => AccountingBook.Financial,
+            _ => null
+        };
+        if (book is not { } chosen)
+        {
+            error = $"Unknown book '{value}': expected operational or financial.";
+            return null;
+        }
+
+        return new AccountingArguments("rebuild",
+                                       Admin: new AccountingAdminIpcRequest
+                                       {
+                                           Action = (int)AccountingAdminAction.Rebuild,
+                                           Book = (int)chosen
+                                       });
+    }
+
+    /// <summary>
+    /// Runs a validated <c>accounting</c> command and prints its result (an export goes to <paramref name="output"/>
+    /// or its <c>--output</c> file).
+    /// </summary>
+    internal static async Task RunAsync(string[] commandArgs, NamedPipeIpcClient client, TextWriter output,
+                                        CancellationToken cancellationToken)
+    {
+        var arguments = Parse(commandArgs, out _)!;
+        if (arguments.Report is { } report)
+        {
+            new AccountingReportPrinter(output).Print(await client.AccountingReportAsync(report, cancellationToken));
+            return;
+        }
+
+        if (arguments.Export is { } export)
+        {
+            if (arguments.OutputPath is not { } path)
+            {
+                await ExportAsync(client.AccountingExportAsync, export, output, cancellationToken);
+                return;
+            }
+
+            var fullPath = Path.GetFullPath(path);
+            var entries = await WriteExportFileAsync(
+                fullPath, writer => ExportAsync(client.AccountingExportAsync, export, writer, cancellationToken),
+                cancellationToken);
+            output.WriteLine(string.Format(CultureInfo.InvariantCulture, "Exported {0} entr{1} to {2}", entries,
+                                           entries == 1 ? "y" : "ies", fullPath));
+            return;
+        }
+
+        if (arguments.Admin?.Prices is not null)
+        {
+            await AccountingPricesCommands.RunAsync(arguments, client.AccountingAdminAsync, output, cancellationToken);
+            return;
+        }
+
+        if (arguments.LotsFile is not null)
+        {
+            var lots = await AccountingLotsCommands.BuildRequestAsync(arguments, cancellationToken);
+            new AccountingAdminPrinter(output).Print(await client.AccountingAdminAsync(lots, cancellationToken));
+            return;
+        }
+
+        new AccountingAdminPrinter(output).Print(await client.AccountingAdminAsync(arguments.Admin!, cancellationToken));
+    }
+
+    /// <summary>
+    /// Writes an export to <paramref name="fullPath"/> (NL-679, SECURITY_REVIEW SR-26): first to a new temporary file
+    /// next to it, <c>&lt;file&gt;.&lt;random&gt;.part</c>, created exclusively (<see cref="FileMode.CreateNew"/>: an
+    /// existing file or a planted symlink at that name makes the create fail, it is never followed or truncated) and
+    /// owner-only (0600 on Unix, whatever the umask), then renamed over the target (the rename replaces a link at the
+    /// target, never its target), so an interrupted export never leaves a truncated file in its place. The temporary
+    /// file is removed when writing fails.
+    /// </summary>
+    /// <returns>What <paramref name="write"/> returned (the number of entries).</returns>
+    internal static async Task<int> WriteExportFileAsync(string fullPath, Func<TextWriter, Task<int>> write,
+                                                         CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        var temporary = $"{fullPath}.{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8))}.part";
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None
+        };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        // Throws (and leaves whatever is there alone) when the name exists, a symlink included
+        var stream = new FileStream(temporary, options);
+        try
+        {
+            int entries;
+            await using (stream)
+            await using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+            {
+                entries = await write(writer);
+                await writer.FlushAsync(cancellationToken);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporary, fullPath, overwrite: true);
+            return entries;
+        }
+        catch
+        {
+            TryDelete(temporary);
+            throw;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            // The file we created (a path, not a link we followed)
+            File.Delete(path);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Left behind; the next export uses another random name
+        }
+    }
+
+    /// <summary>
+    /// Fetches every page of an export from cursor 0 and writes their text in order.
+    /// </summary>
+    /// <returns>How many entries the pages read.</returns>
+    internal static async Task<int> ExportAsync(
+        Func<AccountingExportIpcRequest, CancellationToken, Task<AccountingExportIpcResponse>> fetch,
+        AccountingExportIpcRequest request, TextWriter output, CancellationToken cancellationToken)
+    {
+        var after = 0L;
+        int? afterAdjustment = null;
+        var entries = 0;
+        while (true)
+        {
+            var page = await fetch(new AccountingExportIpcRequest
+            {
+                Format = request.Format,
+                SinceUnixSeconds = request.SinceUnixSeconds,
+                UntilUnixSeconds = request.UntilUnixSeconds,
+                AfterLedgerSeq = after,
+                Limit = request.Limit,
+                Book = request.Book,
+                Currency = request.Currency,
+                AfterAdjustment = afterAdjustment
+            }, cancellationToken);
+            await output.WriteAsync(page.Text.AsMemory(), cancellationToken);
+            entries += page.EntryCount;
+
+            // The financial book pages by (sequence, adjustment): a page may end inside one sequence's adjustments
+            var advanced = page.NextAfter > after
+                        || (page.NextAfterAdjustment is { } next && page.NextAfter == after
+                                                                 && next > (afterAdjustment ?? -1));
+            if (!page.HasMore || !advanced)
+                break;
+
+            (after, afterAdjustment) = (page.NextAfter, page.NextAfterAdjustment);
+        }
+
+        await output.FlushAsync(cancellationToken);
+        return entries;
+    }
+
+    private static AccountingArguments? ParseReport(string[] args, out string? error)
+    {
+        error = null;
+        if (args.Length == 0 || args[0].StartsWith("--", StringComparison.Ordinal))
+        {
+            error = $"Missing report kind: {ReportKindNames}.";
+            return null;
+        }
+
+        if (!s_reportKinds.TryGetValue(args[0], out var kind))
+        {
+            error = $"Unknown report '{args[0]}': expected {ReportKindNames}.";
+            return null;
+        }
+
+        string[] allowed = kind switch
+        {
+            AccountingReportKind.BalanceSheet => ["--at", "--until", "--book", "--currency", "--price"],
+            AccountingReportKind.IncomeStatement => ["--since", "--until", "--book", "--currency"],
+            AccountingReportKind.Fees => ["--since", "--until"],
+            AccountingReportKind.Channels or AccountingReportKind.Peers => ["--since", "--until", "--channel"],
+            AccountingReportKind.RealizedGains => ["--since", "--until", "--by", "--currency"],
+            AccountingReportKind.UnrealizedGains or AccountingReportKind.Lots =>
+                ["--after", "--limit", "--currency", "--price"],
+            AccountingReportKind.Unvalued => ["--limit"],
+            AccountingReportKind.Unclassified => ["--since", "--until", "--channel", "--kind", "--after", "--limit"],
+            AccountingReportKind.RiskCapital => ["--currency", "--price"],
+            _ =>
+            [
+                "--since", "--until", "--channel", "--account", "--kind", "--after", "--limit", "--book"
+            ]
+        };
+        var options = ParseOptions(args[1..], allowed, out error);
+        if (options is null)
+            return null;
+
+        var request = new AccountingReportIpcRequest { Kind = (int)kind };
+        List<int>? kinds = null;
+        foreach (var (name, value) in options)
+        {
+            switch (name)
+            {
+                case "--since":
+                    if (!TryParseTime(name, value, out var since, out error))
+                        return null;
+                    request.SinceUnixSeconds = since;
+                    break;
+                case "--until":
+                case "--at":
+                    if (!TryParseTime(name, value, out var until, out error))
+                        return null;
+                    request.UntilUnixSeconds = until;
+                    break;
+                case "--channel":
+                    request.Channel = value;
+                    break;
+                case "--account":
+                    request.Account = value;
+                    break;
+                case "--kind":
+                    kinds ??= [];
+                    foreach (var text in value.Split(',', StringSplitOptions.TrimEntries
+                                                        | StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (!AccountingCommands.TryParseKind(text, out var eventKind))
+                        {
+                            error = $"Unknown kind '{text}': expected one of "
+                                  + string.Join(", ", Enum.GetNames<AccountingEventKind>()) + ".";
+                            return null;
+                        }
+
+                        if (!kinds.Contains(eventKind))
+                            kinds.Add(eventKind);
+                    }
+
+                    break;
+                case "--after":
+                    // The financial book's cursor is <sequence>:<adjustment> (A3-T6); the lots' is a lot id
+                    var cursor = value.Split(':', 2);
+                    if (!long.TryParse(cursor[0], NumberStyles.None, CultureInfo.InvariantCulture, out var after))
+                    {
+                        error = $"Invalid after '{value}': expected a ledger sequence (0 or more).";
+                        return null;
+                    }
+
+                    if (cursor.Length == 2)
+                    {
+                        if (!int.TryParse(cursor[1], NumberStyles.None, CultureInfo.InvariantCulture,
+                                          out var adjustment))
+                        {
+                            error = $"Invalid after '{value}': expected <sequence> or <sequence>:<adjustment>.";
+                            return null;
+                        }
+
+                        request.AfterAdjustment = adjustment;
+                    }
+
+                    request.AfterLedgerSeq = after;
+                    break;
+                case "--book":
+                    if (ParseBook(value) is not { } book)
+                    {
+                        error = $"Unknown book '{value}': expected operational or financial.";
+                        return null;
+                    }
+
+                    request.Book = (int)book;
+                    break;
+                case "--currency":
+                    if (!TryParseCurrency(value, out var currency, out error))
+                        return null;
+                    request.Currency = currency;
+                    break;
+                case "--price":
+                    if (!decimal.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture,
+                                          out var price) || price <= 0m)
+                    {
+                        error = $"Invalid price '{value}': expected the price of one BTC, such as 86048.5.";
+                        return null;
+                    }
+
+                    request.Price = price.ToString(CultureInfo.InvariantCulture);
+                    break;
+                case "--by":
+                    AccountingGainsGrouping? grouping = value.ToLowerInvariant() switch
+                    {
+                        "month" or "monthly" => AccountingGainsGrouping.Month,
+                        "quarter" or "quarterly" => AccountingGainsGrouping.Quarter,
+                        "year" or "yearly" => AccountingGainsGrouping.Year,
+                        "total" or "none" => AccountingGainsGrouping.Total,
+                        _ => null
+                    };
+                    if (grouping is null)
+                    {
+                        error = $"Unknown period '{value}': expected month, quarter, year or total.";
+                        return null;
+                    }
+
+                    request.Grouping = (int)grouping;
+                    break;
+                case "--limit":
+                    if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var limit)
+                     || limit is < 1 or > MaxLimit)
+                    {
+                        error = $"Invalid limit '{value}': expected a number from 1 to {MaxLimit}.";
+                        return null;
+                    }
+
+                    request.Limit = limit;
+                    break;
+            }
+        }
+
+        if (request.SinceUnixSeconds is { } start && request.UntilUnixSeconds is { } end && end <= start)
+        {
+            error = "--until must be after --since.";
+            return null;
+        }
+
+        if (kind is AccountingReportKind.BalanceSheet or AccountingReportKind.IncomeStatement
+         && (request.Currency is not null || request.Price is not null)
+         && request.Book != (int)AccountingBook.Financial)
+        {
+            error = "--currency and --price need --book financial.";
+            return null;
+        }
+
+        request.EventKinds = kinds;
+        if (kind == AccountingReportKind.Unclassified)
+            request.Book = (int)AccountingBook.Financial;
+        return new AccountingArguments("report", Report: request);
+    }
+
+    private static AccountingArguments? ParseExport(string[] args, out string? error)
+    {
+        var options = ParseOptions(args, ["--format", "--since", "--until", "--output", "--book", "--currency"],
+                                   out error);
+        if (options is null)
+            return null;
+
+        var request = new AccountingExportIpcRequest { Limit = ExportPageSize };
+        string? outputPath = null;
+        AccountingExportFormat? format = null;
+        foreach (var (name, value) in options)
+        {
+            switch (name)
+            {
+                case "--format":
+                    format = value.ToLowerInvariant() switch
+                    {
+                        "hledger" or "ledger" or "journal" => AccountingExportFormat.Hledger,
+                        "beancount" => AccountingExportFormat.Beancount,
+                        "csv" => AccountingExportFormat.Csv,
+                        _ => null
+                    };
+                    if (format is null)
+                    {
+                        error = $"Unknown format '{value}': expected hledger, beancount or csv.";
+                        return null;
+                    }
+
+                    break;
+                case "--since":
+                    if (!TryParseTime(name, value, out var since, out error))
+                        return null;
+                    request.SinceUnixSeconds = since;
+                    break;
+                case "--until":
+                    if (!TryParseTime(name, value, out var until, out error))
+                        return null;
+                    request.UntilUnixSeconds = until;
+                    break;
+                case "--output":
+                    outputPath = value;
+                    break;
+                case "--book":
+                    if (ParseBook(value) is not { } book)
+                    {
+                        error = $"Unknown book '{value}': expected operational or financial.";
+                        return null;
+                    }
+
+                    request.Book = (int)book;
+                    break;
+                case "--currency":
+                    if (!TryParseCurrency(value, out var currency, out error))
+                        return null;
+                    request.Currency = currency;
+                    break;
+            }
+        }
+
+        if (request.Currency is not null && request.Book != (int)AccountingBook.Financial)
+        {
+            error = "--currency needs --book financial.";
+            return null;
+        }
+
+        if (format is not { } chosen)
+        {
+            error = "Missing --format (hledger, beancount or csv).";
+            return null;
+        }
+
+        if (request.SinceUnixSeconds is { } start && request.UntilUnixSeconds is { } end && end <= start)
+        {
+            error = "--until must be after --since.";
+            return null;
+        }
+
+        request.Format = (int)chosen;
+        return new AccountingArguments("export", Export: request, OutputPath: outputPath);
+    }
+
+    // The options in order as (lower-case name, value); each as --name value or --name=value, every one at most once
+    // except --kind
+    internal static List<(string Name, string Value)>? ParseOptions(string[] args, string[] allowed, out string? error)
+    {
+        error = null;
+        var options = new List<(string, string)>();
+        for (var i = 0; i < args.Length; i++)
+        {
+            var argument = args[i];
+            if (!argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                error = $"Unexpected argument '{argument}'.";
+                return null;
+            }
+
+            var nameAndValue = argument.Split('=', 2);
+            var name = nameAndValue[0].ToLowerInvariant();
+            if (!allowed.Contains(name))
+            {
+                error = $"Unknown option '{argument}' here (expected {string.Join(", ", allowed)}).";
+                return null;
+            }
+
+            string value;
+            if (nameAndValue.Length == 2)
+                value = nameAndValue[1];
+            else if (i + 1 < args.Length)
+                value = args[++i];
+            else
+            {
+                error = $"Missing value for {name}.";
+                return null;
+            }
+
+            if (value.Length == 0)
+            {
+                error = $"Missing value for {name}.";
+                return null;
+            }
+
+            if (name != "--kind" && options.Exists(o => o.Item1 == name))
+            {
+                error = $"{name} given twice.";
+                return null;
+            }
+
+            options.Add((name, value));
+        }
+
+        return options;
+    }
+
+    private static AccountingBook? ParseBook(string value) => value.ToLowerInvariant() switch
+    {
+        "operational" or "ops" => AccountingBook.Operational,
+        "financial" or "fin" => AccountingBook.Financial,
+        _ => null
+    };
+
+    private static bool TryParseCurrency(string value, out string? currency, out string? error)
+    {
+        error = null;
+        currency = value.Trim().ToUpperInvariant();
+        if (currency.Length == 3 && currency.All(char.IsAsciiLetterUpper))
+            return true;
+
+        error = $"Invalid currency '{value}': expected a three-letter code such as USD.";
+        currency = null;
+        return false;
+    }
+
+    internal static bool TryParseTime(string name, string value, out long seconds, out string? error)
+    {
+        error = null;
+        if (ClientApp.ParseTime(value) is { } parsed)
+        {
+            seconds = parsed;
+            return true;
+        }
+
+        seconds = 0;
+        error = $"Invalid {name.TrimStart('-')} '{value}': expected Unix seconds or an ISO date.";
+        return false;
+    }
+}

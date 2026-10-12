@@ -19,12 +19,21 @@ public sealed class ClosingSignedMessage : BaseChannelMessage
     /// </summary>
     public new ClosingSignedPayload Payload { get => (ClosingSignedPayload)base.Payload; }
 
-    public FeeRangeTlv FeeRangeTlv { get; }
+    /// <summary>
+    /// BOLT 2 <c>closing_signed_tlvs</c> type 1. Optional: a sender SHOULD set it, and a peer that does not is
+    /// negotiated with the legacy "strictly between" rule.
+    /// </summary>
+    public FeeRangeTlv? FeeRangeTlv { get; }
 
-    public ClosingSignedMessage(ClosingSignedPayload payload, FeeRangeTlv feeRangeTlv) : base(MessageTypes.ClosingSigned, payload)
+    public ClosingSignedMessage(ClosingSignedPayload payload, FeeRangeTlv? feeRangeTlv = null)
+        : base(MessageTypes.ClosingSigned, payload)
     {
         FeeRangeTlv = feeRangeTlv;
-        Extension = new TlvStream();
-        Extension.Add(feeRangeTlv);
+
+        if (FeeRangeTlv is not null)
+        {
+            Extension = new TlvStream();
+            Extension.Add(FeeRangeTlv);
+        }
     }
 }

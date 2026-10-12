@@ -5,20 +5,18 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class ChannelReestablishMessageTests
 {
-    private readonly ChannelReestablishMessageTypeSerializer _channelReestablishMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<ChannelReestablishMessage> _channelReestablishMessageTypeSerializer;
 
     public ChannelReestablishMessageTests()
     {
         _channelReestablishMessageTypeSerializer =
-            new ChannelReestablishMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                        SerializerHelper.TlvConverterFactory,
-                                                        SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.WireRegistry.Get<ChannelReestablishMessage>()!;
     }
 
     #region Deserialize
@@ -64,7 +62,7 @@ public class ChannelReestablishMessageTests
             new NextFundingTlv(
                 Convert.FromHexString("567cbdadb00b825448b2e414487d73a97f657f0634166d3ab3f3a2cc1042eda5"));
         var stream = new MemoryStream(Convert.FromHexString(
-                                          "000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000002567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA502C93CA7DCA44D2E45E3CC5419D92750F7FB3A0F180852B73A621F4051C0193A750020567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA5"));
+                                          "000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000002567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA502C93CA7DCA44D2E45E3CC5419D92750F7FB3A0F180852B73A621F4051C0193A750121567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA500"));
 
         // Act
         var message = await _channelReestablishMessageTypeSerializer.DeserializeAsync(stream);
@@ -78,6 +76,18 @@ public class ChannelReestablishMessageTests
         Assert.NotNull(message.Extension);
         Assert.NotNull(message.NextFundingTlv);
         Assert.Equal(nextFundingTlv, message.NextFundingTlv);
+    }
+
+    [Fact]
+    public async Task Given_UnknownEvenTlvType0_When_DeserializeAsync_Then_ThrowsMessageSerializationException()
+    {
+        // Arrange: type 0 is not a channel_reestablish_tlvs type (next_funding is type 1), so it is an unknown even type
+        var stream = new MemoryStream(Convert.FromHexString(
+                                          "000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000002567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA502C93CA7DCA44D2E45E3CC5419D92750F7FB3A0F180852B73A621F4051C0193A750020567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA5"));
+
+        // Act & Assert
+        await Assert.ThrowsAsync<MessageSerializationException>(() => _channelReestablishMessageTypeSerializer
+                                                                   .DeserializeAsync(stream));
     }
 
     [Fact]
@@ -143,7 +153,7 @@ public class ChannelReestablishMessageTests
                                           nextRevocationNumber, yourLastPerCommitmentSecret), nextFundingTlv);
         var stream = new MemoryStream();
         var expectedBytes = Convert.FromHexString(
-            "000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000002567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA502C93CA7DCA44D2E45E3CC5419D92750F7FB3A0F180852B73A621F4051C0193A750020567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA5");
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000002567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA502C93CA7DCA44D2E45E3CC5419D92750F7FB3A0F180852B73A621F4051C0193A750121567CBDADB00B825448B2E414487D73A97F657F0634166D3AB3F3A2CC1042EDA500");
 
         // Act
         await _channelReestablishMessageTypeSerializer.SerializeAsync(message, stream);

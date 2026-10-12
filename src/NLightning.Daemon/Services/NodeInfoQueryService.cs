@@ -4,10 +4,14 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Services;
 
 using Contracts.Control;
+using Domain.Bitcoin.SilentPayments;
+using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Signing;
 using Infrastructure.Transport.Interfaces;
+using Infrastructure.Transport.Tor;
 using Interfaces;
 
 public sealed class NodeInfoQueryService : INodeInfoQueryService
@@ -16,10 +20,15 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
     private readonly ISecureKeyManager _secureKeyManager;
     private readonly IServiceProvider _services;
     private readonly ITcpService _tcpService;
+    private readonly ITorOnionService? _torOnionService;
+    private readonly NodeSigningContext? _signingContext;
 
     public NodeInfoQueryService(IOptions<NodeOptions> nodeOptions, ISecureKeyManager secureKeyManager,
-                                IServiceProvider services, ITcpService tcpService)
+                                IServiceProvider services, ITcpService tcpService,
+                                ITorOnionService? torOnionService = null, NodeSigningContext? signingContext = null)
     {
+        _torOnionService = torOnionService;
+        _signingContext = signingContext;
         _nodeOptions = nodeOptions.Value;
         _secureKeyManager = secureKeyManager;
         _services = services;
@@ -45,7 +54,7 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
                 {
                     bestHeight = state.LastProcessedHeight;
                     bestHashHex = state.LastProcessedBlockHash.ToString();
-                    bestTime = state.LastProcessedAt;
+                    bestTime = AsUtc(state.LastProcessedAt);
                 }
             }
             catch
@@ -59,6 +68,11 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
 
         return new NodeInfoResponse
         {
+            SilentPaymentRecoverableElsewhere = _services.GetService<IOptions<SilentPaymentsOptions>>()?.Value.Enabled == true
+                ? (_secureKeyManager as ISilentPaymentKeySource)?.RecoverableElsewhere : null,
+            NodeId = _signingContext?.NodeId,
+            OwnerId = _signingContext?.OwnerId,
+            SignerId = _signingContext?.SignerId,
             PubKey = pubKeyString,
             ListeningTo = listeningToString,
             Network = _nodeOptions.BitcoinNetwork,
@@ -66,7 +80,21 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
             BestBlockHeight = bestHeight,
             BestBlockTime = bestTime,
             Implementation = "NLightning",
-            Version = typeof(NodeInfoQueryService).Assembly.GetName().Version?.ToString()
+            Version = typeof(NodeInfoQueryService).Assembly.GetName().Version?.ToString(),
+            TorMode = _nodeOptions.Tor.Mode.ToString(),
+            OnionAddress = _torOnionService?.OnionHost is { } onionHost
+                               ? $"{pubKeyString}@{onionHost}:{_torOnionService.OnionPort}"
+                               : null
         };
     }
+
+    /// <summary>
+    /// The stored processing time as a UTC instant (NL-885): it is written as <see cref="DateTime.UtcNow"/>, and the
+    /// database hands it back without a kind, which the implicit conversion to <see cref="DateTimeOffset"/> took as
+    /// local time (a UTC wall time with the local offset attached).
+    /// </summary>
+    internal static DateTimeOffset AsUtc(DateTime time) =>
+        time.Kind == DateTimeKind.Local
+            ? new DateTimeOffset(time.ToUniversalTime(), TimeSpan.Zero)
+            : new DateTimeOffset(DateTime.SpecifyKind(time, DateTimeKind.Utc), TimeSpan.Zero);
 }

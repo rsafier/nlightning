@@ -14,6 +14,7 @@ public class FallbackAddressTaggedFieldTests
     [InlineData("3EktnHQD7RiAE6uzMj2ZifT9YgRrkSgzQX", 33)] // P2SH
     [InlineData("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", 33)] // P2WPKH
     [InlineData("bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3", 53)] // P2WSH
+    [InlineData("bc1pptdvg0d2nj99568qn6ssdy4cygnwuxgw2ukmnwgwz7jpqjz2kszse2s3lm", 53)] // P2TR
     public void Constructor_FromValue_SetsPropertiesCorrectly(string address, short expectedLength)
     {
         // Arrange
@@ -60,6 +61,15 @@ public class FallbackAddressTaggedFieldTests
                     0x0D, 0xC6, 0x31, 0x94, 0xB0, 0x24, 0x81, 0x93,
                     0x10, 0x00
                 })] // P2WSH
+    [InlineData("bc1pptdvg0d2nj99568qn6ssdy4cygnwuxgw2ukmnwgwz7jpqjz2kszse2s3lm",
+                new byte[]
+                {
+                    0x08, 0x56, 0xD6, 0x21, 0xED, 0x54, 0xE4, 0x52,
+                    0xD3, 0x47, 0x04, 0xF5, 0x08, 0x34, 0x95, 0xC1,
+                    0x11, 0x37, 0x70, 0xC8, 0x72, 0xB9, 0x6D, 0xCD,
+                    0xC8, 0x70, 0xBD, 0x20, 0x82, 0x42, 0x55, 0xA0,
+                    0x28, 0x00
+                })] // P2TR
     public void WriteToBitWriter_WritesCorrectData(string address, byte[] expectedData)
     {
         // Arrange
@@ -108,6 +118,15 @@ public class FallbackAddressTaggedFieldTests
                     0x0D, 0xC6, 0x31, 0x94, 0xB0, 0x24, 0x81, 0x93,
                     0x10, 0x00
                 })] // P2WSH
+    [InlineData("bc1pptdvg0d2nj99568qn6ssdy4cygnwuxgw2ukmnwgwz7jpqjz2kszse2s3lm", 53,
+                new byte[]
+                {
+                    0x08, 0x56, 0xD6, 0x21, 0xED, 0x54, 0xE4, 0x52,
+                    0xD3, 0x47, 0x04, 0xF5, 0x08, 0x34, 0x95, 0xC1,
+                    0x11, 0x37, 0x70, 0xC8, 0x72, 0xB9, 0x6D, 0xCD,
+                    0xC8, 0x70, 0xBD, 0x20, 0x82, 0x42, 0x55, 0xA0,
+                    0x28, 0x00
+                })] // P2TR
     public void FromBitReader_CreatesCorrectlyFromBitReader(string expectedAddress, short bitLength, byte[] bytes)
     {
         // Arrange
@@ -134,7 +153,6 @@ public class FallbackAddressTaggedFieldTests
     }
 
     [Theory]
-    [InlineData(1)]  // Witness v1 (Taproot) - not yet supported
     [InlineData(2)]  // Future witness version
     [InlineData(16)] // Future witness version
     [InlineData(19)] // Reserved per BOLT 11
@@ -157,6 +175,20 @@ public class FallbackAddressTaggedFieldTests
         var result = FallbackAddressTaggedField.FromBitReader(bitReader, 33, BitcoinNetwork.Mainnet);
 
         // Assert - Per BOLT 11: "MUST skip over `f` fields that use an unknown `version`"
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void FromBitReader_ReturnsNull_ForVersion1WithInvalidDataLength()
+    {
+        // Arrange - Witness v1 but with 20-byte data (not the 32 bytes a P2TR program has)
+        var data = new byte[] { 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
+        var bitReader = new BitReader(data);
+
+        // Act
+        var result = FallbackAddressTaggedField.FromBitReader(bitReader, 13, BitcoinNetwork.Mainnet);
+
+        // Assert - A witness v1 program is always 32 bytes (BIP 141); anything else is not an address
         Assert.Null(result);
     }
 

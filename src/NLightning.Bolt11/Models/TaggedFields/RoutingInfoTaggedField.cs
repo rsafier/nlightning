@@ -30,7 +30,7 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
     internal RoutingInfoTaggedField(RoutingInfoCollection value)
     {
         Value = value;
-        Length = (short)((value.Count * TaggedFieldConstants.RoutingInfoLength + value.Count * 2) / 5);
+        Length = CalculateLength(value.Count);
 
         Value.Changed += OnRoutingInfoCollectionChanged;
     }
@@ -43,31 +43,21 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
         {
             bitWriter.WriteBits(routingInfo.CompactPubKey, 264);
             bitWriter.WriteBits(routingInfo.ShortChannelId, 64);
-            bitWriter.WriteInt32AsBits(routingInfo.FeeBaseMsat, 32);
-            bitWriter.WriteInt32AsBits(routingInfo.FeeProportionalMillionths, 32);
-            bitWriter.WriteInt16AsBits(routingInfo.CltvExpiryDelta, 16);
+            bitWriter.WriteInt32AsBits(unchecked((int)routingInfo.FeeBaseMsat), 32);
+            bitWriter.WriteInt32AsBits(unchecked((int)routingInfo.FeeProportionalMillionths), 32);
+            bitWriter.WriteUInt16AsBits(routingInfo.CltvExpiryDelta, 16);
         }
 
-        for (var i = 0; i < Value.Count * 2; i++)
+        // Pad to the 5-bit boundary with zeros
+        for (var i = Value.Count * TaggedFieldConstants.RoutingInfoLength; i < Length * 5; i++)
             bitWriter.WriteBit(false);
     }
 
     /// <inheritdoc/>
     public bool IsValid()
     {
-        foreach (var routingInfo in Value)
-        {
-            if (routingInfo.FeeBaseMsat < 0)
-                return false;
-
-            if (routingInfo.FeeProportionalMillionths < 0)
-                return false;
-
-            if (routingInfo.CltvExpiryDelta < 0)
-                return false;
-        }
-
-        return true;
+        // BOLT 11: an `r` field MUST contain one or more entries; the numeric fields are unsigned and always valid
+        return Value.Count > 0;
     }
 
     /// <summary>
@@ -75,59 +65,57 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
     /// </summary>
     /// <param name="bitReader">The bit reader to read from</param>
     /// <param name="length">The length of the tagged field</param>
-    /// <returns>
-    /// A new instance of the <see cref="RoutingInfoTaggedField"/> if routing information is present;
-    /// otherwise, <c>null</c>.
-    /// </returns>
-    internal static RoutingInfoTaggedField? FromBitReader(BitReader bitReader, short length)
+    /// <returns>A new instance of the <see cref="RoutingInfoTaggedField"/></returns>
+    /// <exception cref="ArgumentException">If the length is not a whole number of 408-bit entries</exception>
+    internal static RoutingInfoTaggedField FromBitReader(BitReader bitReader, short length)
     {
         var l = length * 5;
-        var bitsReadAcc = 0;
+
+        // Each entry is 51 bytes (408 bits); anything left over must be less than a byte of padding
+        var entryCount = l / TaggedFieldConstants.RoutingInfoLength;
+        var paddingBits = l - entryCount * TaggedFieldConstants.RoutingInfoLength;
+        if (entryCount == 0 || paddingBits >= 8)
+            throw new ArgumentException(
+                $"Invalid length for {nameof(RoutingInfoTaggedField)}. {l} bits is not a whole number of routing entries",
+                nameof(length));
+
         var routingInfos = new RoutingInfoCollection();
-
-        // Check if there's enough data for the r field
-        if (l >= TaggedFieldConstants.RoutingInfoLength)
+        for (var i = 0; i < entryCount; i++)
         {
-            for (var i = 0;
-                 i < l && l - bitsReadAcc >= TaggedFieldConstants.RoutingInfoLength;
-                 i += TaggedFieldConstants.RoutingInfoLength)
-            {
-                var pubkeyBytes = new byte[34];
-                bitsReadAcc += bitReader.ReadBits(pubkeyBytes, 264);
+            var pubkeyBytes = new byte[34];
+            bitReader.ReadBits(pubkeyBytes, 264);
 
-                var shortChannelBytes = new byte[9];
-                bitsReadAcc += bitReader.ReadBits(shortChannelBytes, 64);
+            var shortChannelBytes = new byte[9];
+            bitReader.ReadBits(shortChannelBytes, 64);
 
-                var feeBaseMsat = bitReader.ReadInt32FromBits(32);
-                bitsReadAcc += 32;
+            var feeBaseMsat = unchecked((uint)bitReader.ReadInt32FromBits(32));
+            var feeProportionalMillionths = unchecked((uint)bitReader.ReadInt32FromBits(32));
+            var cltvExpiryDelta = bitReader.ReadUInt16FromBits(16);
 
-                var feeProportionalMillionths = bitReader.ReadInt32FromBits(32);
-                bitsReadAcc += 32;
-
-                var minFinalCltvExpiry = bitReader.ReadInt16FromBits(16);
-                bitsReadAcc += 16;
-
-                routingInfos.Add(new RoutingInfo(new CompactPubKey(pubkeyBytes[..^1]),
-                                                 new ShortChannelId(shortChannelBytes[..^1]),
-                                                 feeBaseMsat,
-                                                 feeProportionalMillionths,
-                                                 minFinalCltvExpiry));
-            }
+            routingInfos.Add(new RoutingInfo(new CompactPubKey(pubkeyBytes[..^1]),
+                                             new ShortChannelId(shortChannelBytes[..^1]),
+                                             feeBaseMsat,
+                                             feeProportionalMillionths,
+                                             cltvExpiryDelta));
         }
 
-        // Skip any extra bits since padding is expected
-        var extraBitsToSkip = l - bitsReadAcc;
-        if (extraBitsToSkip > 0)
-            bitReader.SkipBits(extraBitsToSkip);
+        // Skip the padding bits
+        if (paddingBits > 0)
+            bitReader.SkipBits(paddingBits);
 
-        // Return null if there's no routing info present
-        return routingInfos.Count > 0
-                   ? new RoutingInfoTaggedField(routingInfos)
-                   : null;
+        return new RoutingInfoTaggedField(routingInfos);
     }
 
     private void OnRoutingInfoCollectionChanged(object? sender, EventArgs e)
     {
-        Length = (short)((Value.Count * TaggedFieldConstants.RoutingInfoLength + Value.Count * 2) / 5);
+        Length = CalculateLength(Value.Count);
+    }
+
+    /// <summary>
+    /// Minimal number of 5-bit groups that hold <paramref name="count"/> 408-bit entries
+    /// </summary>
+    private static short CalculateLength(int count)
+    {
+        return (short)((count * TaggedFieldConstants.RoutingInfoLength + 4) / 5);
     }
 }

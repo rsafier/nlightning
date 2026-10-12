@@ -6,9 +6,9 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class OpenChannel2MessageTests
 {
@@ -18,15 +18,8 @@ public class OpenChannel2MessageTests
     private readonly LightningMoney _expectedMaxHtlcValueInFlightAmount = LightningMoney.Satoshis(1_000);
     private readonly ushort _expectedMaxAcceptedHtlcs = 2;
     private readonly ushort _expectedLocktime = 1;
-    private readonly OpenChannel2MessageTypeSerializer _openChannel2TypeSerializer;
-
-    public OpenChannel2MessageTests()
-    {
-        _openChannel2TypeSerializer =
-            new OpenChannel2MessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                  SerializerHelper.TlvConverterFactory,
-                                                  SerializerHelper.TlvStreamSerializer);
-    }
+    private readonly IMessageTypeSerializer<OpenChannel2Message> _openChannel2TypeSerializer =
+        SerializerHelper.WireRegistry.Get<OpenChannel2Message>()!;
 
     #region Deserialize
 
@@ -234,7 +227,7 @@ public class OpenChannel2MessageTests
             Convert.FromHexString("03a92b07cbae641dcfd482825233aecc2d5012913b48040131db3222670c2bffcd");
         var channelFlags = new ChannelFlags();
         var upfrontShutdownScriptTlv = new UpfrontShutdownScriptTlv(scriptPubKey);
-        var channelTypeTlv = new ChannelTypeTlv([0x02, 0x01]);
+        var channelTypeTlv = new ChannelTypeTlv([0x01, 0x02]);
         var requireConfirmedInputsTlv = new RequireConfirmedInputsTlv();
 
         var message = new OpenChannel2Message(

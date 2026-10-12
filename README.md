@@ -6,7 +6,7 @@
 &nbsp;
 [![MIT License](https://img.shields.io/github/license/ngoline/nlightning)](LICENSE)
 &nbsp;
-![.NET 10.0](https://img.shields.io/badge/Version-.NET%2010.0-informational?style=flat&logo=dotnet)
+![.NET 10.0 | 11.0](https://img.shields.io/badge/Version-.NET%2010.0%20%7C%2011.0-informational?style=flat&logo=dotnet)
 
 Welcome to the C# implementation of the Lightning Network!
 
@@ -30,18 +30,31 @@ You can check our documentation page [here](https://docs.nlightn.ing/)
 
 ## Current State of BOLT implementation
 
-| BOLT                                                      | Library (API) | Full Node (daemon) |
-|-----------------------------------------------------------|:-------------:|:------------------:|
-| BOLT 1: Base Protocol                                     |       ✅       |         ❌          |
-| BOLT 2: Peer Protocol for Channel Management              |       ✅       |         ❌          |
-| BOLT 3: Bitcoin Transaction and Script Formats            |       ✅       |         ❌          |
-| BOLT 4: Onion Routing Protocol                            |       ❌       |         ❌          |
-| BOLT 5: Recommendations for On-chain Transaction Handling |       ❌       |         ❌          |
-| BOLT 7: P2P Node and Channel Discovery                    |       ❌       |         ❌          |
-| BOLT 8: Encrypted and Authenticated Transport             |       ✅       |         ✅          |
-| BOLT 9: Assigned Feature Flags                            |       ✅       |         ✅          |
-| BOLT 10: DNS Bootstrap and Assisted Node Location         |       ✅       |         ❌          |
-| BOLT 11: Invoice Protocol for Lightning Payments          |       ✅       |         ✅          |
+| BOLT                                                      | Library (API) | Full Node (daemon) | Notes                                                                                   |
+|-----------------------------------------------------------|:-------------:|:------------------:|-----------------------------------------------------------------------------------------|
+| BOLT 1: Base Protocol                                     |       ✅       |         ✅          | init, ping/pong keep-alive, error/warning, peer storage                                 |
+| BOLT 2: Peer Protocol for Channel Management              |       ✅       |         ✅          | v1 and dual-funded opens (with RBF), HTLCs, reestablish, cooperative and simple close    |
+| BOLT 3: Bitcoin Transaction and Script Formats            |       ✅       |         ✅          | static_remotekey and anchors; every spec vector byte-exact                              |
+| BOLT 4: Onion Routing Protocol                            |       ✅       |         ✅          | forwarding, MPP, route blinding, onion messages, attribution data, keysend              |
+| BOLT 5: Recommendations for On-chain Transaction Handling |       ✅       |         ✅          | force close, HTLC claims, penalties, anchors CPFP, RBF sweeps, reorgs                   |
+| BOLT 7: P2P Node and Channel Discovery                    |       ✅       |         ✅          | public channels, graph sync and relay, pathfinding; `option_scid_alias` off by default  |
+| BOLT 8: Encrypted and Authenticated Transport             |       ✅       |         ✅          | TCP and Tor (v3 onion service)                                                          |
+| BOLT 9: Assigned Feature Flags                            |       ✅       |         ✅          |                                                                                         |
+| BOLT 10: DNS Bootstrap and Assisted Node Location         |       ✅       |         ✅          | DNS seed client, on by default on mainnet                                               |
+| BOLT 11: Invoice Protocol for Lightning Payments          |       ✅       |         ✅          | route hints, bLIP 39 blinded paths                                                      |
+| BOLT 12: Offers                                           |       ✅       |         ✅          | offers, invoice requests and invoices over onion messages, both directions              |
+
+Protocol extensions:
+
+| Extension                                                 | Library (API) | Full Node (daemon) | Notes                                                                                   |
+|-----------------------------------------------------------|:-------------:|:------------------:|-----------------------------------------------------------------------------------------|
+| Splicing, quiescence (`option_splice`, `option_quiesce`)  |       ✅       |         ✅          | splice in/out and splice RBF                                                            |
+| Liquidity ads (BOLTs PR #1153)                            |       ✅       |         ✅          | buy and sell inbound liquidity; buying proven against Eclair, selling node-to-node only |
+| Simple taproot channels (`option_simple_taproot`)         |       ✅       |         🧪          | experimental: MuSig2 channels, private only; taproot gossip not yet                    |
+| Trampoline routing (BOLTs PR #836)                        |       ✅       |         🧪          | experimental: pay through and relay as a trampoline node                               |
+
+✅ implemented · 🧪 implemented, experimental (off by default, `Features:AllowExperimentalFeatures`).
+Details per requirement in [`docs/agents/BOLT_COVERAGE.md`](docs/agents/BOLT_COVERAGE.md).
 
 ## Quick Start
 
@@ -52,13 +65,15 @@ and testing purposes.
 
 Before you begin, ensure you have the following installed on your system:
 
-- [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) or any later 9.x version
+- [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (10.0.100 or later), and optionally the
+  [.NET 11.0 SDK](https://dotnet.microsoft.com/download/dotnet/11.0) (release candidates are accepted until 11.0 is GA)
 - Git (for cloning the repository)
 
-This project uses a global.json file to pin the .NET SDK to version 9.0.0, but with rollForward:
-"latestMinor" it will accept any newer 9.x release (e.g., 9.1.x, 9.2.x).
-You must have .NET SDK 9.0.0 or later within the 9.x line installed.
-SDK versions outside the 9.x line (e.g., 8.x or 10.x) are not supported.
+The projects target .NET 10.0 (LTS), and also .NET 11.0 when they are built with SDK 11 or newer, so SDK 10 alone is
+enough. `global.json` requires SDK 10.0.100 or later and rolls forward to the newest installed SDK
+(`rollForward: latestMajor`, prereleases allowed while .NET 11 is in RC). With SDK 11 installed, build, test or run a
+single framework with `-f net10.0` / `-f net11.0` (or `-p:NltgTargetNet11=false` for net10.0 only); the net10.0 build
+needs the .NET 10 runtime and the net11.0 build the .NET 11 runtime.
 
 ### Installation
 
@@ -102,28 +117,62 @@ To start contributing:
 We encourage you to dive into the codebase, familiarize yourself with the project structure, and see where your skills
 and interests can help drive NLightning forward.
 
+### Bark/ASP backend retry window
+
+For an existing Bark/captaind deployment using the node's LN backend, set
+`LnBackend:MaxXpayRetryFor` in `appsettings.json` to allow longer `cln.Node.Xpay` retries:
+
+```json
+{
+  "LnBackend": {
+    "MaxXpayRetryFor": 900
+  }
+}
+```
+
+The setting is in seconds, defaults to 300, and accepts 1 through 3,600. With the example,
+a `retry_for` of 600 gets 600 seconds; a request above 900 is capped at 900. Missing or zero
+`retry_for` uses 60 seconds, capped by this setting. Restart the daemon after changing its config.
+See the [LN backend setup and payment semantics](docs/agents/LN_BACKEND_PLAN.md) for the listener,
+mutual TLS, and payment reconciliation requirements.
+
 ### Testing
 
-To verify that everything is set up correctly, you can run the included unit tests:
+To verify that everything is set up correctly, run the unit tests (no containers needed):
 
 ```sh
-dotnet test
+dotnet test -f net10.0 --filter 'FullyQualifiedName!~Docker&FullyQualifiedName!~SqlServer'
 ```
 
-#### MacOS Users
-
-To run the containerized tests, we need to connect directly to the docker containers, but if you're using macOS, you
-won't be able to, thanks to the way Docker for Mac is implemented.
-
-We're using [Docker Mac Net Connect](https://github.com/chipmk/docker-mac-net-connect) due to its simplicity. Run:
+The integration suites (interop with LND, CLN, Eclair and LDK, on-chain, gossip, Postgres and more) run on a local
+Kubernetes cluster through `scripts/run-cluster.sh`, one namespace per run so several suites run at once:
 
 ```sh
-# Install via Homebrew
-$ brew install chipmk/tap/docker-mac-net-connect
-
-# Run the service and register it to launch at boot
-$ sudo brew services start chipmk/tap/docker-mac-net-connect
+scripts/run-cluster.sh --matrix              # every suite (about 25 min)
+scripts/run-cluster.sh --matrix lnd,taproot  # selected suites
+scripts/run-cluster.sh -n 1 --suite cln      # one suite
 ```
+
+Details are in [`test/CLAUDE.md`](test/CLAUDE.md) ("Cluster test harness"). The Tor suite is the only one still on
+plain Docker (`scripts/run-interop.sh tor`).
+
+#### macOS users
+
+We recommend [OrbStack](https://orbstack.dev): it provides both the Docker engine and the Kubernetes cluster the
+harness uses, shares one image store between them, and lets the Mac reach containers directly.
+
+```sh
+brew install orbstack
+orb config set k8s.enable true   # or enable Kubernetes in OrbStack's settings
+orb start
+
+# Build the local images once (the harness never pulls them)
+docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd
+docker build -t nltg-eclair:0.14.3 test/Docker/eclair
+docker build -t nltg-ldk-server:dc02b76c test/Docker/ldk_server
+```
+
+`run-cluster.sh` uses the `orbstack` Kubernetes context by default.
 
 ## License
 

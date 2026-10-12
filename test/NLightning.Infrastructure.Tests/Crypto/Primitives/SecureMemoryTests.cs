@@ -68,4 +68,21 @@ public class SecureMemoryTests
         // Then
         Assert.NotEqual(0xAB, span[0]);
     }
+
+    [Fact]
+    public void Given_ADisposedSecureMemory_When_DisposedAgainFromManyThreads_Then_ItStaysDisposed()
+    {
+        // Arrange
+        var secureMemory = new SecureMemory(32);
+        secureMemory.Dispose();
+
+        // Act
+        Parallel.For(0, 16, _ => secureMemory.Dispose());
+
+        // Assert
+        Assert.Throws<ObjectDisposedException>(() =>
+        {
+            Span<byte> _ = secureMemory;
+        });
+    }
 }

@@ -6,8 +6,12 @@ public class ChannelUpdatedEventArgs
 {
     public ChannelModel Channel { get; }
 
-    public ChannelUpdatedEventArgs(ChannelModel channel)
+    /// <summary>False for progress staged in an interactive-tx round that has not committed yet.</summary>
+    public bool IsPersisted { get; }
+
+    public ChannelUpdatedEventArgs(ChannelModel channel, bool isPersisted = true)
     {
         Channel = channel;
+        IsPersisted = isPersisted;
     }
 }

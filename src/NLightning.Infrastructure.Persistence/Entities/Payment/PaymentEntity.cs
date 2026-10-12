@@ -1,0 +1,141 @@
+// ReSharper disable PropertyCanBeMadeInitOnly.Global
+
+namespace NLightning.Infrastructure.Persistence.Entities.Payment;
+
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+
+/// <summary>
+/// One of our outgoing payments (<c>PaymentModel</c>, BOLT2 plan N8-T3): the latest attempt for its payment hash.
+/// </summary>
+public class PaymentEntity
+{
+    /// <summary>
+    /// The 32-byte payment hash.
+    /// </summary>
+    /// <remarks>This is the primary key</remarks>
+    public required Hash PaymentHash { get; set; }
+
+    /// <summary>
+    /// The BOLT 11 invoice paid, if any.
+    /// </summary>
+    public string? Bolt11 { get; set; }
+
+    /// <summary>
+    /// The BOLT 12 offer (<c>lno1...</c> string) paid, if any (migration <c>AddBolt12Offers</c>).
+    /// </summary>
+    public string? OfferBolt12 { get; set; }
+
+    /// <summary>
+    /// The TLV stream of the BOLT 12 invoice paid, if any.
+    /// </summary>
+    public byte[]? Bolt12InvoiceBytes { get; set; }
+
+    /// <summary>
+    /// The custom records of a keysend payment, as a TLV stream (migration <c>AddPaymentCustomRecords</c>; before it
+    /// they were stored in <see cref="Bolt12InvoiceBytes"/>).
+    /// </summary>
+    public byte[]? CustomRecords { get; set; }
+
+    /// <summary>
+    /// Our <c>invreq_metadata</c> for a BOLT 12 payment.
+    /// </summary>
+    public byte[]? InvoiceRequestMetadata { get; set; }
+
+    /// <summary>
+    /// Our <c>invreq_payer_note</c> for a BOLT 12 payment, if any.
+    /// </summary>
+    public string? PayerNote { get; set; }
+
+    /// <summary>
+    /// The payee's node id.
+    /// </summary>
+    public required CompactPubKey PayeeNodeId { get; set; }
+
+    /// <summary>
+    /// The amount the payee receives, in millisatoshi.
+    /// </summary>
+    public required long AmountMsat { get; set; }
+
+    /// <summary>
+    /// The routing fees, in millisatoshi.
+    /// </summary>
+    public required long FeeMsat { get; set; }
+
+    /// <summary>
+    /// When the payment was created (stored as UTC ticks).
+    /// </summary>
+    public required DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>
+    /// <c>PaymentStatus</c> (0 in flight, 1 succeeded, 2 failed).
+    /// </summary>
+    public required byte Status { get; set; }
+
+    /// <summary>
+    /// The channel our HTLC was offered on, once recorded.
+    /// </summary>
+    public ChannelId? OutgoingChannelId { get; set; }
+
+    /// <summary>
+    /// The id of our HTLC on <see cref="OutgoingChannelId"/>, once recorded.
+    /// </summary>
+    public ulong? OutgoingHtlcId { get; set; }
+
+    /// <summary>
+    /// The 32-byte preimage, once succeeded.
+    /// </summary>
+    public byte[]? Preimage { get; set; }
+
+    /// <summary>
+    /// The BOLT 4 failure code decoded at the origin, if any.
+    /// </summary>
+    public ushort? FailureCode { get; set; }
+
+    /// <summary>
+    /// The route index of the node that produced the failure, if attributable.
+    /// </summary>
+    public int? FailureSourceIndex { get; set; }
+
+    /// <summary>
+    /// A local description of the failure.
+    /// </summary>
+    public string? FailureReason { get; set; }
+
+    /// <summary>
+    /// When the payment completed (stored as UTC ticks).
+    /// </summary>
+    public DateTimeOffset? CompletedAt { get; set; }
+
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, migration <c>AddAccountingFinancial</c>; at most 256 UTF-8 bytes), or null.
+    /// </summary>
+    public string? Label { get; set; }
+
+    /// <summary>
+    /// The operator's tags as one canonical <c>k=v</c> list (NL-602 A3-T1, at most 1 KiB), or null.
+    /// </summary>
+    public string? Tags { get; set; }
+
+    /// <summary>
+    /// The payment is the outgoing leg of a trampoline relay (<c>PaymentModel.IsTrampolineRelay</c>, NL-875, migration
+    /// <c>AddTrampolineRelays</c>; existing rows false through the column default).
+    /// </summary>
+    public bool IsTrampolineRelay { get; set; }
+
+    /// <summary>
+    /// LND's <c>payment_index</c> (NL-1165, migration <c>AddLndIndexes</c>): 1, 2, 3, ... in the order payments were
+    /// saved; null only for a row saved by a unit of work without the allocator.
+    /// </summary>
+    public long? PaymentIndex { get; set; }
+
+    /// <summary>
+    /// The route of the onion, with each hop's shared secret (cascade-deleted with the payment).
+    /// </summary>
+    public virtual ICollection<PaymentHopEntity>? Hops { get; set; }
+
+    // Default constructor for EF Core
+    internal PaymentEntity()
+    {
+    }
+}

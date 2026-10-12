@@ -1,0 +1,92 @@
+using MessagePack;
+
+namespace NLightning.Transport.Ipc.Responses;
+
+using Domain.Client.Responses;
+using Domain.Crypto.ValueObjects;
+using Domain.Money;
+using Domain.Payments.Enums;
+
+/// <summary>
+/// One of our invoices, in a <see cref="CreateInvoiceIpcResponse"/> or a <see cref="ListInvoicesIpcResponse"/>. It
+/// never carries the preimage.
+/// </summary>
+[MessagePackObject]
+public sealed class InvoiceInfoIpcResponse
+{
+    /// <summary>
+    /// The BOLT 11 string, or null for a BOLT 12 invoice (issued for one of our offers; it has no string form).
+    /// </summary>
+    [Key(0)] public string? Bolt11 { get; init; }
+    [Key(1)] public required Hash PaymentHash { get; init; }
+
+    /// <summary>
+    /// The requested amount, or null for an any-amount invoice.
+    /// </summary>
+    [Key(2)] public LightningMoney? Amount { get; init; }
+
+    [Key(3)] public string? Description { get; init; }
+    [Key(4)] public required InvoiceStatus Status { get; init; }
+    [Key(5)] public required DateTimeOffset CreatedAt { get; init; }
+    [Key(6)] public required DateTimeOffset ExpiresAt { get; init; }
+
+    /// <summary>
+    /// True when the invoice was still open at <see cref="ExpiresAt"/> when the daemon built the response.
+    /// </summary>
+    [Key(7)] public bool IsExpired { get; init; }
+
+    /// <summary>
+    /// The amount the paying HTLC carried, once accepted.
+    /// </summary>
+    [Key(8)] public LightningMoney? AmountReceived { get; init; }
+
+    [Key(9)] public DateTimeOffset? SettledAt { get; init; }
+
+    /// <summary>
+    /// BOLT 11, BOLT 12 (NL-454) or a received keysend payment; a response without the key reads as BOLT 11.
+    /// </summary>
+    [Key(10)] public InvoiceKind Kind { get; init; }
+
+    /// <summary>
+    /// The offer a BOLT 12 invoice was issued for; null for a BOLT 11 invoice.
+    /// </summary>
+    [Key(11)] public Hash? OfferId { get; init; }
+
+    /// <summary>
+    /// The custom records a keysend payer attached, by type (null or empty for invoices we issued).
+    /// </summary>
+    [Key(12)] public Dictionary<ulong, byte[]>? CustomRecords { get; init; }
+
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1), or null; an older daemon sends none.
+    /// </summary>
+    [Key(13)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1), or null for none.
+    /// </summary>
+    [Key(14)] public List<string>? Tags { get; init; }
+
+    public static InvoiceInfoIpcResponse FromClientResponse(InvoiceInfoClientResponse invoice)
+    {
+        ArgumentNullException.ThrowIfNull(invoice);
+        return new InvoiceInfoIpcResponse
+        {
+            Bolt11 = invoice.Bolt11,
+            PaymentHash = invoice.PaymentHash,
+            Amount = invoice.Amount,
+            Description = invoice.Description,
+            Status = invoice.Status,
+            CreatedAt = invoice.CreatedAt,
+            ExpiresAt = invoice.ExpiresAt,
+            IsExpired = invoice.IsExpired,
+            AmountReceived = invoice.AmountReceived,
+            SettledAt = invoice.SettledAt,
+            Kind = invoice.Kind,
+            OfferId = invoice.OfferId,
+            CustomRecords = CustomRecordsIpc.FromRecords(invoice.CustomRecords),
+            Label = invoice.Label,
+            Tags = invoice.Tags.Count == 0 ? null : [.. invoice.Tags]
+        };
+    }
+}

@@ -1,0 +1,950 @@
+using System.Net;
+using Microsoft.Extensions.Logging.Abstractions;
+using NBitcoin;
+
+namespace NLightning.Infrastructure.Bitcoin.Tests.Bootstrap;
+
+using Bitcoin.Bootstrap;
+using Domain.Crypto.ValueObjects;
+using Domain.Node.Bootstrap;
+using Domain.Node.Options;
+using Infrastructure.Protocol.Dns;
+
+public class DnsSeedClientTests
+{
+    private const string Root = "nodes.lightning.directory";
+
+    private readonly Mock<IDnsRecordLookup> _lookup = new(MockBehavior.Strict);
+    private readonly NodeOptions _nodeOptions = new();
+
+    private DnsSeedClient CreateClient() =>
+        new(_lookup.Object, Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<DnsSeedClient>.Instance);
+
+    private static (CompactPubKey Key, string Target) NewNode(string root = Root)
+    {
+        var key = new CompactPubKey(new Key().PubKey.ToBytes());
+        return (key, $"{LightningNodeIdBech32.Encode(key)}.{root}");
+    }
+
+    private void SetupQuery(string name, DnsRecordKind kind, DnsLookupResponse response) =>
+        _lookup.Setup(l => l.QueryAsync(name, kind, It.IsAny<CancellationToken>())).ReturnsAsync(response);
+
+    private static DnsLookupResponse Srv(IEnumerable<DnsSrv> records, IEnumerable<DnsGlue>? glue = null) =>
+        new(DnsLookupStatus.NoError, records.ToList(), [], glue?.ToList() ?? []);
+
+    private static DnsLookupResponse Addresses(params string[] addresses) =>
+        new(DnsLookupStatus.NoError, [], addresses.Select(IPAddress.Parse).ToList(), []);
+
+    [Fact]
+    public async Task Given_ThreeSrvTargetsWithAAnswers_When_Queried_Then_CandidatesCarryTheSrvPortsAndDecodedIds()
+    {
+        // Arrange
+        var nodes = new[] { NewNode(), NewNode(), NewNode() };
+        ushort[] ports = [9735, 9766, 8739];
+        SetupQuery(Root, DnsRecordKind.Srv, Srv(nodes.Select((n, i) => new DnsSrv(10, 10, ports[i], n.Target + "."))));
+        for (var i = 0; i < nodes.Length; i++)
+            SetupQuery(nodes[i].Target, DnsRecordKind.A, Addresses($"1.2.3.{i + 1}"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.Equal(0, result.Rejected);
+        Assert.Equal(3, result.Candidates.Count);
+        for (var i = 0; i < nodes.Length; i++)
+        {
+            var candidate = Assert.Single(result.Candidates, c => c.NodeId == nodes[i].Key);
+            Assert.Equal(ports[i], candidate.Port);
+            Assert.Equal(IPAddress.Parse($"1.2.3.{i + 1}"), candidate.Address);
+            Assert.Equal(Root, candidate.Seed);
+        }
+    }
+
+    [Fact]
+    public async Task Given_GlueInTheAdditionalSection_When_Queried_Then_ItIsUsedWithoutAnAQuery()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv,
+                   Srv([new DnsSrv(10, 10, 9735, node.Target)],
+                       [new DnsGlue(node.Target.ToUpperInvariant() + ".", IPAddress.Parse("8.8.4.4"))]));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Equal(IPAddress.Parse("8.8.4.4"), candidate.Address);
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.A, It.IsAny<CancellationToken>()),
+                       Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_BothFamilies_When_Queried_Then_EveryAAndAaaaAddressIsKept()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4", "5.6.7.8"));
+        SetupQuery(node.Target, DnsRecordKind.Aaaa, Addresses("2606:4700::1"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.Both, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["1.2.3.4", "5.6.7.8", "2606:4700::1"], result.Candidates.Select(c => c.Address.ToString()));
+        Assert.All(result.Candidates, c => Assert.Equal(node.Key, c.NodeId));
+    }
+
+    [Fact]
+    public async Task Given_IPv4Only_When_Queried_Then_OnlyAIsAskedAndAStrayAaaaGlueIsDropped()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv,
+                   Srv([new DnsSrv(10, 10, 9735, node.Target)],
+                       [
+                           new DnsGlue(node.Target, IPAddress.Parse("1.2.3.4")),
+                           new DnsGlue(node.Target, IPAddress.Parse("2606:4700::1"))
+                       ]));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), candidate.Address);
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.Aaaa, It.IsAny<CancellationToken>()),
+                       Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_IPv4OnlyAndAnAQueryAnsweringIPv6_When_Queried_Then_TheWrongFamilyIsRejected()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("2606:4700::1", "1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), Assert.Single(result.Candidates).Address);
+        Assert.Equal(1, result.Rejected);
+    }
+
+    [Fact]
+    public async Task Given_ATargetUnderAnotherRoot_When_Queried_Then_ItsFirstLabelIsTakenLiterally()
+    {
+        // Arrange: test.nodes.lightning.directory has answered targets under the mainnet root
+        const string testRoot = "test.nodes.lightning.directory";
+        var node = NewNode(Root);
+        SetupQuery(testRoot, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 19735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(testRoot, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Equal(node.Key, candidate.NodeId);
+        Assert.Equal(testRoot, candidate.Seed);
+    }
+
+    [Fact]
+    public async Task Given_AnEmptyRootSrv_When_Queried_Then_TheNodesTcpAliasIsAsked()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery($"_nodes._tcp.{Root}", DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.Equal(node.Key, Assert.Single(result.Candidates).NodeId);
+    }
+
+    [Theory]
+    [InlineData(DnsLookupStatus.NoError, DnsSeedOutcome.Empty)]
+    [InlineData(DnsLookupStatus.NxDomain, DnsSeedOutcome.NxDomain)]
+    [InlineData(DnsLookupStatus.ServFail, DnsSeedOutcome.ServerFailure)]
+    [InlineData(DnsLookupStatus.Refused, DnsSeedOutcome.ServerFailure)]
+    [InlineData(DnsLookupStatus.Timeout, DnsSeedOutcome.Timeout)]
+    [InlineData(DnsLookupStatus.Other, DnsSeedOutcome.Error)]
+    public async Task Given_AFailingSeed_When_Queried_Then_TheOutcomeSaysSoWithoutThrowing(DnsLookupStatus status,
+        DnsSeedOutcome expected)
+    {
+        // Arrange
+        SetupQuery(Root, DnsRecordKind.Srv, DnsLookupResponse.Of(status));
+        SetupQuery($"_nodes._tcp.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NxDomain));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.Both, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(expected, result.Outcome);
+        Assert.Empty(result.Candidates);
+    }
+
+    [Fact]
+    public async Task Given_InvalidRecords_When_Queried_Then_TheyAreCountedAsRejectedAndTheRestKept()
+    {
+        // Arrange
+        var good = NewNode();
+        var records = new[]
+        {
+            new DnsSrv(10, 10, 9735, good.Target),
+            new DnsSrv(10, 10, 9735, $"notanodeid.{Root}"),
+            new DnsSrv(10, 10, 9735, $"lnbc1qfzcdxeg3nun56n5q2a8xrwt3yg88xt029q9s7j4cn3z2rn7argcz90k.{Root}"),
+            new DnsSrv(10, 10, 0, NewNode().Target)
+        };
+        SetupQuery(Root, DnsRecordKind.Srv,
+                   Srv(records, records.Select(r => new DnsGlue(r.Target, IPAddress.Parse("1.2.3.4")))
+                                       .Append(new DnsGlue(good.Target, IPAddress.Parse("192.168.1.1")))));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert: two bad labels, one private address, one port 0
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Equal(good.Key, candidate.NodeId);
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), candidate.Address);
+        Assert.Equal(4, result.Rejected);
+    }
+
+    [Fact]
+    public async Task Given_DuplicateTargets_When_Queried_Then_EachTargetIsResolvedOnce()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv,
+                   Srv([
+                       new DnsSrv(10, 10, 9735, node.Target),
+                       new DnsSrv(20, 10, 9735, node.Target.ToUpperInvariant() + ".")
+                   ]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        SetupQuery(node.Target.ToUpperInvariant(), DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Single(result.Candidates);
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.A, It.IsAny<CancellationToken>()),
+                       Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_25RecordsAndACapOf5_When_Queried_Then_5CandidatesAndNoMoreAQueries()
+    {
+        // Arrange
+        var nodes = Enumerable.Range(0, 25).Select(_ => NewNode()).ToArray();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv(nodes.Select(n => new DnsSrv(10, 10, 9735, n.Target))));
+        var aQueries = 0;
+        _lookup.Setup(l => l.QueryAsync(It.Is<string>(n => n != Root), DnsRecordKind.A,
+                                        It.IsAny<CancellationToken>()))
+               .ReturnsAsync(() =>
+                {
+                    aQueries++;
+                    return Addresses($"1.2.3.{aQueries}");
+                });
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 5,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(5, result.Candidates.Count);
+        Assert.Equal(5, aQueries);
+    }
+
+    [Fact]
+    public async Task Given_ASeedThatHangs_When_Queried_Then_ThePerSeedTimeoutEndsItAsTimeout()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.PerSeedTimeout = TimeSpan.FromMilliseconds(100);
+        _lookup.Setup(l => l.QueryAsync(Root, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+               .Returns(async (string _, DnsRecordKind _, CancellationToken ct) =>
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                    return DnsLookupResponse.Of(DnsLookupStatus.NoError);
+                });
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.Both, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Timeout, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Given_TheCallerCancels_When_Queried_Then_TheCancellationPropagates()
+    {
+        // Arrange
+        using var cts = new CancellationTokenSource();
+        _lookup.Setup(l => l.QueryAsync(Root, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+               .Returns(async (string _, DnsRecordKind _, CancellationToken ct) =>
+                {
+                    await cts.CancelAsync();
+                    await Task.Delay(Timeout.Infinite, ct);
+                    return DnsLookupResponse.Of(DnsLookupStatus.NoError);
+                });
+        var client = CreateClient();
+
+        // Act & Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.QuerySeedAsync(Root, DnsSeedAddressTypes.Both, 25, cts.Token));
+    }
+
+    [Fact]
+    public async Task Given_QueryConditions_When_TheConditionalQueryIsEmpty_Then_TheBareRootIsAsked()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.UseQueryConditions = true;
+        var node = NewNode();
+        SetupQuery($"n25.a2.r0.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery(Root, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(node.Key, Assert.Single(result.Candidates).NodeId);
+        _lookup.Verify(l => l.QueryAsync($"n25.a2.r0.{Root}", DnsRecordKind.Srv, It.IsAny<CancellationToken>()),
+                       Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_QueryConditionsAndACapOf40_When_Queried_Then_TheConditionalQueryAsksFor40Records()
+    {
+        // Arrange: BOLT 10's n defaults to 25, so a cap above it must be asked for
+        _nodeOptions.Bootstrap.UseQueryConditions = true;
+        var node = NewNode();
+        SetupQuery($"n40.a6.r0.{Root}", DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        SetupQuery(node.Target, DnsRecordKind.Aaaa, Addresses());
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.Both, 40,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(node.Key, Assert.Single(result.Candidates).NodeId);
+        _lookup.Verify(l => l.QueryAsync($"n40.a6.r0.{Root}", DnsRecordKind.Srv, It.IsAny<CancellationToken>()),
+                       Times.Once);
+        _lookup.Verify(l => l.QueryAsync(Root, DnsRecordKind.Srv, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_OneTargetOnTwoPorts_When_Queried_Then_BothPortsAreKeptAndTheTargetIsResolvedOnce()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv,
+                   Srv([new DnsSrv(10, 10, 9735, node.Target), new DnsSrv(10, 10, 9736, node.Target + ".")]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(new ushort[] { 9735, 9736 }, result.Candidates.Select(c => c.Port).Order());
+        Assert.All(result.Candidates, c => Assert.Equal(node.Key, c.NodeId));
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.A, It.IsAny<CancellationToken>()),
+                       Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_TheBolt10SrvExample_When_Queried_Then_EveryTupleKeepsItsNodeIdAndPort()
+    {
+        // Arrange: BOLT 10 "Examples", dig lseed.bitcoinstats.com SRV (non-default ports 6331, 4280, 4281)
+        const string specRoot = "lseed.bitcoinstats.com";
+        (ushort Port, string Label)[] tuples =
+        [
+            (6331, "ln1qwktpe6jxltmpphyl578eax6fcjc2m807qalr76a5gfmx7k9qqfjwy4mctz"),
+            (9735, "ln1qv2w3tledmzczw227nnkqrrltvmydl8gu4w4d70g9td7avke6nmz2tdefqp"),
+            (9735, "ln1qtynyymv99pqf0r9cuexvvqtxrlgejuecf8myfsa96vcpflgll5cqmr2xsu"),
+            (4280, "ln1qdfvlysfpyh96apy3w3qdwlu8jjkdhnuxa689ka540tnde6gnx86cf7ga2d"),
+            (4281, "ln1qwf789tlcpe4n34649xrqllxt97whsvfk5pm07ggqms3vrjwdj3cu6332zs")
+        ];
+        SetupQuery(specRoot, DnsRecordKind.Srv,
+                   Srv(tuples.Select(t => new DnsSrv(10, 10, t.Port, $"{t.Label}.{specRoot}."))));
+        for (var i = 0; i < tuples.Length; i++)
+            SetupQuery($"{tuples[i].Label}.{specRoot}", DnsRecordKind.A,
+                       Addresses(i == 0 ? "139.59.143.87" : $"139.59.143.{90 + i}"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(specRoot, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.Equal(0, result.Rejected);
+        Assert.Equal(tuples.Length, result.Candidates.Count);
+        foreach (var (port, label) in tuples)
+        {
+            Assert.True(LightningNodeIdBech32.TryDecode(label, out var nodeId, out var reason), reason);
+            var candidate = Assert.Single(result.Candidates, c => c.NodeId == nodeId);
+            Assert.Equal(port, candidate.Port);
+        }
+
+        Assert.Equal(IPAddress.Parse("139.59.143.87"),
+                     result.Candidates.Single(c => c.Port == 6331).Address);
+    }
+
+    private DnsSeedClient CreateClientWithFallback(Mock<IFallbackDnsRecordLookup> fallback) =>
+        new(_lookup.Object, Microsoft.Extensions.Options.Options.Create(_nodeOptions),
+            NullLogger<DnsSeedClient>.Instance, fallback.Object);
+
+    private static Mock<IFallbackDnsRecordLookup> NewFallback(bool available)
+    {
+        var fallback = new Mock<IFallbackDnsRecordLookup>(MockBehavior.Strict);
+        fallback.SetupGet(f => f.IsAvailable).Returns(available);
+        fallback.SetupGet(f => f.NameServers).Returns(["1.1.1.1", "8.8.8.8"]);
+        return fallback;
+    }
+
+    [Fact]
+    public async Task Given_TheSystemResolverFailsTheSeed_When_Queried_Then_TheFallbackAnswers()
+    {
+        // Arrange: D-B10-7, a home router answering SERVFAIL to the seed's SRV query
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        SetupQuery($"_nodes._tcp.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: true);
+        fallback.Setup(f => f.QueryAsync(Root, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        fallback.Setup(f => f.QueryAsync(node.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Addresses("1.2.3.4"));
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.True(result.UsedFallbackResolver);
+        Assert.Equal(DnsSeedOutcome.ServerFailure, result.SystemResolverOutcome);
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Equal(node.Key, candidate.NodeId);
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), candidate.Address);
+    }
+
+    [Fact]
+    public async Task Given_TheSystemResolverAnswers_When_Queried_Then_TheFallbackIsNeverAsked()
+    {
+        // Arrange: the fallback is strict with no setup, so any query to it fails the test
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var fallback = NewFallback(available: true);
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(result.UsedFallbackResolver);
+        Assert.Null(result.SystemResolverOutcome);
+        Assert.Single(result.Candidates);
+        fallback.Verify(f => f.QueryAsync(It.IsAny<string>(), It.IsAny<DnsRecordKind>(),
+                                          It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_SrvRecordsWhoseAddressesFail_When_Queried_Then_TheFallbackIsAsked()
+    {
+        // Arrange: the system resolver lists the targets but resolves none of them
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: true);
+        fallback.Setup(f => f.QueryAsync(Root, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        fallback.Setup(f => f.QueryAsync(node.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Addresses("5.6.7.8"));
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert: the system resolver's outcome was Ok, only without a candidate
+        Assert.True(result.UsedFallbackResolver);
+        Assert.Equal(DnsSeedOutcome.Ok, result.SystemResolverOutcome);
+        Assert.Equal(IPAddress.Parse("5.6.7.8"), Assert.Single(result.Candidates).Address);
+    }
+
+    [Fact]
+    public async Task Given_AnUnavailableFallback_When_TheSystemResolverFails_Then_TheFailureIsReported()
+    {
+        // Arrange: configured NameServers or FallbackToPublicResolvers false
+        SetupQuery(Root, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        SetupQuery($"_nodes._tcp.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: false);
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.ServerFailure, result.Outcome);
+        Assert.False(result.UsedFallbackResolver);
+        Assert.Empty(result.Candidates);
+        fallback.Verify(f => f.QueryAsync(It.IsAny<string>(), It.IsAny<DnsRecordKind>(),
+                                          It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_BothResolversFail_When_Queried_Then_TheFallbacksOutcomeIsReported()
+    {
+        // Arrange
+        SetupQuery(Root, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        SetupQuery($"_nodes._tcp.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: true);
+        fallback.Setup(f => f.QueryAsync(It.IsAny<string>(), DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(DnsLookupResponse.Of(DnsLookupStatus.NxDomain));
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.NxDomain, result.Outcome);
+        Assert.True(result.UsedFallbackResolver);
+        Assert.Equal(DnsSeedOutcome.ServerFailure, result.SystemResolverOutcome);
+        Assert.Empty(result.Candidates);
+    }
+
+    [Fact]
+    public async Task Given_ManyTargetsWithoutGlue_When_Queried_Then_TheirAddressesAreLookedUpConcurrently()
+    {
+        // Arrange: NL-546, every A query waits until 8 run at once (the cap), so a sequential client would hang
+        var nodes = Enumerable.Range(0, 20).Select(_ => NewNode()).ToArray();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv(nodes.Select(n => new DnsSrv(10, 10, 9735, n.Target))));
+        var inFlight = 0;
+        var maxInFlight = 0;
+        var allowed = new TaskCompletionSource();
+        for (var i = 0; i < nodes.Length; i++)
+        {
+            var address = $"1.2.3.{i + 1}";
+            _lookup.Setup(l => l.QueryAsync(nodes[i].Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                   .Returns(async (string _, DnsRecordKind _, CancellationToken ct) =>
+                    {
+                        var now = Interlocked.Increment(ref inFlight);
+                        lock (allowed)
+                            maxInFlight = Math.Max(maxInFlight, now);
+                        if (now >= DnsSeedClient.MaxConcurrentAddressLookups)
+                            allowed.TrySetResult();
+                        await allowed.Task.WaitAsync(ct);
+                        Interlocked.Decrement(ref inFlight);
+                        return Addresses(address);
+                    });
+        }
+
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.Equal(20, result.Candidates.Count);
+        Assert.Equal(DnsSeedClient.MaxConcurrentAddressLookups, maxInFlight);
+    }
+
+    [Fact]
+    public async Task Given_ATargetThatHangs_When_TheSeedTimesOut_Then_TheResolvedTargetsAreStillReturned()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.PerSeedTimeout = TimeSpan.FromMilliseconds(300);
+        var fast = NewNode();
+        var slow = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv,
+                   Srv([new DnsSrv(10, 10, 9735, fast.Target), new DnsSrv(10, 10, 9735, slow.Target)]));
+        SetupQuery(fast.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        _lookup.Setup(l => l.QueryAsync(slow.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+               .Returns(async (string _, DnsRecordKind _, CancellationToken ct) =>
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                    return Addresses("5.6.7.8");
+                });
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Timeout, result.Outcome);
+        Assert.Equal(fast.Key, Assert.Single(result.Candidates).NodeId);
+    }
+
+    // Node queries: BOLT 10's assisted location of a known node (NL-541)
+
+    [Fact]
+    public async Task Given_AKnownNodeWithAnAAnswer_When_Located_Then_TheAddressIsTheCandidateOnTheDefaultPort()
+    {
+        // Arrange: BOLT 10 answers a node query's A/AAAA only for nodes listening on the default port
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, location.Outcome);
+        var candidate = Assert.Single(location.Candidates);
+        Assert.Equal(node.Key, candidate.NodeId);
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), candidate.Address);
+        Assert.Equal(9735, candidate.Port);
+        Assert.Equal(Root, candidate.Seed);
+    }
+
+    [Fact]
+    public async Task Given_BothFamilies_When_Located_Then_TheAAndAaaaAnswersAreBothKept()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        SetupQuery(node.Target, DnsRecordKind.Aaaa, Addresses("2606:4700::1"));
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.Both,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["1.2.3.4", "2606:4700::1"], location.Candidates.Select(c => c.Address.ToString()));
+        Assert.All(location.Candidates, c => Assert.Equal(node.Key, c.NodeId));
+    }
+
+    [Fact]
+    public async Task Given_IPv4Only_When_Located_Then_AaaaIsNeverAsked()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Single(location.Candidates);
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.A, It.IsAny<CancellationToken>()),
+                       Times.Once);
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.Aaaa, It.IsAny<CancellationToken>()),
+                       Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ANodeSrvAnswer_When_Located_Then_ItsPortsOverrideTheDefault()
+    {
+        // Arrange: BOLT 10 answers a node query's SRV with (its virtual host, port) tuples on non-default ports
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv,
+                   Srv([new DnsSrv(10, 10, 9745, node.Target), new DnsSrv(10, 10, 9746, node.Target + ".")]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(new ushort[] { 9745, 9746 }, location.Candidates.Select(c => c.Port).Order());
+        Assert.All(location.Candidates, c => Assert.Equal(IPAddress.Parse("1.2.3.4"), c.Address));
+    }
+
+    [Fact]
+    public async Task Given_ANodeSrvForAnotherNode_When_Located_Then_ItIsRejectedAndTheDefaultPortIsUsed()
+    {
+        // Arrange: the seed answered a tuple of another node's virtual host
+        var node = NewNode();
+        var other = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9745, other.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, location.Rejected);
+        Assert.Equal(9735, Assert.Single(location.Candidates).Port);
+    }
+
+    [Fact]
+    public async Task Given_AnSrvPortOfZero_When_Located_Then_TheRecordIsRejected()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 0, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, location.Rejected);
+        Assert.Equal(9735, Assert.Single(location.Candidates).Port);
+    }
+
+    [Fact]
+    public async Task Given_TheSeedDoesNotKnowTheNode_When_Located_Then_TheAnswerIsEmptyWithoutThrowing()
+    {
+        // Arrange: BOLT 10's empty reply
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses());
+        SetupQuery(node.Target, DnsRecordKind.Aaaa, Addresses());
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.Both,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Empty, location.Outcome);
+        Assert.Empty(location.Candidates);
+    }
+
+    [Fact]
+    public async Task Given_AnUnroutableAnswer_When_Located_Then_TheAddressIsRejectedAndCounted()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("192.168.1.1"));
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(location.Candidates);
+        Assert.Equal(1, location.Rejected);
+    }
+
+    [Theory]
+    [InlineData(DnsLookupStatus.NxDomain, DnsSeedOutcome.NxDomain)]
+    [InlineData(DnsLookupStatus.ServFail, DnsSeedOutcome.ServerFailure)]
+    [InlineData(DnsLookupStatus.Timeout, DnsSeedOutcome.Timeout)]
+    [InlineData(DnsLookupStatus.Other, DnsSeedOutcome.Error)]
+    public async Task Given_AFailingAnswer_When_Located_Then_TheOutcomeSaysSoWithoutThrowing(DnsLookupStatus status,
+        DnsSeedOutcome expected)
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, DnsLookupResponse.Of(status));
+        SetupQuery(node.Target, DnsRecordKind.A, DnsLookupResponse.Of(status));
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(expected, location.Outcome);
+        Assert.Empty(location.Candidates);
+    }
+
+    [Fact]
+    public async Task Given_TheSystemResolverDoesNotKnowTheNode_When_Located_Then_TheFallbackAnswers()
+    {
+        // Arrange: D-B10-7, the home router SERVFAILs the node query
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        SetupQuery(node.Target, DnsRecordKind.A, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: true);
+        fallback.Setup(f => f.QueryAsync(node.Target, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        fallback.Setup(f => f.QueryAsync(node.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Addresses("1.2.3.4"));
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, location.Outcome);
+        Assert.True(location.UsedFallbackResolver);
+        Assert.Equal(DnsSeedOutcome.ServerFailure, location.SystemResolverOutcome);
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), Assert.Single(location.Candidates).Address);
+    }
+
+    [Fact]
+    public async Task Given_TheSystemResolverKnowsTheNode_When_Located_Then_TheFallbackIsNeverAsked()
+    {
+        // Arrange: the fallback is strict with no setup, so any query to it fails the test
+        var node = NewNode();
+        SetupQuery(node.Target, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var fallback = NewFallback(available: true);
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(location.UsedFallbackResolver);
+        Assert.Null(location.SystemResolverOutcome);
+        Assert.Single(location.Candidates);
+    }
+
+    [Fact]
+    public async Task Given_TorOnlyWithATorResolver_When_Queried_Then_TheTorResolverAnswersAndNoClearnetDnsHappens()
+    {
+        // Arrange - NL-571: the SRV queries ride Tor's SOCKS port through Node:Bootstrap:TorNameServer
+        _nodeOptions.Tor.Mode = TorMode.TorOnly;
+        var node = NewNode();
+        var torLookup = new Mock<ITorDnsRecordLookup>(MockBehavior.Strict);
+        torLookup.SetupGet(l => l.IsAvailable).Returns(true);
+        torLookup.Setup(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        torLookup.Setup(l => l.QueryAsync(node.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(Addresses("7.7.7.7"));
+        var fallback = NewFallback(available: true);
+        var client = new DnsSeedClient(_lookup.Object, Microsoft.Extensions.Options.Options.Create(_nodeOptions),
+                                       NullLogger<DnsSeedClient>.Instance, fallback.Object, torLookup.Object);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert: no query reached the clearnet resolvers, fallback included
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.Equal(IPAddress.Parse("7.7.7.7"), Assert.Single(result.Candidates).Address);
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), It.IsAny<DnsRecordKind>(), It.IsAny<CancellationToken>()),
+                       Times.Never);
+        fallback.Verify(f => f.QueryAsync(It.IsAny<string>(), It.IsAny<DnsRecordKind>(),
+                                          It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ASeedThatHangs_When_Locating_Then_ThePerSeedTimeoutEndsItAsTimeout()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.PerSeedTimeout = TimeSpan.FromMilliseconds(100);
+        var node = NewNode();
+        _lookup.Setup(l => l.QueryAsync(node.Target, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+               .Returns(async (string _, DnsRecordKind _, CancellationToken ct) =>
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                    return DnsLookupResponse.Of(DnsLookupStatus.NoError);
+                });
+        var client = CreateClient();
+
+        // Act
+        var location = await client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4,
+                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Timeout, location.Outcome);
+    }
+
+    [Fact]
+    public async Task Given_TheCallerCancels_When_Locating_Then_TheCancellationPropagates()
+    {
+        // Arrange
+        var node = NewNode();
+        using var cts = new CancellationTokenSource();
+        _lookup.Setup(l => l.QueryAsync(node.Target, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+               .Returns(async (string _, DnsRecordKind _, CancellationToken ct) =>
+                {
+                    await cts.CancelAsync();
+                    await Task.Delay(Timeout.Infinite, ct);
+                    return DnsLookupResponse.Of(DnsLookupStatus.NoError);
+                });
+        var client = CreateClient();
+
+        // Act & Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.LocateNodeAsync(Root, node.Key, DnsSeedAddressTypes.IPv4, cts.Token));
+    }
+
+    [Fact]
+    public async Task Given_ARootTooLongForANodeQuery_When_Located_Then_AnArgumentExceptionIsThrown()
+    {
+        // Arrange: the 62-octet label plus this root overflows the 253-octet name limit
+        const string root = "a-very-long-root.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                          + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.test";
+        var client = CreateClient();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.LocateNodeAsync(root, new CompactPubKey(new Key().PubKey.ToBytes()), DnsSeedAddressTypes.IPv4,
+                                   TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_TorOnlyWithoutATorResolver_When_Queried_Then_TheSeedIsNotAskedAnywhere()
+    {
+        // Arrange - NL-571: Node:Bootstrap:TorNameServer empty; a query to the strict clearnet lookup would fail
+        _nodeOptions.Tor.Mode = TorMode.TorOnly;
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Error, result.Outcome);
+        Assert.Empty(result.Candidates);
+        _lookup.VerifyNoOtherCalls();
+    }
+}
