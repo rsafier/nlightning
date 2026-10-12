@@ -201,11 +201,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 116 | 118 |
-| in-progress | 0 | 2 | 8 | 0 | 10 |
+| in-progress | 0 | 2 | 9 | 0 | 11 |
 | fixed | 15 | 76 | 285 | 544 | 920 |
 | wontfix | 0 | 0 | 7 | 15 | 22 |
 | duplicate | 0 | 0 | 3 | 8 | 11 |
-| **Total** | **15** | **78** | **305** | **683** | **1081** |
+| **Total** | **15** | **78** | **306** | **683** | **1082** |
 
 ### Epics
 
@@ -11451,3 +11451,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`RestoreChannelUtxoLocksAsync`)
 - **Evidence:** A signed, unconfirmed v2 open recovered by a second process over the same PostgreSQL database reconnects successfully, but its funding RBF repeatedly fails while handling `tx_signatures`. Wallet load restores the persistent fee reservation and then adds a legacy channel lock because v2 opens share `V1FundingSigned` with v1 opens. `WalletInteractiveTxContributor.SignAsync` uses the reservation-bound wallet signer, which correctly refuses an input locked to channel funding. The first commitment signs, but wallet witnesses cannot be produced; the connection drops and retries until the attempt times out. Regression `BlockchainMonitorServiceTests.Given_APendingDualFunding_When_Starting_Then_ItsFeeReservationIsRestoredWithoutLegacyChannelLocks` fails on the original behavior: the legacy lock is restored once despite the persisted fee reservation.
 - **Fix sketch:** restore legacy funding channel locks only for `ChannelVersion.V1`; v2 inputs remain protected by their exact persisted fee reservations. Preserve the signer checks and v1 restart locking. Validate fee-reservation retention, the v1 positive control and a restarted unconfirmed v2 open followed by RBF.
+
+
+### NL-1409 Asynchronous stop cancellation can let an on-chain round save after stop
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`StageAndSaveAsync`, `StopAsync`)
+- **Evidence:** `CancellationTokenSource.CancelAsync` marks the stop source canceled immediately but queues its callbacks, including linked-token cancellation. A round released from its resolver before those callbacks execute sees its linked token still active and saves after stop was requested. The stop regression holds a real stop callback ahead of linked propagation and releases the resolver, deterministically exposing the save.
+- **Fix sketch:** check the executor's stop source directly at the save boundary as well as the caller's linked token. Preserve already-started saves and suppress their subsequent publication.
+- **Validation:** The delayed-linked-cancellation regression fails on the original code with an unexpected saved output and sweep. With the stop-source check, all 39 `OnchainResolutionExecutorTests` pass on net10.0 Release, including caller cancellation propagation and stop after a save starts.

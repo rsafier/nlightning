@@ -1764,7 +1764,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
     /// <summary>Stages every action in the round's unit of work and saves once (nothing is saved when nothing changed).
     /// </summary>
-    private static async Task<Applied> StageAndSaveAsync(IUnitOfWork unitOfWork,
+    private async Task<Applied> StageAndSaveAsync(IUnitOfWork unitOfWork,
                                                         IReadOnlyList<OutputResolverAction> actions,
                                                         Func<Task>? stageMore, CancellationToken cancellationToken)
     {
@@ -1833,6 +1833,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         {
             // NL-1355: nothing is saved once the stop was requested (the next start's round stages it again)
             cancellationToken.ThrowIfCancellationRequested();
+            // CancelAsync marks this source immediately; its linked-token callbacks may still be queued (NL-1409).
+            _stopping.Token.ThrowIfCancellationRequested();
             await unitOfWork.SaveChangesAsync();
         }
 

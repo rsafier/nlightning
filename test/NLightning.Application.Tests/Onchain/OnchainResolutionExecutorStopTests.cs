@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace NLightning.Application.Tests.Onchain;
 
 using Domain.Bitcoin.Events;
@@ -40,11 +42,33 @@ public sealed partial class OnchainResolutionExecutorTests
         executor.ScheduleRound(SpentAt + 5);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
+        // Hold a real stop callback ahead of linked cancellation propagation. The resolver ignores cancellation,
+        // so the save boundary must observe the stop source even while its linked token has not been canceled.
+        var stopping = Assert.IsType<CancellationTokenSource>(typeof(Application.Onchain.OnchainResolutionExecutor)
+                          .GetField("_stopping", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(executor));
+        var cancellationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellationRelease = new ManualResetEventSlim();
+        using var registration = stopping.Token.Register(() =>
+        {
+            cancellationEntered.TrySetResult();
+            cancellationRelease.Wait(TimeSpan.FromSeconds(10));
+        });
+
         // Act
         var stop = executor.StopAsync(TestContext.Current.CancellationToken);
         var waitedForRound = !stop.IsCompleted;
-        release.SetResult();
-        await stop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        try
+        {
+            await cancellationEntered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            release.SetResult();
+            await executor.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            cancellationRelease.Set();
+            release.TrySetResult();
+            await stop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
 
         // Assert: the stop waited for the round, which saved, published and raised nothing
         Assert.True(waitedForRound);
@@ -53,6 +77,34 @@ public sealed partial class OnchainResolutionExecutorTests
         _broadcaster.Verify(b => b.PublishAsync(It.IsAny<BroadcastTransactionModel>()), Times.Never);
         _htlcSwitch.Verify(s => s.HandleAsync(It.IsAny<IChannelDomainEvent>(), It.IsAny<CancellationToken>()),
                            Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_CallerCanceledDuringResolution_When_RoundResumes_Then_CancellationEscapesAndNothingIsSaved()
+    {
+        // Arrange
+        AddOutput(0, OutputDescriptorKind.DelayedToLocal);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _resolver.BeforeResolve = async () =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+        };
+        _resolver.OnResolve = (_, outputs, _) => [new UpsertOutputAction(outputs[0])];
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var executor = CreateExecutor();
+        var round = executor.RunRoundAsync(SpentAt + 5, caller.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Act
+        caller.Cancel();
+        release.SetResult();
+
+        // Assert: caller cancellation is not mistaken for a quiet executor stop
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => round);
+        Assert.Empty(_store.Saves);
+        Assert.Empty(_calls);
     }
 
     [Fact]
