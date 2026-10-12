@@ -1511,6 +1511,44 @@ public partial class BlockchainMonitorServiceTests
     }
 
     [Fact]
+    public async Task Given_APendingDualFunding_When_Starting_Then_ItsFeeReservationIsRestoredWithoutLegacyChannelLocks()
+    {
+        // Arrange (NL-1408): a v2 open uses a persisted fee reservation. Adding the v1-only channel lock on restart
+        // makes the wallet signer refuse the original inputs when the signed, unconfirmed open is fee-bumped.
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x55, 32).ToArray());
+        var input = new TxId(Enumerable.Repeat((byte)0x56, 32).ToArray());
+        var reservationId = Guid.NewGuid();
+        var funding = Network.RegTest.CreateTransaction();
+        funding.Inputs.Add(new OutPoint(new uint256((byte[])input), 0));
+        funding.Outputs.Add(Money.Satoshis(90_000), new Key().PubKey.WitHash.ScriptPubKey);
+        _mockBroadcastRepository.Setup(x => x.GetPendingAsync())
+                                .ReturnsAsync([new BroadcastTransactionModel(ToSigned(funding), BroadcastPurpose.Funding,
+                                                                             channelId, 110)]);
+        _mockChannelRepository.Setup(x => x.GetByIdAsync(channelId))
+                              .ReturnsAsync(CreateChannel(channelId, ChannelState.V1FundingSigned, ChannelVersion.V2));
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
+                             .ReturnsAsync([new UtxoModel(input, 0, LightningMoney.Satoshis(100_000), 90, 0, false,
+                                                          AddressType.P2Wpkh)]);
+        _mockFeeInputReservationRepository.Setup(x => x.GetReservedOutpointsAsync())
+                                          .ReturnsAsync([(input, 0u, reservationId)]);
+        var utxos = new Mock<IUtxoMemoryRepository>();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), utxos.Object);
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert: the inputs remain reserved under their original identity, without becoming channel-locked.
+        var expected = (input, 0u, reservationId);
+        utxos.Verify(x => x.LoadFeeReservations(
+                         It.Is<IEnumerable<(TxId TxId, uint Index, Guid ReservationId)>>(rows => rows.Single().Equals(expected))),
+                     Times.Once);
+        utxos.Verify(x => x.RestoreLocksForChannel(It.IsAny<ChannelId>(), It.IsAny<IReadOnlyCollection<(TxId, uint)>>()),
+                     Times.Never);
+        _mockFeeInputReservationRepository.Verify(x => x.DeleteAsync(reservationId), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_NoChannelStoredForAPendingFunding_When_Starting_Then_NothingIsLockedAgain()
     {
         // Arrange: the channel was forgotten while its broadcast row is still pending (abandoned fundings get their
@@ -1571,7 +1609,8 @@ public partial class BlockchainMonitorServiceTests
     }
 
     /// <summary>A minimal funder channel in <paramref name="state"/> with both sides' dust limits at 354 sat.</summary>
-    private static ChannelModel CreateChannel(ChannelId channelId, ChannelState state)
+    private static ChannelModel CreateChannel(ChannelId channelId, ChannelState state,
+                                              ChannelVersion version = ChannelVersion.V1)
     {
         var nodeKey = new CompactPubKey([0x02, .. Enumerable.Repeat((byte)0x11, 32)]);
         return new ChannelModel(
@@ -1581,7 +1620,7 @@ public partial class BlockchainMonitorServiceTests
                                      LightningMoney.Satoshis(354), 144, FeatureSupport.No),
             channelId, null, null, true, null, null, LightningMoney.Zero,
             new ChannelKeySetModel(0, nodeKey, nodeKey, nodeKey, nodeKey, nodeKey, nodeKey), 0, 0, LightningMoney.Zero,
-            null, 0, new CompactPubKey([0x03, .. Enumerable.Repeat((byte)0x22, 32)]), 0, state, ChannelVersion.V1);
+            null, 0, new CompactPubKey([0x03, .. Enumerable.Repeat((byte)0x22, 32)]), 0, state, version);
     }
 
     private static Transaction CreateSpend(TxId spentTxId, uint outputIndex)

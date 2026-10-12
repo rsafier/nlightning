@@ -201,11 +201,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 116 | 118 |
-| in-progress | 0 | 1 | 8 | 0 | 9 |
+| in-progress | 0 | 2 | 8 | 0 | 10 |
 | fixed | 15 | 76 | 285 | 544 | 920 |
 | wontfix | 0 | 0 | 7 | 15 | 22 |
 | duplicate | 0 | 0 | 3 | 8 | 11 |
-| **Total** | **15** | **77** | **305** | **683** | **1080** |
+| **Total** | **15** | **78** | **305** | **683** | **1081** |
 
 ### Epics
 
@@ -11443,3 +11443,11 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `test/NLightning.Integration.Tests/Persistence/LoopPersistenceTests.cs` (`Given_ImportedDepositAndSpend_When_Restarted_Then_OnlyNewCommittedStatesArePublished(mode: 1)`)
 - **Evidence:** In the NL-1396 full net10.0 Release run (2026-10-11, loaded host, the cluster matrix running at the same time) the case failed while a context was created: `SqliteException: SQLite Error 5: 'unable to delete/modify user-function due to active statements'` from `SqliteConnection.CreateFunction` in `SqliteRelationalConnection.InitializeDbConnection`, i.e. EF registered its SQLite functions on a pooled connection that still had a statement running (a connection shared across two contexts, or a pool cleared under it, cf. NL-747). The class passed 3 out of 3 times alone; NL-1396 does not touch this code (it is not a peer path). Related to NL-1353 (same class, a timeout).
 - **Fix sketch:** look for a `SqliteConnection` shared by two contexts or a pool cleared by another test of the class; give each restart its own connection string or clear only this test's pool.
+
+### NL-1408 Restarting a signed dual-funded open restores incompatible legacy wallet locks
+- **Status:** in-progress
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`RestoreChannelUtxoLocksAsync`)
+- **Evidence:** A signed, unconfirmed v2 open recovered by a second process over the same PostgreSQL database reconnects successfully, but its funding RBF repeatedly fails while handling `tx_signatures`. Wallet load restores the persistent fee reservation and then adds a legacy channel lock because v2 opens share `V1FundingSigned` with v1 opens. `WalletInteractiveTxContributor.SignAsync` uses the reservation-bound wallet signer, which correctly refuses an input locked to channel funding. The first commitment signs, but wallet witnesses cannot be produced; the connection drops and retries until the attempt times out. Regression `BlockchainMonitorServiceTests.Given_APendingDualFunding_When_Starting_Then_ItsFeeReservationIsRestoredWithoutLegacyChannelLocks` fails on the original behavior: the legacy lock is restored once despite the persisted fee reservation.
+- **Fix sketch:** restore legacy funding channel locks only for `ChannelVersion.V1`; v2 inputs remain protected by their exact persisted fee reservations. Preserve the signer checks and v1 restart locking. Validate fee-reservation retention, the v1 positive control and a restarted unconfirmed v2 open followed by RBF.

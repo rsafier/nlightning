@@ -2406,7 +2406,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     }
 
     /// <summary>
-    /// Gives a funder channel that waits for its funding confirmation its wallet outputs back (NL-462): the locks were
+    /// Gives a v1 funder channel that waits for its funding confirmation its wallet outputs back (NL-462): the locks were
     /// taken when the funding was created, live in memory only and were lost with the process, so they are rebuilt from
     /// the pending funding broadcast's inputs. Until the funding confirms (or its abandonment releases them, NL-294)
     /// nothing else may select or lock these outputs.
@@ -2424,7 +2424,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 continue;
 
             var channel = await uow.ChannelDbRepository.GetByIdAsync(channelId);
-            if (channel is not { State: ChannelState.V1FundingSigned })
+            // V2 openings use persisted fee reservations, restored by LoadUtxoSetAsync. A legacy channel lock on those
+            // same inputs makes SignWalletTransaction refuse a funding RBF after a restart (NL-1408).
+            if (channel is not { State: ChannelState.V1FundingSigned, Version: ChannelVersion.V1 })
                 continue;
 
             Transaction fundingTransaction;
